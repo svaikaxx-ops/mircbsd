@@ -228,7 +228,7 @@ func runClientAgainstServer(t *testing.T, addr string) {
 				t.Errorf("panic doConnect: %v", r)
 			}
 		}()
-		c.doConnect()
+		c.doConnect(0)
 	}()
 
 	select {
@@ -338,7 +338,7 @@ func TestMaliciousServerMODE(t *testing.T) {
 func TestConnectingFlagPreventsDouble(t *testing.T) {
 	c := newTestClient()
 	c.mu.Lock()
-	c.connecting = true
+	c.connectingGen = c.connectGen // "jau jungiamasi"
 	c.mu.Unlock()
 
 	// Antra connectLoop turėtų iš karto grįžti
@@ -357,7 +357,7 @@ func TestConnectingFlagPreventsDouble(t *testing.T) {
 
 	// Flag turi likti true (kita goroutine jo neatstatė)
 	c.mu.Lock()
-	still := c.connecting
+	still := c.connectingGen >= 0
 	c.mu.Unlock()
 	if !still {
 		t.Error("connecting flag neturėtų būti keičiamas svetimos goroutine")
@@ -1141,5 +1141,64 @@ func TestNickFallbackSequence(t *testing.T) {
 	c.mu.Unlock()
 	if !reset {
 		t.Error("001 neturi atstatyti nickAttempts")
+	}
+}
+
+func TestConnectGenerationInterruptsSleep(t *testing.T) {
+	c := newTestClient()
+	c.mu.Lock()
+	c.reconnectDelay = 10 * time.Second
+	c.mu.Unlock()
+
+	// SleepReconnect turi nutrūkti ankščiau nei visi 10s
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		c.mu.Lock()
+		c.connectGen++
+		c.mu.Unlock()
+	}()
+	start := time.Now()
+	c.connectLoop()
+	elapsed := time.Since(start)
+
+	if elapsed > 3*time.Second {
+		t.Errorf("loop per ilgas (%v) — epochos keitimas neturėjo laukti", elapsed)
+	}
+}
+
+func TestStartConnectClosesOldConn(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	c := newTestClient()
+	c.reconnect = false
+	c.mu.Lock()
+	c.conn = a
+	c.server = "127.0.0.1" // uždaras portas — dial failina greitai
+	c.port = "1"
+	c.mu.Unlock()
+
+	go c.startConnect()
+
+	// Senas ryšys turi būti uždarintas: b.Read turi grįžti su klaida
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := b.Read(make([]byte, 1))
+		errCh <- err
+	}()
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Error("senas ryšys neuždarytas (read pavyko)")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("senas ryšys neuždarytas (nei klaidos, nei atsakymo)")
+	}
+
+	// naujoji epocha turi būti pakelta
+	c.mu.Lock()
+	g := c.connectGen
+	c.mu.Unlock()
+	if g == 0 {
+		t.Error("startConnect nepakėlė connectGen")
 	}
 }

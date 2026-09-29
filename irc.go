@@ -146,7 +146,7 @@ type Client struct {
 
 	reconnect      bool
 	reconnectDelay time.Duration
-	connecting     bool
+	connectingGen  int // jungiamojo ciklo epocha; -1 = nejungiama
 	ctcpVersion    bool
 	notify         bool
 	lastNotify     time.Time
@@ -157,6 +157,7 @@ type Client struct {
 	saslOk       bool // SASL autentifikacija sėkminga (903)
 	saslPending  bool
 	nickAttempts int // 433 bandymų skaitliukas (nick_, nick2, nick3)
+	connectGen   int // jungties epocha: /connect ir /reconnect padidina, senos goroutines pasitraukia
 	capAvailable map[string]bool // CAP LS sąrašo kaupimas (tęsinio eilutėms)
 
 	// URL istorija
@@ -490,26 +491,45 @@ func (c *Client) send(line string) {
 	}
 }
 
+// startConnect nutraukia senąjį ryšį ir pakuria naują jungimo ciklą.
+// connectGen padidinimas: senos connectLoop/doConnect goroutines tikrindamos
+// generaciją pasitraukia (be to read() cikle pasibaigia nuo conn.Close()).
+func (c *Client) startConnect() {
+	c.mu.Lock()
+	c.connectingGen = -1 // senas ciklas pasitrauks per generaciją
+	c.connectGen++
+	if c.conn != nil {
+		c.conn.Close()
+	}
+	c.mu.Unlock()
+	go c.connectLoop()
+}
+
 // connectLoop - prisijungimas su automatiniais bandymais iš naujo
 func (c *Client) connectLoop() {
 	c.mu.Lock()
-	if c.connecting {
+	gen := c.connectGen
+	if c.connectingGen == gen {
 		c.mu.Unlock()
-		return // jau jungiamasi
+		return // jau jungiamasi (ta pati epocha)
 	}
-	c.connecting = true
+	c.connectingGen = gen
 	c.reconnectDelay = 5 * time.Second
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
-		c.connecting = false
+		// Atstatom tik jei niekas nepakeitė epochos po mūsų
+		if c.connectingGen == gen {
+			c.connectingGen = -1
+		}
 		c.mu.Unlock()
 	}()
 
 	for {
-		c.doConnect()
+		c.doConnect(gen)
 
 		c.mu.Lock()
+		staleGen := c.connectGen != gen
 		shouldReconnect := c.reconnect
 		delay := c.reconnectDelay
 		// Eksponentinis atsitraukimas
@@ -519,23 +539,55 @@ func (c *Client) connectLoop() {
 		}
 		c.mu.Unlock()
 
+		if staleGen {
+			return
+		}
 		if !shouldReconnect {
 			return
 		}
 
 		c.serverMsg(fmt.Sprintf("Jungiamasi iš naujo po %v...", delay))
 		c.queueRedraw()
-		time.Sleep(delay)
+		// Sleep nutrauktas per epochos pakeitimą: žr. sleepReconnect
+		if !c.sleepReconnect(delay, gen) {
+			return
+		}
 	}
 }
 
-func (c *Client) doConnect() {
+// sleepReconnect laukia delay, bet anksčiau pasitraukia, kai pakeičiama epocha.
+func (c *Client) sleepReconnect(delay time.Duration, gen int) bool {
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			c.mu.Lock()
+			stale := c.connectGen != gen
+			c.mu.Unlock()
+			return !stale
+		case <-time.After(50 * time.Millisecond):
+			c.mu.Lock()
+			stale := c.connectGen != gen
+			c.mu.Unlock()
+			if stale {
+				return false
+			}
+		}
+	}
+}
+
+func (c *Client) doConnect(gen int) {
 	c.mu.Lock()
 	srvName := c.server
 	srv := c.server + ":" + c.port
 	useTLS := c.useTLS
 	nick := c.nick
+	staleGen := c.connectGen != gen
 	c.mu.Unlock()
+	if staleGen {
+		return
+	}
 
 	c.serverMsg(fmt.Sprintf("Jungiamasi prie %s (TLS: %v)...", srv, useTLS))
 
@@ -560,6 +612,12 @@ func (c *Client) doConnect() {
 	newWriteCh := make(chan string, 256)
 	writeStop := make(chan struct{})
 	c.mu.Lock()
+	if c.connectGen != gen {
+		// Nuo dial pradžios buvo /connect / /reconnect — ši jungtis nebeaktuali
+		c.mu.Unlock()
+		conn.Close()
+		return
+	}
 	c.conn = conn
 	c.connected = true
 	c.lastPong = time.Now()

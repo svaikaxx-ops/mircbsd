@@ -741,19 +741,12 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.nick = "mircbsd"
 		}
 		c.mu.Unlock()
-		go c.connectLoop()
+		// Nutraukti seną ryšį ir pradėti naują jungimo ciklą (connectGen)
+		c.startConnect()
 
 	case "reconnect":
-		c.mu.Lock()
-		alreadyConnecting := c.connecting
-		if c.conn != nil {
-			c.conn.Close()
-		}
-		c.mu.Unlock()
 		c.serverMsg("Jungiamasi iš naujo...")
-		if !alreadyConnecting {
-			go c.connectLoop()
-		}
+		c.startConnect()
 
 	case "nick":
 		if args == "" {
