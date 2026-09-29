@@ -28,6 +28,8 @@ type Config struct {
 	Notifications  bool // desktop pranešimai (notify-send) highlight atveju
 	Mouse          bool // pelė: ratukas scroll'ui, paspaudimas kanalo juostoje
 	TimestampColor string // gray (numatyta), blue, green, cyan, none
+	HighlightColor string // highlight fono spalva: red (numatyta), blue, green, magenta, cyan, yellow, none
+	NickColors     bool   // nick'ų spalvinimas (numatytai įjungta)
 }
 
 func defaultConfig() Config {
@@ -45,6 +47,7 @@ func defaultConfig() Config {
 		CTCPVersion:    true,
 		Notifications:  true,
 		Mouse:          true,
+		NickColors:     true,
 	}
 }
 
@@ -105,10 +108,14 @@ func loadConfig(path string) Config {
 			cfg.Notifications = v == "true" || v == "1" || v == "yes"
 		case "mouse":
 			cfg.Mouse = v == "true" || v == "1" || v == "yes"
-		case "sasl":
-			cfg.SASLPass = v
 		case "tscolor":
 			cfg.TimestampColor = v
+		case "highlight_color":
+			cfg.HighlightColor = v
+		case "nick_colors":
+			cfg.NickColors = v == "true" || v == "1" || v == "yes"
+		case "sasl":
+			cfg.SASLPass = v
 		case "perform":
 			for _, cmd := range strings.Split(v, ";") {
 				cmd = strings.TrimSpace(cmd)

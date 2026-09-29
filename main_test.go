@@ -1266,3 +1266,41 @@ func TestOpenURLUsesFirstAvailableOpener(t *testing.T) {
 	}
 	t.Error("naršyklės įrankis negaavo URL")
 }
+
+func TestHighlightColorConfig(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(p, []byte("highlight_color=blue\nnick_colors=false\n"), 0o600)
+	cfg := loadConfig(p)
+	if cfg.HighlightColor != "blue" {
+		t.Errorf("highlight_color: %q", cfg.HighlightColor)
+	}
+	if cfg.NickColors {
+		t.Error("nick_colors=false turi išjungti")
+	}
+	if !defaultConfig().NickColors {
+		t.Error("numatytai nick spalvos įjungtos")
+	}
+}
+
+func TestSetHighlightColor(t *testing.T) {
+	want := map[string]string{
+		"red": ansiBgRed, "blue": ansiBgBlue, "none": ansiReverse,
+	}
+	for name, code := range want {
+		setHighlightColor(name)
+		if hlBgCode != code {
+			t.Errorf("%s: gauta %q, norėta %q", name, hlBgCode, code)
+		}
+	}
+	setHighlightColor("") // grįžta į red
+	if hlBgCode != ansiBgRed {
+		t.Errorf("nežinoma/našta grįžta prie red: %q", hlBgCode)
+	}
+	// nick spalvos išjungimas: nickColor grąžina tuščią
+	old := nickColoring
+	setNickColors(false)
+	if nickColor("testas") != "" {
+		t.Error("išjungtos nick spalvos vis tiek spalvina")
+	}
+	setNickColors(old)
+}

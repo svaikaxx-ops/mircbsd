@@ -129,6 +129,8 @@ func main() {
 
 	cfg := loadConfig(configPath())
 	setTSColor(cfg.TimestampColor)
+	setHighlightColor(cfg.HighlightColor)
+	setNickColors(cfg.NickColors)
 
 	args := os.Args[1:]
 	if len(args) >= 2 {

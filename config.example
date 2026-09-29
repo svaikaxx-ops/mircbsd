@@ -43,3 +43,9 @@ reconnect=true
 
 # Pelė palaikymas: ratukas scroll'ui, paspaudimas kanalo juostoje
 # mouse=true
+
+# Highlight fono spalva: red (numatyta), blue, green, magenta, cyan, yellow, none
+# highlight_color=red
+
+# Nick'ų spalvinimas (kada kiekvienas nick turi savo spalvą)
+# nick_colors=true

@@ -31,7 +31,34 @@ const (
 	ansiShowCur  = "\033[?25h"
 )
 
-var tsColorCode = ansiDarkGray // konfigūruojama timestamp spalva
+var (
+	tsColorCode  = ansiDarkGray     // konfigūruojama timestamp spalva
+	hlBgCode     = ansiBgRed        // konfigūruojama highlight fono spalva
+	nickColoring = true             // konfigūruojamas nick'ų spalvinimas
+)
+
+func setHighlightColor(name string) {
+	switch strings.ToLower(name) {
+	case "red":
+		hlBgCode = ansiBgRed
+	case "blue":
+		hlBgCode = ansiBgBlue
+	case "green":
+		hlBgCode = "\033[42m"
+	case "magenta":
+		hlBgCode = "\033[45m"
+	case "cyan":
+		hlBgCode = "\033[46m"
+	case "yellow":
+		hlBgCode = "\033[43m"
+	case "none":
+		hlBgCode = ansiReverse // be fono — pažymejimas reverse video
+	default:
+		hlBgCode = ansiBgRed
+	}
+}
+
+func setNickColors(b bool) { nickColoring = b }
 
 func setTSColor(name string) {
 	switch strings.ToLower(name) {
@@ -59,6 +86,9 @@ var nickColors = []string{
 }
 
 func nickColor(nick string) string {
+	if !nickColoring {
+		return ""
+	}
 	h := fnv.New32a()
 	h.Write([]byte(strings.ToLower(nick)))
 	return nickColors[h.Sum32()%uint32(len(nickColors))]
@@ -297,9 +327,10 @@ func (m Message) renderLines(msgW int, myNick string) []string {
 	switch m.msgType {
 	case MsgChat:
 		nc := nickColor(m.nick)
+		hl := hlBgCode
 		nickStr := "<" + m.nick + "> "
 		if m.highlight {
-			p = part{ansiBgRed + ansiBold + ts + nc + nickStr + ansiReset + ansiBgRed, tsLen + len([]rune(nickStr))}
+			p = part{hl + ansiBold + ts + nc + nickStr + ansiReset + hl, tsLen + len([]rune(nickStr))}
 		} else {
 			p = part{ts + nc + nickStr + ansiReset, tsLen + len([]rune(nickStr))}
 		}
