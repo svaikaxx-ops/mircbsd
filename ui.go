@@ -398,15 +398,16 @@ func findChunk(original, plainChunk string) string {
 const defaultMaxMessages = 5000
 
 type Channel struct {
-	name        string
-	messages    []Message
-	unread      int
-	highlight   int
-	nicks       []string
-	topic       string
-	maxMessages int
-	scrollOff   int
-	isPrivate   bool // tiesioginis pokalbis (ne kanalas)
+	name          string
+	messages      []Message
+	unread        int
+	highlight     int
+	nicks         []string
+	topic         string
+	maxMessages   int
+	scrollOff     int
+	isPrivate     bool // tiesioginis pokalbis (ne kanalas)
+	drawLineCount int  // eilučių skaičius paskutiniam braižymui (istorijos užšaldymui)
 
 	// Renderio cache'as: eilutės priklauso nuo žinučių, pločio ir spalvos.
 	// renderGen didinamas kiekvieną kartą pakeitus žinutes (addMsg, clear).
@@ -734,6 +735,25 @@ func (c *Client) draw() {
 	}
 
 	totalLines := len(lines)
+
+	// Istorijos „užšaldymas": būnant atslinkus aukštyn (scrollOff > 0) ir priėjus
+	// naujų žinučių, scrollOff pagrįstas nuo apačios — matomas tekstas slystų
+	// aukštyn. Prieinam prie slinkties pagal naujų eilučių skaičių, kad vaizdas
+	// liktų stabilūs (ankščiausias viršus lieka viršuje).
+	c.mu.Lock()
+	wasDrawn := c.lastDrawn == active
+	c.lastDrawn = active
+	prevCount := active.drawLineCount
+	if !wasDrawn || prevCount > totalLines {
+		prevCount = totalLines
+	}
+	active.drawLineCount = totalLines
+	if scrollOff > 0 && wasDrawn && totalLines > prevCount {
+		scrollOff += totalLines - prevCount
+		c.scrollOff = scrollOff
+	}
+	c.mu.Unlock()
+
 	startLine := totalLines - msgRows - scrollOff
 	if startLine < 0 {
 		startLine = 0

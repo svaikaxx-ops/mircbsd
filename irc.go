@@ -92,6 +92,7 @@ type Client struct {
 	channels    []*Channel
 	activeIdx   int
 	maxMessages int
+	lastDrawn   *Channel // kuriuo kanalu paskutinį kartą braižyta (istorijos užšaldymui)
 
 	writeCh chan string
 	redraw  chan struct{}
