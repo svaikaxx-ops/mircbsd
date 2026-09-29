@@ -23,6 +23,9 @@ import (
 // (antraštė + CRLF + saugumo suma) palieka tiek baitų tekstui.
 const maxLineBytes = 512
 
+// ircSendBurst – didžiausias eilučių skaičius per sekundę išėjimui (flood apsauga).
+const ircSendBurst = 5
+
 // splitForPrivmsg dalija tekstą į dalis, kurios kiekviena po PRIVMSG antraštės
 // tilptų į IRC 512 baitų eilutę. Dalyti reikia baitais (ne rune'ais), nes
 // UTF-8 lietuviškos raidės yra po 2 baitus — kitaip žinutė viršytų limitą.
@@ -407,15 +410,30 @@ func (c *Client) doConnect() {
 	c.serverMsg("Prisijungta! Registruojamasi...")
 	c.queueRedraw()
 
-	// Write goroutine — susieta su šia jungtimi per writeStop
+	// Write goroutine — susieta su šia jungtimi per writeStop.
+	// Flood apsauga (išėjimo pusė): ≤5 eilutės/sek. su 10 eilučių „burst";
+	// viršijus — palaukiama sekundės pertekliui (apsaugo nuo Excess Flood
+	// kick/ban ir nuo serverio išmetimo daugiaeilio pasta metu).
 	go func() {
 		buf := bufio.NewWriter(conn)
+		sent := 0 // eilutės šioje sekundėje
+		t0 := time.Now()
 		for {
 			select {
 			case line, ok := <-newWriteCh:
 				if !ok {
 					return
 				}
+				if now := time.Now(); now.Sub(t0) >= time.Second {
+					sent = 0
+					t0 = now
+				}
+				if sent >= ircSendBurst {
+					time.Sleep(time.Second - time.Since(t0))
+					sent = 0
+					t0 = time.Now()
+				}
+				sent++
 				buf.WriteString(line + "\r\n")
 				// Flush kai eilė tuščia
 				if len(newWriteCh) == 0 {
