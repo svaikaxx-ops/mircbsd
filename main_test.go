@@ -1304,3 +1304,24 @@ func TestSetHighlightColor(t *testing.T) {
 	}
 	setNickColors(old)
 }
+
+func TestConfigQuotesStripped(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(p, []byte(
+		`nickserv="Slaptazodis1"`+"\n"+
+			`sasl='Slaptazodis1'`+"\n"+
+			`nick=s`+"\n"+
+			"nick2=neapsaugotas\n"), 0o600)
+	cfg := loadConfig(p)
+	if cfg.NickServ != "Slaptazodis1" {
+		t.Errorf("nickserv su kabutėmuste: %q", cfg.NickServ)
+	}
+	if cfg.SASLPass != "Slaptazodis1" {
+		t.Errorf("sasl su kabutėmuste: %q", cfg.SASLPass)
+	}
+	// neapsaugotas įprastas tekstas bez kabučių nesikeičia
+	os.WriteFile(p, []byte("realname=Vardas \"P\" Pav\n"), 0o600)
+	if loadConfig(p).RealName != `Vardas "P" Pav` {
+		t.Error("kabutė viduje neturi būti pašalinta")
+	}
+}

@@ -69,6 +69,10 @@ func loadConfig(path string) Config {
 			continue
 		}
 		k, v := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		// Nuplaukime porines kabutes: nickserv="slaptazodis" be jų būtų su "
+		if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+			v = v[1 : len(v)-1]
+		}
 		switch strings.ToLower(k) {
 		case "server":
 			cfg.Server = v
