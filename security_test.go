@@ -1272,3 +1272,36 @@ func TestHandleMouse(t *testing.T) {
 	c.handleMouse([]byte("\x1b[<9999;9999;9999M"))
 	c.handleMouse([]byte("\x1b[<x;y;zM"))
 }
+
+func TestStartupAutoconnect(t *testing.T) {
+	// newClient turi grąžinti connectingGen=-1, kitaip connectLoop pirmu
+	// paleidimu grįžta nieko neversdama (v0.4.0 klaida).
+	c := newTestClient()
+	if c.connectingGen != -1 {
+		t.Fatalf("connectingGen pradžioje turi būti -1, yra %d", c.connectingGen)
+	}
+	addr, lnDone := startMaliciousServer(t, nil)
+	defer lnDone()
+	host, port, _ := net.SplitHostPort(addr)
+	c.server = host
+	c.port = port
+	c.reconnect = false
+
+	done := make(chan struct{})
+	go func() {
+		c.connectLoop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// doConnect bandė (dial į testinį serverį) — ok
+	case <-time.After(3 * time.Second):
+		t.Error("connectLoop nepavyksta: startup autoconnect neveikė")
+	}
+	c.mu.Lock()
+	clear := c.connectingGen == -1
+	c.mu.Unlock()
+	if !clear {
+		t.Error("po ciklo connectingGen turi būti -1")
+	}
+}

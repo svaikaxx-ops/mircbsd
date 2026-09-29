@@ -234,6 +234,7 @@ func newClient(cfg Config) *Client {
 		ctcpVersion:     cfg.CTCPVersion,
 		notify:          cfg.Notifications,
 		mouse:           cfg.Mouse,
+		connectingGen:   -1, // "nejungiama"; 0 = epocha 0 jau „vyksta“ (netinkama pradžiai)
 		channels:        []*Channel{newChannel("*server*", cfg.MaxMessages)},
 		writeCh:         make(chan string, 256),
 		redraw:          make(chan struct{}, 1),
