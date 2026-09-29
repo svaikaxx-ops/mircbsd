@@ -258,13 +258,67 @@ func (c *Client) ensureCh(name string) *Channel {
 	return ch
 }
 
-func (c *Client) isIgnored(nick string) bool {
+// isIgnored tikrina arba šaltinio `prefix` (nick!user@host) atitinka ignore
+// sąrašą. Palaikomos ir paprastos nick'ų eilutės (senas elgesys), ir wildcards
+// (*, ?) maskės: "gaidys!*@*", "*!*@sraunus.host.tld", "bot*".
+func (c *Client) isIgnored(prefix string) bool {
+	if len(c.ignoreList) == 0 {
+		return false
+	}
+	nick := prefix
+	if i := strings.IndexByte(prefix, '!'); i != -1 {
+		nick = prefix[:i]
+	}
 	for _, ig := range c.ignoreList {
-		if strings.EqualFold(ig, nick) {
+		if ig == "" {
+			continue
+		}
+		if !strings.ContainsAny(ig, "*?") {
+			// tiesioginis nick arba atitinkama eilutė
+			if nickEqual(ig, nick) {
+				return true
+			}
+			continue
+		}
+		// wildcard maskė — atitinka pilnąjį prefixą arba pagal nick'o dalį
+		if wildcardMatch(ig, prefix) || wildcardMatch(ig, nick) {
 			return true
 		}
 	}
 	return false
+}
+
+// wildcardMatch — paprastas * ir (ne-regexp) matching (case-insensitive).
+func wildcardMatch(pattern, s string) bool {
+	return wildEq(strings.ToLower(pattern), strings.ToLower(s))
+}
+
+func wildEq(p, s string) bool {
+	// iteratyvus * / ? matching su backtracking per paskutinį * (be rekursijos)
+	pi, si := 0, 0
+	star := -1
+	siSave := 0
+	for si < len(s) {
+		switch {
+		case pi < len(p) && p[pi] == '*':
+			star = pi
+			siSave = si
+			pi++ // * atitinka ir tuščią dalį
+		case pi < len(p) && (p[pi] == '?' || p[pi] == s[si]):
+			pi++
+			si++
+		case star != -1:
+			pi = star + 1
+			siSave++
+			si = siSave
+		default:
+			return false
+		}
+	}
+	for pi < len(p) && p[pi] == '*' {
+		pi++
+	}
+	return pi == len(p)
 }
 
 func (c *Client) addMsg(chanName string, m Message) {
@@ -845,7 +899,7 @@ func (c *Client) parseIRC(line string) {
 						if modeIdx < len(params) {
 							// tik nick'ų statuso modas keičia nick'o prefixą
 							if i := strings.IndexRune(prefixModes, mr); i >= 0 && i < len(prefixSigns) {
-								pfx := string('-' )
+								pfx := string('-')
 								if adding {
 									pfx = string('+')
 								}
@@ -883,7 +937,7 @@ func (c *Client) parseIRC(line string) {
 		me := c.nick
 		c.mu.Unlock()
 
-		if c.isIgnored(fromNick) {
+		if c.isIgnored(prefix) {
 			return
 		}
 
@@ -954,7 +1008,7 @@ func (c *Client) parseIRC(line string) {
 
 	case "NOTICE":
 		text := p(1)
-		if c.isIgnored(fromNick) {
+		if c.isIgnored(prefix) {
 			return
 		}
 		c.addMsg("*server*", Message{ts: now, nick: fromNick, text: text, msgType: MsgNotice})

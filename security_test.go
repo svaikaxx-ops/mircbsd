@@ -1047,3 +1047,49 @@ func TestPasteConfirmOnlyAfterWindow(t *testing.T) {
 		t.Errorf("tikėjomės 2 žinučių (a, b), gavome %d: %v", n, writes)
 	}
 }
+
+func TestWildcardMatch(t *testing.T) {
+	cases := []struct {
+		pat, s string
+		want   bool
+	}{
+		{"*", "betkas", true},
+		{"*", "", true},
+		{"gaidys!*@*", "gaidys!user@host.tld", true},
+		{"gaidys!*@*", "kitas!user@host.tld", false},
+		{"*!*@*.tld", "a!u@x.y.tld", true},
+		{"bot?x", "bot1x", true},
+		{"bot?x", "bot1y", false},
+		{"bot*", "b", false},
+		{"a*b*c", "axbxxbxc", true},
+		{"a*b*c", "abxc", true},
+		{"a*b*c", "axc", false},
+		{"no wild", "no wild", true},
+		{"no wild", "no wild2", false},
+	}
+	for _, c := range cases {
+		if got := wildcardMatch(c.pat, c.s); got != c.want {
+			t.Errorf("wildcardMatch(%q, %q) = %v, norėtų %v", c.pat, c.s, got, c.want)
+		}
+	}
+}
+
+func TestIgnoreMask(t *testing.T) {
+	c := newTestClient()
+	c.mu.Lock()
+	c.ignoreList = []string{"spameris", "*!*@bad.tld", "bot*"}
+	c.mu.Unlock()
+
+	if c.isIgnored("Spameris!u@h") != true {
+		t.Error("tikslus nick turi atitikti (case-insensitive)")
+	}
+	if c.isIgnored("botas_1!u@h") != true {
+		t.Error("bot* prefix maskė turi atitikti nick'ą")
+	}
+	if c.isIgnored("geras!user@bad.tld") != true {
+		t.Error("host maskė turi atitikti pilną prefixą")
+	}
+	if c.isIgnored("geras!user@ok.tld") {
+		t.Error("neturi atitikti")
+	}
+}
