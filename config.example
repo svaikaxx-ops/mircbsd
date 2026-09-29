@@ -40,3 +40,6 @@ reconnect=true
 
 # Desktop pranešimai (notify-send), kai tave paryškina neaktyviame kanale
 # notifications=true
+
+# Pelė palaikymas: ratukas scroll'ui, paspaudimas kanalo juostoje
+# mouse=true

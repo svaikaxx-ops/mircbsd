@@ -102,6 +102,10 @@ var (
 func (c *Client) stop() {
 	// stop() gali būti kviečiamas ir iš /quit, ir iš signalo — uždarome tik kartą
 	stopOnce.Do(func() {
+		if c.mouse {
+			// Išjungti pelės režimą prieš gryžtant terminalui
+			fmt.Print("\033[?1002l\033[?1000l\033[?1006l")
+		}
 		c.saveHistory()
 		c.closeLogs()
 		close(stopCh)
@@ -140,6 +144,10 @@ func main() {
 
 	c := newClient(cfg)
 	c.oldState = oldState
+	if c.mouse {
+		// Pelės režimas (SGR 1006): ratukas scroll'ui, paspaudimai kanalams
+		fmt.Print("\033[?1000h\033[?1002h\033[?1006h")
+	}
 
 	c.loadHistory()
 	c.loadIgnore()

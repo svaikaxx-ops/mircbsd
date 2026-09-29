@@ -149,6 +149,8 @@ type Client struct {
 	connectingGen  int // jungiamojo ciklo epocha; -1 = nejungiama
 	ctcpVersion    bool
 	notify         bool
+	mouse          bool
+	msgAreaTop     int
 	lastNotify     time.Time
 
 	// IRCv3 CAP / SASL
@@ -231,6 +233,7 @@ func newClient(cfg Config) *Client {
 		reconnect:       cfg.Reconnect,
 		ctcpVersion:     cfg.CTCPVersion,
 		notify:          cfg.Notifications,
+		mouse:           cfg.Mouse,
 		channels:        []*Channel{newChannel("*server*", cfg.MaxMessages)},
 		writeCh:         make(chan string, 256),
 		redraw:          make(chan struct{}, 1),

@@ -1202,3 +1202,73 @@ func TestStartConnectClosesOldConn(t *testing.T) {
 		t.Error("startConnect nepakėlė connectGen")
 	}
 }
+
+func TestHandleMouse(t *testing.T) {
+	c := newTestClient()
+	c.mu.Lock()
+	c.msgAreaTop = 3
+	c.channels = []*Channel{newChannel("#a", 100), newChannel("#b", 100), newChannel("#c", 100)}
+	c.channels[0].name = "#a"
+	c.channels[1].name = "#b"
+	c.channels[2].name = "#c"
+	c.mouse = true
+	c.mu.Unlock()
+
+	// Ratukas aukštyn: scrollOff auga
+	c.handleMouse([]byte("\x1b[<64;20;10M"))
+	c.mu.Lock()
+	so := c.scrollOff
+	c.mu.Unlock()
+	if so != 3 {
+		t.Errorf("ratukas į viršų: gavau %d", so)
+	}
+
+	// Ratukas žemyn: scrollOff mažas iki 0
+	c.handleMouse([]byte("\x1b[<65;20;10M"))
+	c.mu.Lock()
+	so = c.scrollOff
+	c.mu.Unlock()
+	if so != 0 {
+		t.Errorf("ratukas iki apačios: gavau %d", so)
+	}
+
+	// Paspaudimas kanalo juostoje (x ≤ 12, y ≥ top) → perjungia kanalą
+	for _, tc := range []struct {
+		seq  string
+		want int
+	}{
+		{"\x1b[<0;5;3m", 0}, {"\x1b[<0;12;4m", 1}, {"\x1b[<0;8;5m", 2},
+	} {
+		c.handleMouse([]byte(tc.seq))
+		got := c.activeIdx
+		if got != tc.want {
+			t.Errorf("%q → aktīvus %d, norėta %d", tc.seq, got, tc.want)
+		}
+	}
+
+	// Kitur paspaudimas (msg srityje) neperjungia
+	c.handleMouse([]byte("\x1b[<0;40;10m"))
+	if c.activeIdx != 2 {
+		t.Errorf("msg srities paspaudimas perėmė kanalą: %d", c.activeIdx)
+	}
+
+	// mouse=false — nieko nedarbu
+	c.mu.Lock()
+	c.mouse = false
+	so = c.scrollOff
+	c.mu.Unlock()
+	c.handleMouse([]byte("\x1b[<64;20;10M"))
+	c.mu.Lock()
+	if c.scrollOff != so {
+		t.Error("mouse off neturi scrollinti")
+	}
+	c.mu.Unlock()
+
+	// Neapmokinta seka (kviesti be M/m pabaigos) — neturi pats crash
+	c.mu.Lock()
+	c.mouse = true
+	c.mu.Unlock()
+	c.handleMouse([]byte("\x1b[<64;20"))
+	c.handleMouse([]byte("\x1b[<9999;9999;9999M"))
+	c.handleMouse([]byte("\x1b[<x;y;zM"))
+}

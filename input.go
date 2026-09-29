@@ -170,6 +170,11 @@ func (c *Client) handleKey(b []byte) {
 	}
 
 	if len(b) >= 3 && b[0] == 0x1b && b[1] == '[' {
+		// Pelės įvykis (SGR 1006): \x1b[<b;x;yM arba m
+		if b[2] == '<' {
+			c.handleMouse(b)
+			return
+		}
 		switch b[2] {
 		case 'A':
 			c.mu.Lock()
@@ -1297,4 +1302,63 @@ func (c *Client) collectPaste(chunk string) {
 		c.pasteCollectUntil = time.Now().Add(30 * time.Millisecond)
 	}
 	c.pastePartial = partial
+}
+
+// handleMouse apdoroja SGR 1006 pelės įvykį: \x1b[<b;x;yM|m.
+// Ratukas scrollina; atleistas paspaudimas kanalo juostoje perjungia kanalą.
+func (c *Client) handleMouse(b []byte) {
+	if !c.mouse {
+		return
+	}
+	s := string(b)
+	if !strings.HasPrefix(s, "\x1b[<") {
+		return
+	}
+	end := s[len(s)-1]
+	if end != 'M' && end != 'm' {
+		return // nebaigta seka
+	}
+	body := strings.TrimPrefix(s, "\x1b[<")
+	body = strings.TrimSuffix(body, string(end))
+	// Dalinama nuo dešinės, jei eilutėje priklijuoti kiti simboliai
+	i := strings.LastIndex(body, ";")
+	if i < 0 {
+		return
+	}
+	xy := strings.Split(body[:i], ";")
+	if len(xy) != 2 {
+		return
+	}
+	btn, err1 := strconv.Atoi(xy[0])
+	x, err2 := strconv.Atoi(xy[1])
+	y, err3 := strconv.Atoi(body[i+1:])
+	if err1 != nil || err2 != nil || err3 != nil {
+		return
+	}
+	switch {
+	case btn == 64: // ratukas aukštyn
+		c.mu.Lock()
+		c.scrollOff += 3
+		c.mu.Unlock()
+		c.queueRedraw()
+	case btn == 65: // ratukas žemyn
+		c.mu.Lock()
+		if c.scrollOff > 0 {
+			c.scrollOff -= 3
+			if c.scrollOff < 0 {
+				c.scrollOff = 0
+			}
+		}
+		c.mu.Unlock()
+		c.queueRedraw()
+	case end == 'm': // atleistas paspaudimas
+		c.mu.Lock()
+		top := c.msgAreaTop
+		nChan := len(c.channels)
+		c.mu.Unlock()
+		idx := y - top
+		if x <= chanListWidth && idx >= 0 && idx < nChan {
+			c.switchCh(idx)
+		}
+	}
 }

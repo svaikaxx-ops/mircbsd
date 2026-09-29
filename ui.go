@@ -629,6 +629,9 @@ func (c *Client) draw() {
 	}
 
 	msgAreaTop := row
+	c.mu.Lock()
+	c.msgAreaTop = msgAreaTop
+	c.mu.Unlock()
 	msgAreaBot := h - 2
 	msgRows := msgAreaBot - msgAreaTop + 1
 	if msgRows < 1 {

@@ -26,6 +26,7 @@ type Config struct {
 	Reconnect      bool
 	CTCPVersion    bool
 	Notifications  bool // desktop pranešimai (notify-send) highlight atveju
+	Mouse          bool // pelė: ratukas scroll'ui, paspaudimas kanalo juostoje
 	TimestampColor string // gray (numatyta), blue, green, cyan, none
 }
 
@@ -43,6 +44,7 @@ func defaultConfig() Config {
 		Reconnect:      true,
 		CTCPVersion:    true,
 		Notifications:  true,
+		Mouse:          true,
 	}
 }
 
@@ -101,6 +103,8 @@ func loadConfig(path string) Config {
 			cfg.CTCPVersion = v == "true" || v == "1" || v == "yes"
 		case "notifications":
 			cfg.Notifications = v == "true" || v == "1" || v == "yes"
+		case "mouse":
+			cfg.Mouse = v == "true" || v == "1" || v == "yes"
 		case "sasl":
 			cfg.SASLPass = v
 		case "tscolor":
