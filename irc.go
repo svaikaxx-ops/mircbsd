@@ -381,7 +381,9 @@ func (c *Client) logMessage(logDir, server, chanName string, m Message) {
 	if logDir == "" {
 		return
 	}
-	key := server + "/" + chanName
+	// Rotacija per dieną: kiekviena para — savo failas
+	// (kanalas-2026-09-29.log); senas failas uždaromas pradedant naują.
+	key := server + "/" + chanName + "/" + m.ts.Format("2006-01-02")
 	c.mu.Lock()
 	f, ok := c.logFiles[key]
 	if !ok {
@@ -390,7 +392,15 @@ func (c *Client) logMessage(logDir, server, chanName string, m Message) {
 			c.mu.Unlock()
 			return
 		}
-		path := filepath.Join(dir, sanitizePath(chanName)+".log")
+		// uždarome ankstesnės dienos failą tos pačios kanalo eilutės
+		oldPrefix := server + "/" + chanName + "/"
+		for otherKey, otherF := range c.logFiles {
+			if strings.HasPrefix(otherKey, oldPrefix) {
+				otherF.Close()
+				delete(c.logFiles, otherKey)
+			}
+		}
+		path := filepath.Join(dir, sanitizePath(chanName)+"-"+m.ts.Format("2006-01-02")+".log")
 		var err error
 		f, err = os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {

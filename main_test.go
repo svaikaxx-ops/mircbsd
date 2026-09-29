@@ -636,8 +636,8 @@ func TestLogging(t *testing.T) {
 	// Leisti goroutine baigti
 	time.Sleep(20 * time.Millisecond)
 
-	// Patikrinti ar failas sukurtas
-	logPath := filepath.Join(dir, "irc.test.com", "#testas.log")
+	// Patikrinti ar failas sukurtas (rotacija per dieną: kanalas-YYYY-MM-DD.log)
+	logPath := filepath.Join(dir, "irc.test.com", "#testas-"+time.Now().Format("2006-01-02")+".log")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("log failas nesukurtas: %v", err)
