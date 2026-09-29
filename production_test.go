@@ -1198,3 +1198,43 @@ func TestLogRotationDaily(t *testing.T) {
 	}
 	c.mu.Unlock()
 }
+
+func TestNotificationsConfig(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config")
+	os.WriteFile(p, []byte("nick=x\nnotifications=false\n"), 0o600)
+	cfg := loadConfig(p)
+	if cfg.Notifications {
+		t.Error("notifications=false neturi įjungti pranešimų")
+	}
+	os.WriteFile(p, []byte("notifications=yes\n"), 0o600)
+	if !loadConfig(p).Notifications {
+		t.Error("notifications=yes turi įjungti pranešimus")
+	}
+	// numatyta reikšmė – įjungta
+	if !defaultConfig().Notifications {
+		t.Error("numatyta: pranešimai įjungti")
+	}
+}
+
+func TestNotifyRateLimit(t *testing.T) {
+	c := newTestClient()
+	c.notify = true
+	c.addMsg("#kanalas", Message{ts: time.Now(), nick: "buddy", text: "hey!", msgType: MsgChat, highlight: true})
+	c.addMsg("#kitas", Message{ts: time.Now(), nick: "buddy", text: "hey!", msgType: MsgChat, highlight: true})
+	c.mu.Lock()
+	limitSet := !c.lastNotify.IsZero()
+	c.mu.Unlock()
+	if !limitSet {
+		t.Error("lastNotify nustatytas po highlight")
+	}
+	// neaktyvaus kanalo highlight be pranešimų flago – neturi setinti
+	c2 := newTestClient()
+	c2.notify = false
+	c2.addMsg("#kanalas", Message{ts: time.Now(), nick: "buddy", text: "hey!", msgType: MsgChat, highlight: true})
+	c2.mu.Lock()
+	zero := c2.lastNotify.IsZero()
+	c2.mu.Unlock()
+	if !zero {
+		t.Error("notify=false neturi nustatinėti lastNotify")
+	}
+}

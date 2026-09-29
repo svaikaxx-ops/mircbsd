@@ -71,6 +71,27 @@ func openURL(url string) error {
 		strings.Join(tried, ", "))
 }
 
+// notifyDesktop parodo darbalaukio pranešimą per notify-send
+// (freedesktop.org – veikia Debian XFCE/GNOME/KDE ir FreeBSD su
+// notify-send). Nebūtinai turi failą ar daemon'ą – jeigų nėra, nieko.
+func notifyDesktop(title, body string) {
+	path, err := exec.LookPath("notify-send")
+	if err != nil {
+		return
+	}
+	// Apriboti tekstą, kad pranešimas nebūtų milžiniškas
+	title = sanitizeText(title)
+	if t := []rune(title); len(t) > 60 {
+		title = string(t[:60])
+	}
+	body = sanitizeText(body)
+	if t := []rune(body); len(t) > 120 {
+		body = string(t[:120]) + "…"
+	}
+	cmd := exec.Command(path, "-a", "mircBSD", "-t", "5000", title, body)
+	_ = cmd.Start()
+}
+
 // ---- Sustabdymas ----
 
 var (

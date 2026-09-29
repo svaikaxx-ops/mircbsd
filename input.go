@@ -1255,6 +1255,8 @@ func (c *Client) handleCmd(cmd, args string) {
 			"Ctrl+←/→        žodžio navigacija",
 			"F1-F12 / Alt+1-9  kanalas pagal numerį",
 			"Tab             autocomplete   Ctrl+↑↓  nick scroll",
+			"───────────────────────────────────────────────────",
+			"/ignore dabar palaiko maskes: nick!user@host, *!user@*, *",
 		}
 		for _, l := range lines {
 			c.serverMsg(l)

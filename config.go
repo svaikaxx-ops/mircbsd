@@ -25,6 +25,7 @@ type Config struct {
 	MaxMessages    int
 	Reconnect      bool
 	CTCPVersion    bool
+	Notifications  bool // desktop pranešimai (notify-send) highlight atveju
 	TimestampColor string // gray (numatyta), blue, green, cyan, none
 }
 
@@ -39,8 +40,9 @@ func defaultConfig() Config {
 		RealName:    "mircBSD IRC Client",
 		LogDir:      filepath.Join(home, "irclogs"),
 		MaxMessages: 5000,
-		Reconnect:   true,
-		CTCPVersion: true,
+		Reconnect:      true,
+		CTCPVersion:    true,
+		Notifications:  true,
 	}
 }
 
@@ -97,6 +99,8 @@ func loadConfig(path string) Config {
 			cfg.Reconnect = v == "true" || v == "1" || v == "yes"
 		case "ctcpversion":
 			cfg.CTCPVersion = v == "true" || v == "1" || v == "yes"
+		case "notifications":
+			cfg.Notifications = v == "true" || v == "1" || v == "yes"
 		case "sasl":
 			cfg.SASLPass = v
 		case "tscolor":

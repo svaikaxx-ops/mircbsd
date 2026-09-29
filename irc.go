@@ -148,6 +148,8 @@ type Client struct {
 	reconnectDelay time.Duration
 	connecting     bool
 	ctcpVersion    bool
+	notify         bool
+	lastNotify     time.Time
 
 	// IRCv3 CAP / SASL
 	activeCaps   map[string]bool
@@ -226,6 +228,7 @@ func newClient(cfg Config) *Client {
 		maxMessages:     cfg.MaxMessages,
 		reconnect:       cfg.Reconnect,
 		ctcpVersion:     cfg.CTCPVersion,
+		notify:          cfg.Notifications,
 		channels:        []*Channel{newChannel("*server*", cfg.MaxMessages)},
 		writeCh:         make(chan string, 256),
 		redraw:          make(chan struct{}, 1),
@@ -340,6 +343,26 @@ func (c *Client) addMsg(chanName string, m Message) {
 		fmt.Print("\a")
 	}
 	go c.logMessage(logDir, server, chanName, m)
+	if m.highlight && !isActive && c.notify {
+		// Desktop pranešimas: atsargiai su laiku, kad nespaustų per greitai
+		c.mu.Lock()
+		canNotify := time.Since(c.lastNotify) > 3*time.Second
+		if canNotify {
+			c.lastNotify = time.Now()
+		}
+		c.mu.Unlock()
+		if canNotify {
+			title := chanName
+			if !isChannel(chanName) {
+				title = "PM " + chanName
+			}
+			body := stripIRCFormat(m.text)
+			if m.nick != "" {
+				body = "<" + m.nick + "> " + body
+			}
+			go notifyDesktop(title, body)
+		}
+	}
 	c.queueRedraw()
 }
 

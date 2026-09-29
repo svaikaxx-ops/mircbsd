@@ -37,3 +37,6 @@ reconnect=true
 
 # Papildomi žodžiai highlight'inimui (atskiriami kableliu)
 # highlight_words=linux,freebsd
+
+# Desktop pranešimai (notify-send), kai tave paryškina neaktyviame kanale
+# notifications=true
