@@ -85,7 +85,7 @@ mircbsd irc.data.lt 6667 manick
 | `/away [priežastis]` | Away režimas |
 | `/back` | Grįžti iš away |
 | `/whois <nick>` | Informacija apie vartotoją |
-| `/ignore <nick>` | Ignoruoti vartotoją |
+| `/ignore <maskė>` | Ignoruoti vartotoją (palaiko maskes: `*!user@*`, `nick`) |
 | `/unignore <nick>` | Atšaukti ignoravimą |
 | `/ignores` | Ignoruojamų sąrašas |
 | `/list [filtras]` | Kanalų sąrašas |
@@ -108,6 +108,7 @@ mircbsd irc.data.lt 6667 manick
 | `Ctrl+←` / `Ctrl+→` | Žodžio navigacija |
 | `Ctrl+W` | Ištrinti žodį prieš kursorių |
 | `Ctrl+↑` / `Ctrl+↓` | Slinkti nick sąrašu |
+| **Pelė** | Ratukas: sulinkti; paspaudimas kanalo juostoje: pakeisti |
 
 ## Failų vietos
 
@@ -116,7 +117,7 @@ mircbsd irc.data.lt 6667 manick
 | `$XDG_CONFIG_HOME/mircbsd/config` (numatytai `~/.config/mircbsd/config`) | Konfigūracija |
 | `$XDG_CONFIG_HOME/mircbsd/history` | Komandų istorija |
 | `$XDG_CONFIG_HOME/mircbsd/ignore` | Ignoruojamų sąrašas |
-| `~/irclogs/<serveris>/<kanalas>.log` | Žurnalai |
+| `~/irclogs/<serveris>/<kanalas>-YYYY-MM-DD.log` | Žurnalai (rotacija per dieną) |
 
 ## Saugumas
 
@@ -144,6 +145,16 @@ mircbsd irc.data.lt 6667 manick
   todėl valdymo simboliai negali patekti net į serverio komandas.
 - `/open` atidaro tik `http://`, `https://`, `ftp://` prasidedančius URL.
 
+## Papildomi nustatai
+
+| Raktas | Numatytas | Aprašymas |
+|--------|-----------|-----------|
+| `mouse` | `true` | Pelės palaikymas |
+| `notifications` | `true` | Desktop pranešimai (notify-send) highlight atveju; be notify-send – tyliai praleidžiama |
+| `highlight_color` | `red` | Highlight fono spalva (`blue`, `green`, `magenta`, `cyan`, `yellow`, `none`) |
+| `nick_colors` | `true` | Nick'ų spalvinimas |
+| `tscolor` | `gray` | Laiko žymos spalva |
+
 ## Kūrimas (FreeBSD/Linux)
 
 ```sh
@@ -162,4 +173,4 @@ GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o mircbsd-linux .
 
 ## Versija
 
-v0.3.1 – saugumo patikra (žr. git log)
+v0.4.0 – patogumo funkcijos (žr. CHANGELOG.md)

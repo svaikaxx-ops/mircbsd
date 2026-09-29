@@ -32,9 +32,9 @@ const (
 )
 
 var (
-	tsColorCode  = ansiDarkGray     // konfigūruojama timestamp spalva
-	hlBgCode     = ansiBgRed        // konfigūruojama highlight fono spalva
-	nickColoring = true             // konfigūruojamas nick'ų spalvinimas
+	tsColorCode  = ansiDarkGray // konfigūruojama timestamp spalva
+	hlBgCode     = ansiBgRed    // konfigūruojama highlight fono spalva
+	nickColoring = true         // konfigūruojamas nick'ų spalvinimas
 )
 
 func setHighlightColor(name string) {

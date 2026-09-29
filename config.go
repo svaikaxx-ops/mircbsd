@@ -25,8 +25,8 @@ type Config struct {
 	MaxMessages    int
 	Reconnect      bool
 	CTCPVersion    bool
-	Notifications  bool // desktop pranešimai (notify-send) highlight atveju
-	Mouse          bool // pelė: ratukas scroll'ui, paspaudimas kanalo juostoje
+	Notifications  bool   // desktop pranešimai (notify-send) highlight atveju
+	Mouse          bool   // pelė: ratukas scroll'ui, paspaudimas kanalo juostoje
 	TimestampColor string // gray (numatyta), blue, green, cyan, none
 	HighlightColor string // highlight fono spalva: red (numatyta), blue, green, magenta, cyan, yellow, none
 	NickColors     bool   // nick'ų spalvinimas (numatytai įjungta)
@@ -38,16 +38,16 @@ func defaultConfig() Config {
 		home = "."
 	}
 	return Config{
-		Port:        "6667",
-		Nick:        "mircbsd",
-		RealName:    "mircBSD IRC Client",
-		LogDir:      filepath.Join(home, "irclogs"),
-		MaxMessages: 5000,
-		Reconnect:      true,
-		CTCPVersion:    true,
-		Notifications:  true,
-		Mouse:          true,
-		NickColors:     true,
+		Port:          "6667",
+		Nick:          "mircbsd",
+		RealName:      "mircBSD IRC Client",
+		LogDir:        filepath.Join(home, "irclogs"),
+		MaxMessages:   5000,
+		Reconnect:     true,
+		CTCPVersion:   true,
+		Notifications: true,
+		Mouse:         true,
+		NickColors:    true,
 	}
 }
 

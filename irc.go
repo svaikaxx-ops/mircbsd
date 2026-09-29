@@ -158,8 +158,8 @@ type Client struct {
 	capSASL      bool
 	saslOk       bool // SASL autentifikacija sėkminga (903)
 	saslPending  bool
-	nickAttempts int // 433 bandymų skaitliukas (nick_, nick2, nick3)
-	connectGen   int // jungties epocha: /connect ir /reconnect padidina, senos goroutines pasitraukia
+	nickAttempts int             // 433 bandymų skaitliukas (nick_, nick2, nick3)
+	connectGen   int             // jungties epocha: /connect ir /reconnect padidina, senos goroutines pasitraukia
 	capAvailable map[string]bool // CAP LS sąrašo kaupimas (tęsinio eilutėms)
 
 	// URL istorija
@@ -860,8 +860,8 @@ func (c *Client) parseIRC(line string) {
 		}
 
 	case "005": // ISUPPORT — serverio parametrai (CHANTYPES, PREFIX, CASEMAPPING...)
-		c.applyISUPPORT(params[1:])
 		if len(params) > 1 {
+			c.applyISUPPORT(params[1:])
 			c.serverMsg(strings.Join(params[1:], " "))
 		}
 
@@ -1323,7 +1323,12 @@ func (c *Client) parseIRC(line string) {
 		c.send("CAP END")
 
 	case "902", "904", "905": // SASL nesėkmė
-		c.errMsg(fmt.Sprintf("SASL klaida (%s): %s", cmd, p(len(params)-1)))
+		// Paskutinis parametras yra žinutė, bet jei eilutė sugadinta — p(0)
+		msg := p(0)
+		if len(params) > 1 {
+			msg = params[len(params)-1]
+		}
+		c.errMsg(fmt.Sprintf("SASL klaida (%s): %s", cmd, msg))
 		c.mu.Lock()
 		c.saslPending = false
 		c.saslOk = false
