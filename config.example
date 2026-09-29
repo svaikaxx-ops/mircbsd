@@ -1,0 +1,39 @@
+# mircBSD konfigūracijos pavyzdys
+# Kopijuoti į: ~/.config/mircbsd/config
+
+# IRC serveris
+server=irc.libera.chat
+port=6697
+tls=true
+
+# Identitetas
+nick=manick
+realname=Mano Vardas
+
+# NickServ autentifikacija (neprivaloma, senasis būdas)
+# nickserv=slaptazodis
+
+# SASL PLAIN autentifikacija (rekomenduojama Libera.chat, OFTC ir kt.)
+# Vartotojo vardas = nick laukas viršuje
+# sasl=slaptazodis
+
+# Automatiškai prisijungti prie kanalų paleidus
+# autojoin=#linux,#freebsd,#lietuviai
+
+# Žurnalo katalogus (numatytasis: ~/irclogs)
+# logdir=~/irclogs
+
+# Automatinis prisijungimas iš naujo nutrūkus ryšiui
+reconnect=true
+
+# Maksimalus žinučių skaičius kanalų atmintyje (numatytasis: 5000)
+# maxmessages=5000
+
+# Atsakyti į CTCP VERSION užklausas
+# ctcpversion=true
+
+# Komandos vykdomos po prisijungimo (atskiriamos kabliataškiu)
+# perform=/msg BotServ !register; /join #test
+
+# Papildomi žodžiai highlight'inimui (atskiriami kableliu)
+# highlight_words=linux,freebsd
