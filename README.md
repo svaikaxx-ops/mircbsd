@@ -162,4 +162,4 @@ GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o mircbsd-linux .
 
 ## Versija
 
-v0.3.0
+v0.3.1 – saugumo patikra (žr. git log)
