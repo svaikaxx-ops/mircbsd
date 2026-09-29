@@ -973,3 +973,77 @@ func TestNickLengthCapOn433(t *testing.T) {
 		t.Errorf("NICK per ilgas po 433: %d ženklų", len(n))
 	}
 }
+
+// ============================================================
+// Paste surinkimas per kelis stdin skaitinius
+// ============================================================
+
+func TestPasteSplitAcrossReads(t *testing.T) {
+	c := newTestClient()
+	c.mu.Lock()
+	c.connected = true
+	c.ensureCh("#chan")
+	c.activeIdx = 1
+	c.mu.Unlock()
+	collect := captureWrites(c)
+
+	// Paste su 3 eilutėmis, padalintas į tris gabaliukus (antrasis baigiasi
+	// eilutės viduryje, trečiasis — prasideda nuo to tęsinio)
+	c.handleKey([]byte("pirmoji\nantroji\n"))
+	time.Sleep(10 * time.Millisecond)
+	c.handleKey([]byte("trecija-pus"))
+	time.Sleep(10 * time.Millisecond)
+	c.handleKey([]byte("e\n"))
+	time.Sleep(60 * time.Millisecond) // surinkimo lango pabaiga (langa pratęsė tęsiniai)
+	// Patvirtinimas PO lango
+	c.handleKey([]byte("\r"))
+	writes := collect(40 * time.Millisecond)
+
+	var msgs []string
+	for _, w := range writes {
+		if strings.HasPrefix(w, "PRIVMSG #chan :") {
+			msgs = append(msgs, strings.TrimPrefix(w, "PRIVMSG #chan :"))
+		}
+	}
+	want := []string{"pirmoji", "antroji", "trecija-puse"}
+	if len(msgs) != len(want) {
+		t.Fatalf("tikėjomės %d žinučių, gavome %v", len(want), msgs)
+	}
+	for i, w := range want {
+		if msgs[i] != w {
+			t.Errorf("žinutė %d = %q, norėtų %q", i, msgs[i], w)
+		}
+	}
+}
+
+func TestPasteConfirmOnlyAfterWindow(t *testing.T) {
+	c := newTestClient()
+	c.mu.Lock()
+	c.connected = true
+	c.ensureCh("#chan")
+	c.activeIdx = 1
+	c.mu.Unlock()
+	collect := captureWrites(c)
+
+	// Trigger paste
+	c.handleKey([]byte("a\nb\n"))
+	time.Sleep(10 * time.Millisecond)
+	// Enter DAR surinkimo lange — turi būti ignoruotas (eilutės tęsinys)
+	c.handleKey([]byte("\r"))
+	time.Sleep(40 * time.Millisecond) // surinkimo lango pabaiga
+	// Antras Enter po lango — siunčia tik a, b (ne tuščias)
+	c.handleKey([]byte("\r"))
+	writes := collect(40 * time.Millisecond)
+	n := 0
+	for _, w := range writes {
+		if strings.HasPrefix(w, "PRIVMSG #chan :") {
+			n++
+			if strings.TrimPrefix(w, "PRIVMSG #chan :") == "" {
+				t.Errorf("išsiųsta tuščia žinutė")
+			}
+		}
+	}
+	if n != 2 {
+		t.Errorf("tikėjomės 2 žinučių (a, b), gavome %d: %v", n, writes)
+	}
+}

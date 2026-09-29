@@ -83,7 +83,9 @@ type Client struct {
 	awayNotified map[string]time.Time
 
 	// Paste apsauga
-	pasteBuf []string
+	pasteBuf          []string
+	pastePartial      string    // nevienos eilutės gabaliukas (paste ateina ~64B gabaliukais)
+	pasteCollectUntil time.Time // kol paste „teka" iš terminalo — renkame, neconfirm
 
 	// Ping keepalive
 	lastPong   time.Time

@@ -47,8 +47,18 @@ func (c *Client) handleKey(b []byte) {
 	// Paste patvirtinimo režimas
 	c.mu.Lock()
 	hasPaste := len(c.pasteBuf) > 0
+	collecting := hasPaste && time.Now().Before(c.pasteCollectUntil)
 	c.mu.Unlock()
 	if hasPaste {
+		if collecting {
+			// Paste dar tebesrūva (ateina ~64 B gabaliukais) — renkam eilutes,
+			// Enter dar neprivalo reikšti patvirtinimo
+			c.mu.Lock()
+			c.collectPaste(string(b))
+			c.mu.Unlock()
+			c.queueRedraw()
+			return
+		}
 		if len(b) == 1 {
 			switch b[0] {
 			case '\r', '\n':
@@ -85,19 +95,21 @@ func (c *Client) handleKey(b []byte) {
 		}
 	}
 	if nlCount > 1 {
-		raw := strings.ReplaceAll(string(b), "\r\n", "\n")
-		raw = strings.ReplaceAll(raw, "\r", "\n")
-		var lines []string
-		for _, l := range strings.Split(raw, "\n") {
+		lines, partial := splitPasteLines(string(b))
+		nonempty := make([]string, 0, len(lines))
+		for _, l := range lines {
 			if l != "" {
-				lines = append(lines, l)
+				nonempty = append(nonempty, l)
 			}
 		}
-		if len(lines) > 1 {
+		if len(nonempty) > 1 {
 			c.mu.Lock()
-			c.pasteBuf = lines
+			c.pasteBuf = nonempty
+			c.pastePartial = partial
+			c.pasteCollectUntil = time.Now().Add(30 * time.Millisecond)
+			total := len(nonempty)
 			c.mu.Unlock()
-			c.serverMsg(fmt.Sprintf("⚠ Paste: %d eilutės. Enter=siųsti, Esc=atšaukti", len(lines)))
+			c.serverMsg(fmt.Sprintf("⚠ Paste: %d eilutės. Enter=siųsti, Esc=atšaukti", total))
 			c.queueRedraw()
 			return
 		}
@@ -1251,4 +1263,43 @@ func (c *Client) handleCmd(cmd, args string) {
 	default:
 		c.errMsg(fmt.Sprintf("Nežinoma komanda: /%s  (naudok /help)", cmd))
 	}
+}
+
+// splitPasteLines skaido paste gabaliuką į pilnas eilutes + galimą nepilną
+// „uodegą" (gabaliukas dažnai baigiasi eilutės viduryje, vėlesnis tęsinys
+// ateina atskirame skaityme).
+func splitPasteLines(raw string) (lines []string, partial string) {
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	raw = strings.ReplaceAll(raw, "\r", "\n")
+	if raw != "" && !strings.HasSuffix(raw, "\n") {
+		i := strings.LastIndex(raw, "\n")
+		if i == -1 {
+			return nil, raw
+		}
+		return strings.Split(raw[:i], "\n"), raw[i+1:]
+	}
+	return strings.Split(strings.TrimRight(raw, "\n"), "\n"), ""
+}
+
+// collectPaste prideda paste tęsinį į buferį ir pratęsia surinkimo langą.
+func (c *Client) collectPaste(chunk string) {
+	if c.pastePartial != "" {
+		chunk = c.pastePartial + chunk
+	}
+	lines, partial := splitPasteLines(chunk)
+	added := 0
+	for _, l := range lines {
+		if l == "" {
+			continue
+		}
+		if len(c.pasteBuf) >= 200 {
+			break
+		}
+		c.pasteBuf = append(c.pasteBuf, l)
+		added++
+	}
+	if added > 0 || partial != "" {
+		c.pasteCollectUntil = time.Now().Add(30 * time.Millisecond)
+	}
+	c.pastePartial = partial
 }
