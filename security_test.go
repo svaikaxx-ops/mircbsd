@@ -918,13 +918,18 @@ func TestIsSensitiveHistory(t *testing.T) {
 		"/msg NickServ identify pass",
 		"/ns identify pass",
 		"/ns ident pass",
+		"/msg NickServ REGISTER Slaptazodis1 asdf@lt.lt",
+		"/msg nickserv register pass123 mail@example.com",
+		"/msg NickServ CONFIRM 12345",
+		"/msg NickServ SET PASSWORD naujas1",
+		"/nickserv register pass mail@x.lt",
 	}
 	for _, s := range sensitive {
 		if !isSensitiveHistory(s) {
 			t.Errorf("isSensitiveHistory(%q) = false, turėtų būti true", s)
 		}
 	}
-	plain := []string{"labas", "/join #lietuviai", "/ns info"}
+	plain := []string{"labas", "/join #lietuviai", "/ns info", "sakykite register kitoj vietoj"}
 	for _, s := range plain {
 		if isSensitiveHistory(s) {
 			t.Errorf("isSensitiveHistory(%q) = true, turėtų būti false", s)

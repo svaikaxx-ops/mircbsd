@@ -666,16 +666,27 @@ func firstField(s string) string {
 }
 
 // isSensitiveHistory – komandos, kuriose gali būti slaptažodis (NickServ
-// IDENTIFY), nesaugomos įvesties istorijos faile.
+// IDENTIFY/REGISTER/CONFIRM/SET PASSWORD), nesaugomos įvesties istorijos faile.
 func isSensitiveHistory(line string) bool {
 	low := strings.ToLower(line)
-	// /msg nickserv identify <pass> arba bet kuri kita eilutė su IDENTIFY
-	if strings.Contains(low, "identify") {
-		return true
+	// /msg nickserv identify <pass> / register <pass> <email> / confirm <kodas> /
+	// set password <pass>
+	const nsPrefix = "msg nickserv"
+	nickCmd := strings.HasPrefix(low, "/ns ") ||
+		strings.HasPrefix(low, "/nickserv ") ||
+		strings.HasPrefix(low, "/squery ") ||
+		strings.Contains(low, nsPrefix)
+	if !nickCmd {
+		// Ne NickServ komanda — žymime (senos versijos elgsena) tik
+		// eilutes su „identify“ žodžiu
+		return strings.Contains(low, "identify")
 	}
-	// /ns ident <pass> (trumpinys)
-	fields := strings.Fields(strings.TrimPrefix(low, "/"))
-	return len(fields) >= 2 && fields[0] == "ns" && (fields[1] == "ident" || fields[1] == "identify")
+	for _, kw := range []string{"identify", "ident ", "register", "confirm", "set password", "auth"} {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeRune(b []byte) (rune, int) {
