@@ -540,7 +540,7 @@ func (c *Client) historyDown() {
 // ---- Tab autocomplete ----
 
 var allCommands = []string{
-	"/away", "/back", "/clear", "/close", "/connect", "/cycle", "/exit",
+	"/away", "/back", "/clear", "/clearlogs", "/close", "/connect", "/cycle", "/exit",
 	"/ignore", "/ignores", "/invite", "/join", "/j",
 	"/list", "/leave", "/me", "/msg", "/m", "/mode",
 	"/kick", "/k", "/names", "/notice",
@@ -1028,6 +1028,29 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.mu.Unlock()
 		c.queueRedraw()
 
+	case "clearlogs":
+		c.mu.Lock()
+		active := c.channels[c.activeIdx]
+		c.mu.Unlock()
+		chanName := args
+		if chanName == "" {
+			chanName = active.name
+		} else {
+			c.mu.Lock()
+			target := c.findCh(chanName)
+			c.mu.Unlock()
+			if target == nil {
+				c.errMsg("Kanalo „" + chanName + "“ nėra šiame seanse")
+				return
+			}
+		}
+		n := c.clearLogs(chanName)
+		if n == 0 {
+			c.serverMsg("Log failų („" + chanName + "“) nerasta")
+		} else {
+			c.serverMsg(fmt.Sprintf("Išvalyta %d log failas(-ai) („%s“)", n, chanName))
+		}
+
 	case "names":
 		c.mu.Lock()
 		active := c.channels[c.activeIdx]
@@ -1255,6 +1278,7 @@ func (c *Client) handleCmd(cmd, args string) {
 			"/urls                                URL istorija",
 			"/open [n]                            atidaryti URL naršyklėje",
 			"/clear                               išvalyti kanalo istoriją",
+			"/clearlogs [kanalas]                 ištrinti log failus (numatytai: visi šiame serveryje)",
 			"/w [n]                               langų sąrašas",
 			"/quit                                išeiti",
 			"───────────────────────────────────────────────────",

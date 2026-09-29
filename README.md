@@ -90,6 +90,7 @@ mircbsd irc.data.lt 6667 manick
 | `/ignores` | Ignoruojamų sąrašas |
 | `/list [filtras]` | Kanalų sąrašas |
 | `/search [žodis]` | Paieška (arba Ctrl+R) |
+| `/clearlogs [kanalas]` | Ištrinti log failus (numatytai: visi šiame serveryje) |
 | `/raw <IRC komanda>` | Tiesioginė IRC komanda |
 | `/w [n]` | Langų sąrašas / perjungimas |
 | `/quit [žinutė]` | Išeiti |

@@ -475,6 +475,52 @@ func (c *Client) closeLogs() {
 	c.logFiles = make(map[string]*os.File)
 }
 
+// clearLogs išvalo log failus: numatytai visi dabartinio serverio kanalai,
+// su /clearlogs <kanalas> — tik to kanalo. Grąžina pašalintų failų skaičių.
+func (c *Client) clearLogs(chanName string) int {
+	c.mu.Lock()
+	dir := c.logDir
+	server := c.server
+	// Uždarom atidarytus handle'us — vengiant rašymo į jau ištrintus failus
+	prefix := ""
+	if chanName != "" {
+		// raktas: server/kanalas/data
+		prefix = server + "/" + chanName + "/"
+	}
+	closed := 0
+	for k, f := range c.logFiles {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			f.Close()
+			delete(c.logFiles, k)
+			closed++
+		}
+	}
+	c.mu.Unlock()
+
+	if dir == "" || server == "" {
+		return 0
+	}
+	srvDir := filepath.Join(dir, sanitizePath(server))
+	entries, err := os.ReadDir(srvDir)
+	if err != nil {
+		return 0
+	}
+	filePrefix := sanitizePath(chanName) // tuščias = visi šio serverio failai
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if filePrefix != "" && !strings.HasPrefix(e.Name(), filePrefix+"-2") && e.Name() != filePrefix+".log" {
+			continue
+		}
+		if os.Remove(filepath.Join(srvDir, e.Name())) == nil {
+			removed++
+		}
+	}
+	return removed
+}
+
 // ---- IRC ryšys ----
 
 // ircLineSanitizer pašalina CR/LF iš siunčiamų eilučių (protokolo injekcija)

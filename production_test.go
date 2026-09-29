@@ -1238,3 +1238,59 @@ func TestNotifyRateLimit(t *testing.T) {
 		t.Error("notify=false neturi nustatinėti lastNotify")
 	}
 }
+
+func TestClearLogs(t *testing.T) {
+	dir := t.TempDir()
+	c := newTestClient()
+	c.logDir = dir
+	c.server = "srv"
+
+	now := time.Now()
+	mk := func(chanName, text string) Message {
+		return Message{ts: now, nick: "k", text: text, msgType: MsgChat}
+	}
+	c.logMessage(dir, "srv", "#a", mk("#a", "aa"))
+	c.logMessage(dir, "srv", "#b", mk("#b", "bb"))
+	time.Sleep(30 * time.Millisecond)
+
+	srvDir := filepath.Join(dir, "srv")
+	before, _ := os.ReadDir(srvDir)
+	if len(before) < 2 {
+		t.Fatalf("log failai nesukurti: %d", len(before))
+	}
+
+	// Išvalyti tik #a
+	if n := c.clearLogs("#a"); n == 0 {
+		t.Error("clearLogs(#a) grąžino 0, bet failas buvo")
+	}
+	files, _ := os.ReadDir(srvDir)
+	for _, f := range files {
+		if strings.HasPrefix(f.Name(), "#a-") {
+			t.Errorf("#a logas liko: %s", f.Name())
+		}
+	}
+	// #b lieka
+	if n := c.clearLogs("#b"); n == 0 {
+		t.Error("clearLogs(#b) nerado failo")
+	}
+
+	// Visas serveris
+	c.logMessage(dir, "srv", "#c", mk("#c", "cc"))
+	time.Sleep(30 * time.Millisecond)
+	if n := c.clearLogs(""); n < 1 {
+		t.Errorf("clearLogs(visi) grąžino %d", n)
+	}
+	files, _ = os.ReadDir(srvDir)
+	for _, f := range files {
+		if !f.IsDir() && strings.HasSuffix(f.Name(), ".log") {
+			t.Errorf("po viso išvalymo liko: %s", f.Name())
+		}
+	}
+	// logFiles atviri handle'ai išvalyti
+	c.mu.Lock()
+	openHandles := len(c.logFiles)
+	c.mu.Unlock()
+	if openHandles != 0 {
+		t.Errorf("logFiles neturi likti atvirų: %d", openHandles)
+	}
+}
