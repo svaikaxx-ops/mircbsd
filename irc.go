@@ -26,6 +26,85 @@ const maxLineBytes = 512
 // ircSendBurst – didžiausias eilučių skaičius per sekundę išėjimui (flood apsauga).
 const ircSendBurst = 5
 
+// Serverio protokolo parametrai (ISUPPORT/005) — numatytieji RFC reikšmės,
+// atnaujinamos c.applyISUPPORT(). Vienas klientas viename procese — paketo
+// lygmeniu, lygiai kaip tsColorCode.
+var (
+	chantypes   = "#&"      // kanalų pavadinimų prefiksai
+	prefixSigns = "~&@%+"   // nick'o statuso prefiksai pagal svarbą (q a o h v)
+	prefixModes = "qaohv"   // mode raidės, atitinkančios prefixSigns
+	casemapping = "rfc1459" // nick palyginimų taisyklės
+)
+
+// applyISUPPORT nuskaiko ISUPPORT (005) tokeno: CHANTYPES=, PREFIX=?, CASEMAPPING=.
+func (c *Client) applyISUPPORT(tokens []string) {
+	for _, tok := range tokens {
+		switch {
+		case strings.HasPrefix(tok, "CHANTYPES="):
+			v := tok[len("CHANTYPES="):]
+			if v != "" {
+				chantypes = strings.Trim(v, "-") // "-" reiškia "kanalų nėra"
+				if chantypes == "" {
+					chantypes = "#&"
+				}
+			}
+		case strings.HasPrefix(tok, "PREFIX="):
+			v := tok[len("PREFIX="):]
+			if i := strings.IndexByte(v, ')'); i > 0 {
+				modes, signs := v[1:i], v[i+1:]
+				if modes != "" && len([]rune(modes)) == len([]rune(signs)) {
+					prefixModes = modes
+					prefixSigns = signs
+				}
+			}
+		case strings.HasPrefix(tok, "CASEMAPPING="):
+			switch tok[len("CASEMAPPING="):] {
+			case "ascii", "rfc1459", "strict-rfc1459":
+				casemapping = tok[len("CASEMAPPING="):]
+			}
+		}
+	}
+}
+
+// lowerIRC RFC 1459 casemapping (A–Z ir []\^ ↔ {}|~).
+func lowerIRC(r rune) rune {
+	switch r {
+	case '[':
+		return '{'
+	case ']':
+		return '}'
+	case '\\':
+		return '|'
+	case '^':
+		return '~'
+	}
+	if r >= 'A' && r <= 'Z' {
+		return r + ('a' - 'A')
+	}
+	return r
+}
+
+// nickEqual palygina nick'us pagal serverio casemapping
+// (RFC: nick'yra didžiųjų/mažųjų raidžių nejausmi, bet [] != {} pagal ASCII).
+func nickEqual(a, b string) bool {
+	if a == "" || b == "" {
+		return a == b
+	}
+	if casemapping == "ascii" {
+		return strings.EqualFold(a, b)
+	}
+	return strings.Map(lowerIRC, a) == strings.Map(lowerIRC, b)
+}
+
+// isChannel arba pavadinimas yra kanalas pagal serverio CHANTYPES.
+// Ypatingieji "*server*" — ne kanalas.
+func isChannel(name string) bool {
+	if name == "" {
+		return false
+	}
+	return strings.ContainsRune(chantypes, rune(name[0]))
+}
+
 // splitForPrivmsg dalija tekstą į dalis, kurios kiekviena po PRIVMSG antraštės
 // tilptų į IRC 512 baitų eilutę. Dalyti reikia baitais (ne rune'ais), nes
 // UTF-8 lietuviškos raidės yra po 2 baitus — kitaip žinutė viršytų limitą.
@@ -620,7 +699,18 @@ func (c *Client) parseIRC(line string) {
 			c.handleInput(cmd)
 		}
 
-	case "002", "003", "004":
+	case "002", "003":
+		if len(params) > 1 {
+			c.serverMsg(strings.Join(params[1:], " "))
+		}
+
+	case "004":
+		if len(params) > 1 {
+			c.serverMsg(strings.Join(params[1:], " "))
+		}
+
+	case "005": // ISUPPORT — serverio parametrai (CHANTYPES, PREFIX, CASEMAPPING...)
+		c.applyISUPPORT(params[1:])
 		if len(params) > 1 {
 			c.serverMsg(strings.Join(params[1:], " "))
 		}
@@ -633,7 +723,7 @@ func (c *Client) parseIRC(line string) {
 	case "JOIN":
 		ch := p(0)
 		c.mu.Lock()
-		isMe := strings.EqualFold(fromNick, c.nick)
+		isMe := nickEqual(fromNick, c.nick)
 		channel := c.ensureCh(ch)
 		channel.addNick(fromNick)
 		if isMe {
@@ -654,7 +744,7 @@ func (c *Client) parseIRC(line string) {
 		if channel := c.findCh(ch); channel != nil {
 			channel.removeNick(fromNick)
 		}
-		isMe := strings.EqualFold(fromNick, c.nick)
+		isMe := nickEqual(fromNick, c.nick)
 		if isMe {
 			for i, channel := range c.channels {
 				if strings.EqualFold(channel.name, ch) {
@@ -678,7 +768,7 @@ func (c *Client) parseIRC(line string) {
 		var affected []*Channel
 		for _, ch := range c.channels {
 			for _, n := range ch.nicks {
-				if strings.EqualFold(stripMode(n), fromNick) {
+				if nickEqual(stripMode(n), fromNick) {
 					affected = append(affected, ch)
 					break
 				}
@@ -702,7 +792,7 @@ func (c *Client) parseIRC(line string) {
 			channel.removeNick(kicked)
 		}
 		c.mu.Unlock()
-		if strings.EqualFold(kicked, me) {
+		if nickEqual(kicked, me) {
 			c.errMsg(fmt.Sprintf("Buvai išmestas iš %s (%s)", ch, reason))
 			// Pateikti kanalą kaip neaktyvų, bet neuždaryti lango
 		} else {
@@ -721,7 +811,7 @@ func (c *Client) parseIRC(line string) {
 	case "NICK":
 		newNick := p(0)
 		c.mu.Lock()
-		if strings.EqualFold(fromNick, c.nick) {
+		if nickEqual(fromNick, c.nick) {
 			c.nick = newNick
 		}
 		for _, ch := range c.channels {
@@ -734,28 +824,33 @@ func (c *Client) parseIRC(line string) {
 		target := p(0)
 		modeStr := p(1)
 		// Nick mode kanaluose
-		if strings.HasPrefix(target, "#") || strings.HasPrefix(target, "&") {
+		if isChannel(target) {
 			c.mu.Lock()
 			ch := c.findCh(target)
 			if ch != nil && len(params) > 2 {
-				// params[2..] = nickai kuriems taikomas mode
+				// params[2..] = argumentai mode raidėms. Privalime skaičiuoti
+				// VISUS mode, kurie imasi argumento (o/v/h/q/a nickams; b, k,
+				// l, e, I... irgi turi parametrą) — kitaip indeksas „nuklysta“
+				// (pvz. MODE #chan +kb nick mask).
 				adding := true
 				modeIdx := 2
+				argLetters := prefixModes + "blkeI"
 				for _, mr := range modeStr {
-					switch mr {
-					case '+':
+					switch {
+					case mr == '+':
 						adding = true
-					case '-':
+					case mr == '-':
 						adding = false
-					case 'o', 'v', 'h', 'q', 'a':
+					case strings.IndexRune(argLetters, mr) >= 0:
 						if modeIdx < len(params) {
-							modeChar := string(mr)
-							if adding {
-								modeChar = "+" + modeChar
-							} else {
-								modeChar = "-" + modeChar
+							// tik nick'ų statuso modas keičia nick'o prefixą
+							if i := strings.IndexRune(prefixModes, mr); i >= 0 && i < len(prefixSigns) {
+								pfx := string('-' )
+								if adding {
+									pfx = string('+')
+								}
+								ch.setMode(params[modeIdx], pfx+string(mr))
 							}
-							ch.setMode(params[modeIdx], modeChar)
 							modeIdx++
 						}
 					}
@@ -797,7 +892,7 @@ func (c *Client) parseIRC(line string) {
 			if strings.HasPrefix(inner, "ACTION ") {
 				action := inner[7:]
 				dest := target
-				if strings.EqualFold(target, me) {
+				if nickEqual(target, me) {
 					dest = fromNick
 				}
 				hl := strings.Contains(strings.ToLower(stripIRCFormat(action)), strings.ToLower(me))
@@ -817,13 +912,13 @@ func (c *Client) parseIRC(line string) {
 
 		dest := target
 		isPM := false
-		if strings.EqualFold(target, me) {
+		if nickEqual(target, me) {
 			dest = fromNick
 			isPM = true
 		}
 		// echo-message: serveris siunčia atgal mūsų pačių žinutes — nerodyti dublikatų
 		c.mu.Lock()
-		isEcho := c.activeCaps["echo-message"] && strings.EqualFold(fromNick, c.nick)
+		isEcho := c.activeCaps["echo-message"] && nickEqual(fromNick, c.nick)
 		c.mu.Unlock()
 		if isEcho {
 			return
@@ -1079,7 +1174,7 @@ func (c *Client) parseIRC(line string) {
 					active := c.channels[c.activeIdx]
 					c.mu.Unlock()
 					for _, n := range active.nicks {
-						if strings.EqualFold(stripMode(n), fromNick) {
+						if nickEqual(stripMode(n), fromNick) {
 							c.addMsg(active.name, Message{ts: now, nick: fromNick,
 								text:    fromNick + " yra away: " + reason,
 								msgType: MsgServer})
@@ -1099,7 +1194,7 @@ func (c *Client) parseIRC(line string) {
 				c.mu.Unlock()
 				if wasAway {
 					for _, n := range active.nicks {
-						if strings.EqualFold(stripMode(n), fromNick) {
+						if nickEqual(stripMode(n), fromNick) {
 							c.addMsg(active.name, Message{ts: now, nick: fromNick,
 								text:    fromNick + " grįžo iš away",
 								msgType: MsgServer})

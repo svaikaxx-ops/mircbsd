@@ -439,7 +439,7 @@ func (ch *Channel) addMsg(m Message) {
 
 func (ch *Channel) addNick(nick string) {
 	for _, n := range ch.nicks {
-		if strings.EqualFold(stripMode(n), stripMode(nick)) {
+		if nickEqual(stripMode(n), stripMode(nick)) {
 			return
 		}
 	}
@@ -449,7 +449,7 @@ func (ch *Channel) addNick(nick string) {
 
 func (ch *Channel) removeNick(nick string) {
 	for i, n := range ch.nicks {
-		if strings.EqualFold(stripMode(n), stripMode(nick)) {
+		if nickEqual(stripMode(n), stripMode(nick)) {
 			ch.nicks = append(ch.nicks[:i], ch.nicks[i+1:]...)
 			return
 		}
@@ -458,7 +458,7 @@ func (ch *Channel) removeNick(nick string) {
 
 func (ch *Channel) renameNick(oldNick, newNick string) {
 	for i, n := range ch.nicks {
-		if strings.EqualFold(stripMode(n), oldNick) {
+		if nickEqual(stripMode(n), oldNick) {
 			ch.nicks[i] = modePrefix(n) + newNick
 			sortNicks(ch.nicks)
 			return
@@ -468,29 +468,24 @@ func (ch *Channel) renameNick(oldNick, newNick string) {
 
 func (ch *Channel) setMode(nick, mode string) {
 	adding := true
-	for _, r := range mode {
-		switch r {
+	for _, mr := range mode {
+		switch mr {
 		case '+':
 			adding = true
 		case '-':
 			adding = false
-		case 'o':
-			ch.changeNickMode(nick, '@', adding)
-		case 'v':
-			ch.changeNickMode(nick, '+', adding)
-		case 'h':
-			ch.changeNickMode(nick, '%', adding)
-		case 'q':
-			ch.changeNickMode(nick, '~', adding)
-		case 'a':
-			ch.changeNickMode(nick, '&', adding)
+		default:
+			// mode raidė → statuso prefiksas pagal serverio PREFIX parametrą
+			if i := strings.IndexRune(prefixModes, mr); i >= 0 && i < len(prefixSigns) {
+				ch.changeNickMode(nick, prefixSigns[i], adding)
+			}
 		}
 	}
 }
 
 func (ch *Channel) changeNickMode(nick string, prefix byte, adding bool) {
 	for i, n := range ch.nicks {
-		if strings.EqualFold(stripMode(n), nick) {
+		if nickEqual(stripMode(n), nick) {
 			bare := stripMode(n)
 			if adding {
 				ch.nicks[i] = string(prefix) + bare
@@ -503,15 +498,17 @@ func (ch *Channel) changeNickMode(nick string, prefix byte, adding bool) {
 	}
 }
 
+// stripMode/prefixStatus naudoja serverio parametrus (PREFIX iš ISUPPORT),
+// o ne hardkoduotą "~&@%+" sąrašą.
 func stripMode(nick string) string {
-	if len(nick) > 0 && strings.ContainsRune("@+%~&", rune(nick[0])) {
+	if len(nick) > 0 && strings.ContainsRune(prefixSigns, rune(nick[0])) {
 		return nick[1:]
 	}
 	return nick
 }
 
 func modePrefix(nick string) string {
-	if len(nick) > 0 && strings.ContainsRune("@+%~&", rune(nick[0])) {
+	if len(nick) > 0 && strings.ContainsRune(prefixSigns, rune(nick[0])) {
 		return string(nick[0])
 	}
 	return ""
@@ -519,19 +516,12 @@ func modePrefix(nick string) string {
 
 func nickOrder(n string) int {
 	if len(n) == 0 {
-		return 4
+		return len(prefixSigns)
 	}
-	switch n[0] {
-	case '~', '&':
-		return 0
-	case '@':
-		return 1
-	case '%':
-		return 2
-	case '+':
-		return 3
+	if i := strings.IndexRune(prefixSigns, rune(n[0])); i >= 0 {
+		return i
 	}
-	return 4
+	return len(prefixSigns)
 }
 
 func sortNicks(nicks []string) {
@@ -577,7 +567,7 @@ func (c *Client) draw() {
 	searchQuery := c.searchQuery
 	c.mu.Unlock()
 
-	showNicks := strings.HasPrefix(active.name, "#") || strings.HasPrefix(active.name, "&")
+	showNicks := isChannel(active.name)
 	out := &strings.Builder{}
 	out.WriteString(ansiHideCur)
 

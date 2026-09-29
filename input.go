@@ -783,7 +783,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 		parts := strings.SplitN(args, " ", 2)
 		chName := parts[0]
-		if !strings.HasPrefix(chName, "#") && !strings.HasPrefix(chName, "&") {
+		if !isChannel(chName) {
 			chName = "#" + chName
 		}
 		c.mu.Lock()
@@ -805,7 +805,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		if msg == "" {
 			msg = "Viso gero!"
 		}
-		if c.connected && (strings.HasPrefix(active.name, "#") || strings.HasPrefix(active.name, "&")) {
+		if c.connected && isChannel(active.name) {
 			c.send(fmt.Sprintf("PART %s :%s", active.name, msg))
 		}
 
@@ -862,7 +862,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		active := c.channels[c.activeIdx]
 		chName := active.name
 		c.mu.Unlock()
-		if !strings.HasPrefix(chName, "#") && !strings.HasPrefix(chName, "&") {
+		if !isChannel(chName) {
 			c.errMsg("/cycle galima tik kanale")
 			return
 		}
@@ -953,7 +953,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.mu.Lock()
 		chName := c.channels[c.activeIdx].name
 		c.mu.Unlock()
-		if !strings.HasPrefix(chName, "#") && !strings.HasPrefix(chName, "&") {
+		if !isChannel(chName) {
 			c.errMsg("/kick galima tik kanale")
 			return
 		}
@@ -1023,7 +1023,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.mu.Lock()
 		active := c.channels[c.activeIdx]
 		chName := active.name
-		do := c.connected && (strings.HasPrefix(chName, "#") || strings.HasPrefix(chName, "&"))
+		do := c.connected && isChannel(chName)
 		if do {
 			active.nicks = nil
 		}
@@ -1190,7 +1190,7 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.activeIdx = len(c.channels) - 1
 		}
 		c.mu.Unlock()
-		if c.connected && (strings.HasPrefix(chName, "#") || strings.HasPrefix(chName, "&")) {
+		if c.connected && isChannel(chName) {
 			c.send("PART " + chName + " :Langas uždarytas")
 		}
 		c.queueRedraw()
