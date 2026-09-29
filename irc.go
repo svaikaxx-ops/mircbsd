@@ -156,6 +156,7 @@ type Client struct {
 	capSASL      bool
 	saslOk       bool // SASL autentifikacija sėkminga (903)
 	saslPending  bool
+	nickAttempts int // 433 bandymų skaitliukas (nick_, nick2, nick3)
 	capAvailable map[string]bool // CAP LS sąrašo kaupimas (tęsinio eilutėms)
 
 	// URL istorija
@@ -754,9 +755,10 @@ func (c *Client) parseIRC(line string) {
 		c.mu.Unlock()
 
 	case "001":
-		// Sėkmingai prisijungta — atstatom backoff
+		// Sėkmingai prisijungta — atstatom backoff ir nick bandymų skaitliuką
 		c.mu.Lock()
 		c.reconnectDelay = 5 * time.Second
+		c.nickAttempts = 0
 		c.mu.Unlock()
 		if len(params) > 1 {
 			c.serverMsg(strings.Join(params[1:], " "))
@@ -1132,14 +1134,32 @@ func (c *Client) parseIRC(line string) {
 	case "433":
 		c.errMsg("Slapyvardis jau naudojamas!")
 		c.mu.Lock()
-		c.nick = c.nick + "_"
-		// Neleisti nick'ui augti be galo ilgu
-		for len(c.nick) > 30 {
-			r := []rune(c.nick)
-			c.nick = string(r[:len(r)-1])
+		var cand string
+		// Bandymų seka: nick_, nick2, nick3 – niekada nesimato ilgesnis kaip 30
+		if c.nickAttempts < 3 {
+			base := strings.TrimRight(c.nick, "_0123456789")
+			if base == "" {
+				base = strings.Repeat("n", 10)
+			}
+			c.nickAttempts++
+			if c.nickAttempts == 1 {
+				cand = base + "_"
+			} else {
+				cand = base + strconv.Itoa(c.nickAttempts)
+			}
+			if r := []rune(cand); len(r) > 30 {
+				cand = string(r[:30])
+			}
+			c.nick = cand
 		}
 		n := c.nick
+		gaveUp := c.nickAttempts >= 3 && cand == ""
 		c.mu.Unlock()
+		if gaveUp {
+			c.errMsg("Paskutinis bandymas baigtas keisti nick po 433 – jungiantis rankiniu būdu /nick")
+			break
+		}
+		c.serverMsg(fmt.Sprintf("Bandomas nick: %s", n))
 		c.send("NICK " + n)
 
 	case "ERROR":

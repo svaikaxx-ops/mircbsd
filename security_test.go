@@ -1093,3 +1093,53 @@ func TestIgnoreMask(t *testing.T) {
 		t.Error("neturi atitikti")
 	}
 }
+
+func TestNickFallbackSequence(t *testing.T) {
+	c := newTestClient()
+	c.mu.Lock()
+	c.nick = "manick"
+	c.mu.Unlock()
+	collect := captureWrites(c)
+
+	// 433 #1 → manick_
+	c.parseIRC(":srv 433 * manick :Nickname is already in use")
+	w := collect(100 * time.Millisecond)
+	if !strings.HasSuffix(w[len(w)-1], "NICK manick_") {
+		t.Errorf("1-as bandymas: %v", w)
+	}
+	// 433 #2 → manick2
+	collect(0)
+	c.parseIRC(":srv 433 * manick_ :Nickname is already in use")
+	w = collect(100 * time.Millisecond)
+	if !strings.HasSuffix(w[len(w)-1], "NICK manick2") {
+		t.Errorf("2-as bandymas: %v", w)
+	}
+	// 433 #3 → manick3
+	collect(0)
+	c.parseIRC(":srv 433 * manick2 :Nickname is already in use")
+	w = collect(100 * time.Millisecond)
+	if !strings.HasSuffix(w[len(w)-1], "NICK manick3") {
+		t.Errorf("3-as bandymas: %v", w)
+	}
+	// 433 #4 – atsargos baigtos, nebeisiunčia NICK
+	collect(0)
+	c.parseIRC(":srv 433 * manick3 :Nickname is already in use")
+	w = collect(100 * time.Millisecond)
+	n := 0
+	for _, s := range w {
+		if strings.HasPrefix(s, "NICK ") {
+			n++
+		}
+	}
+	if n != 3 {
+		t.Errorf("po 433 iš viso turi būti 3 NICK bandymai, gauta %d: %v", n, w)
+	}
+	// 001 atstato skaitliuką
+	c.parseIRC(":srv 001 manick :Welcome")
+	c.mu.Lock()
+	reset := c.nickAttempts == 0
+	c.mu.Unlock()
+	if !reset {
+		t.Error("001 neturi atstatyti nickAttempts")
+	}
+}
