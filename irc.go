@@ -12,13 +12,38 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
 
 // ---- IRC Client ----
 
-const maxMsgLen = 400
+// maxLineBytes – IRC 512 eilutės baitų limitas; PRIVMSG atgaliniam atžvilgiui
+// (antraštė + CRLF + saugumo suma) palieka tiek baitų tekstui.
+const maxLineBytes = 512
+
+// splitForPrivmsg dalija tekstą į dalis, kurios kiekviena po PRIVMSG antraštės
+// tilptų į IRC 512 baitų eilutę. Dalyti reikia baitais (ne rune'ais), nes
+// UTF-8 lietuviškos raidės yra po 2 baitus — kitaip žinutė viršytų limitą.
+// Neperšaukia UTF-8 simbolio prie ribos.
+func splitForPrivmsg(target, text string) []string {
+	budget := maxLineBytes - len("PRIVMSG "+target+" :") - 2 - 45 // 45 = papildomos serverio/bouncer antraštės suma
+	if budget < 100 {
+		budget = 100
+	}
+	var parts []string
+	for len(text) > budget {
+		cut := budget
+		for cut > 0 && !utf8.RuneStart(text[cut]) {
+			cut-- // nepjaunam viduryje simbolio
+		}
+		parts = append(parts, text[:cut])
+		text = text[cut:]
+	}
+	parts = append(parts, text)
+	return parts
+}
 
 type Client struct {
 	mu        sync.Mutex

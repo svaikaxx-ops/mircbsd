@@ -696,16 +696,7 @@ func (c *Client) handleInput(text string) {
 		c.errMsg("Neprisijungta")
 		return
 	}
-	runes := []rune(text)
-	for len(runes) > 0 {
-		chunk := runes
-		if len(chunk) > maxMsgLen {
-			chunk = runes[:maxMsgLen]
-			runes = runes[maxMsgLen:]
-		} else {
-			runes = nil
-		}
-		part := string(chunk)
+	for _, part := range splitForPrivmsg(active.name, text) {
 		c.send(fmt.Sprintf("PRIVMSG %s :%s", active.name, part))
 		c.addMsg(active.name, Message{ts: time.Now(), nick: c.nick, text: part, msgType: MsgChat})
 	}
@@ -814,16 +805,8 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 		target, text := parts[0], parts[1]
 		if c.connected {
-			runes := []rune(text)
-			for len(runes) > 0 {
-				chunk := runes
-				if len(chunk) > maxMsgLen {
-					chunk = runes[:maxMsgLen]
-					runes = runes[maxMsgLen:]
-				} else {
-					runes = nil
-				}
-				c.send(fmt.Sprintf("PRIVMSG %s :%s", target, string(chunk)))
+			for _, part := range splitForPrivmsg(target, text) {
+				c.send(fmt.Sprintf("PRIVMSG %s :%s", target, part))
 			}
 		}
 		c.mu.Lock()

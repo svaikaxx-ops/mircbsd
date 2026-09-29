@@ -96,8 +96,9 @@ func TestHandleInputLongMessageSplit(t *testing.T) {
 	c.mu.Unlock()
 	collect := captureWrites(c)
 
-	// 2.5x maxMsgLen — turi būti 3 dalys
-	text := strings.Repeat("a", maxMsgLen*2+50)
+	// ~2.5x baitų budget (#chan antraštei) — turi būti 3 dalys.
+	// "a" yra 1 baitas; budget = 512-len("PRIVMSG #chan :")-2-45 = 444.
+	text := strings.Repeat("a", 444*2+50)
 	c.handleInput(text)
 	sent := collect(30 * time.Millisecond)
 
@@ -110,7 +111,33 @@ func TestHandleInputLongMessageSplit(t *testing.T) {
 		}
 	}
 	if privmsgs != 3 {
-		t.Errorf("tikėjomės 3 PRIVMSG, gavome %d", privmsgs)
+		t.Errorf("tikėjomės 3 PRIVMSG, gavome %d (total: %d)", privmsgs, totalChars)
+	}
+	// Kiekviena dalis turi tilpti į IRC 512 baitų eilutę
+	for _, s := range sent {
+		if len(s)+2 > maxLineBytes {
+			t.Errorf("eilutė %d baitų — viršytas 512 limitas", len(s)+2)
+		}
+	}
+	// UTF-8 baitais: lietuviškas tekstas per du baitus — tikrinti dalijimą.
+	// Tas pats kolektorius: atskiriam eilutes pagal turinį ("ž").
+	text2 := strings.Repeat("ž", 600) // 1200 baitų
+	c.handleInput(text2)
+	sent2 := collect(30 * time.Millisecond)
+	okBytes := 0
+	for _, s := range sent2 {
+		if !strings.Contains(s, "ž") {
+			continue
+		}
+		if strings.HasPrefix(s, "PRIVMSG #chan :") {
+			okBytes += len([]rune(strings.TrimPrefix(s, "PRIVMSG #chan :")))
+			if len(s)+2 > maxLineBytes {
+				t.Errorf("UTF-8 eilutė %d baitų — viršytas limitas", len(s)+2)
+			}
+		}
+	}
+	if okBytes != 600 {
+		t.Errorf("prarasta UTF-8 žinutė: %d iš 600", okBytes)
 	}
 	if totalChars != len([]rune(text)) {
 		t.Errorf("prarastas tekstas: išsiųsta %d simbolių iš %d", totalChars, len([]rune(text)))

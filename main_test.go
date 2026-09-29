@@ -682,22 +682,20 @@ func TestHighlightURLs(t *testing.T) {
 // ---- Žinučių dalijimas ----
 
 func TestMessageSplitting(t *testing.T) {
-	// Ilga žinutė turi būti dalijama
-	longText := strings.Repeat("a", maxMsgLen*2+50)
-	runes := []rune(longText)
+	// Ilga žinutė turi būti dalijama baitais (splitForPrivmsg)
+	longText := strings.Repeat("a", 444*2+50)
+	parts := splitForPrivmsg("#chan", longText)
 
-	chunks := 0
-	for len(runes) > 0 {
-		size := maxMsgLen
-		if size > len(runes) {
-			size = len(runes)
+	total := 0
+	for _, p := range parts {
+		total += len(p)
+		if line := "PRIVMSG #chan :" + p + "\r\n"; len(line) > maxLineBytes {
+			t.Errorf("eilutė %d baitų — viršyta %d riba", len(line), maxLineBytes)
 		}
-		runes = runes[size:]
-		chunks++
 	}
 
-	if chunks != 3 {
-		t.Errorf("tikėjomės 3 dalių, gavome %d", chunks)
+	if len(parts) != 3 {
+		t.Errorf("tikėjomės 3 dalių, gavome %d", len(parts))
 	}
 }
 
