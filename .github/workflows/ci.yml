@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Testai su race detector
+        run: go test -race -v ./...
+
+      - name: Fuzz smoke (10s)
+        run: |
+          go test -run='^$' -fuzz=FuzzParseIRC -fuzztime=10s .
+          go test -run='^$' -fuzz=FuzzStripIRCFormat -fuzztime=10s .
+          go test -run='^$' -fuzz=FuzzWrapText -fuzztime=10s .
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: freebsd
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: ${{ matrix.goos }}/${{ matrix.goarch }}
+        run: |
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o mircbsd-${{ matrix.goos }}-amd64 .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mircbsd-${{ matrix.goos }}-amd64
+          path: mircbsd-*
