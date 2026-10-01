@@ -196,6 +196,11 @@ type Client struct {
 	scrollOff     int
 	nickScrollOff int
 
+	// chaseUntil: kol galioja, naujos žinutės NEUŽŠALDO vaizdo (istorijos
+	// užšaldymas praleidžiamas) — naudotojas paskutiniu metu slinko žemyn,
+	// todėl jo slinktis turi nugalėti ateinančias žinutes.
+	chaseUntil time.Time
+
 	history    []string
 	historyIdx int
 

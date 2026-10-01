@@ -183,6 +183,7 @@ func (c *Client) handleKey(b []byte) {
 			if empty {
 				c.mu.Lock()
 				c.scrollOff += 3
+				c.chaseUntil = time.Time{} // slinkimas aukštyn — vėl užšaldom
 				c.mu.Unlock()
 				c.queueRedraw()
 			} else {
@@ -197,6 +198,10 @@ func (c *Client) handleKey(b []byte) {
 				c.mu.Lock()
 				if c.scrollOff > 0 {
 					c.scrollOff -= 3
+					if c.scrollOff < 0 {
+						c.scrollOff = 0
+					}
+					c.chaseUntil = time.Now().Add(1500 * time.Millisecond)
 				}
 				c.mu.Unlock()
 				c.queueRedraw()
@@ -207,14 +212,24 @@ func (c *Client) handleKey(b []byte) {
 		case '5':
 			c.mu.Lock()
 			c.scrollOff += c.height - 4
+			c.chaseUntil = time.Time{} // slinkimas aukštyn — vėl užšaldom vaizdą
 			c.mu.Unlock()
 			c.queueRedraw()
 			return
 		case '6':
 			c.mu.Lock()
-			c.scrollOff -= c.height - 4
-			if c.scrollOff < 0 {
+			if len(b) >= 4 && b[3] == ';' {
+				// Shift+PgDn — grįžti apačion
 				c.scrollOff = 0
+				c.chaseUntil = time.Time{}
+			} else {
+				c.scrollOff -= c.height - 4
+				if c.scrollOff < 0 {
+					c.scrollOff = 0
+				}
+				// slinktis žemyn: kol gyva, užšaldymas praleidžiamas,
+				// kad plūstančios žinutės neatstumtų vaizdo atgal
+				c.chaseUntil = time.Now().Add(1500 * time.Millisecond)
 			}
 			c.mu.Unlock()
 			c.queueRedraw()
@@ -484,8 +499,32 @@ func (c *Client) doSearch(ch *Channel, query string) {
 		m := ch.messages[i]
 		textLow := strings.ToLower(stripIRCFormat(m.text) + " " + m.nick)
 		if strings.Contains(textLow, queryLow) {
-			totalMsgs := len(ch.messages)
-			c.scrollOff = totalMsgs - i - 1
+			// scrollOff matuojamas BRAIŽOMOMIS eilutėmis, ne žinutėmis —
+			// ilga žinutė užima kelias eilutes, todėl ankstyvesnis
+			// „totalMsgs - i - 1“ rodė ne ten, kur rasta žinutė yra.
+			// Astatom langą taip, kad rastos žinutės paskutinė eilutė
+			// atsidurtų matomo lango apačioje.
+			msgW := c.width - chanListWidth - 2
+			if isChannel(ch.name) {
+				msgW -= nickListWidth + 1
+			}
+			if msgW < 10 {
+				msgW = 10
+			}
+			myNick := c.nick
+
+			foundCount := len(ch.messages[i].renderLines(msgW, myNick))
+			firstLine := 0
+			for j := 0; j < i; j++ {
+				firstLine += len(ch.messages[j].renderLines(msgW, myNick))
+			}
+			totalLines := firstLine + foundCount
+			for j := i + 1; j < len(ch.messages); j++ {
+				totalLines += len(ch.messages[j].renderLines(msgW, myNick))
+			}
+			// langas žemiau matomų eilučių, paskutinė rastos žinutės eilutė apačioje:
+			// paskutinės eilutės indeksas = firstLine + foundCount - 1
+			c.scrollOff = totalLines - (firstLine + foundCount)
 			if c.scrollOff < 0 {
 				c.scrollOff = 0
 			}
@@ -1023,6 +1062,11 @@ func (c *Client) handleCmd(cmd, args string) {
 	case "clear":
 		c.mu.Lock()
 		c.channels[c.activeIdx].messages = nil
+		// Svarbu: nuplauti ir aktyvios sesijos slinktį — kitaip buvusi
+		// pozicija nuo apačios lieka „kabanti" tuščioje istorijoje, o
+		// naujos žinutės dar labiau jos nesumažina (langas lieka tuščias).
+		c.scrollOff = 0
+		c.chaseUntil = time.Time{}
 		c.channels[c.activeIdx].scrollOff = 0
 		c.channels[c.activeIdx].renderGen++
 		c.mu.Unlock()
@@ -1283,6 +1327,7 @@ func (c *Client) handleCmd(cmd, args string) {
 			"/quit                                išeiti",
 			"───────────────────────────────────────────────────",
 			"PgUp/PgDn       scroll      ↑↓   scroll / istorija",
+			"Shift+PgDn      grįžti apačion (šuolis iš istorijos)",
 			"Ctrl+N/P        kanalai     Ctrl+R   paieška",
 			"Ctrl+L          ekrano atnaujinimas  Ctrl+W  ištrinti žodį",
 			"Ctrl+←/→        žodžio navigacija",
@@ -1378,11 +1423,12 @@ func (c *Client) handleMouse(b []byte) {
 		c.queueRedraw()
 	case btn == 65: // ratukas žemyn
 		c.mu.Lock()
+		c.scrollOff -= 3
+		if c.scrollOff < 0 {
+			c.scrollOff = 0
+		}
 		if c.scrollOff > 0 {
-			c.scrollOff -= 3
-			if c.scrollOff < 0 {
-				c.scrollOff = 0
-			}
+			c.chaseUntil = time.Now().Add(1500 * time.Millisecond)
 		}
 		c.mu.Unlock()
 		c.queueRedraw()

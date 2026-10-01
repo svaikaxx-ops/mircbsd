@@ -101,6 +101,7 @@ mircbsd irc.data.lt 6667 manick
 | Klavišai | Veiksmas |
 |---------|---------|
 | `PgUp` / `PgDn` | Slinkti žinutėmis |
+| `Shift+PgDn` | Šuolis apačion (grįžti prie naujų žinučių) |
 | `↑` / `↓` | Komandų istorija |
 | `Ctrl+N` / `Ctrl+P` | Kitas / ankstesnis kanalas |
 | `F1`–`F12` | Kanalas pagal numerį |

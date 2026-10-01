@@ -4,6 +4,36 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [0.4.1] – 2026-10-01 – slinkimo (scroll) taisymai
+
+### Taisyta
+
+- **Slinktis žemyn nebe pralaimi naujoms žinutėms** – būnant atslinkus
+  aukštyn užimtame kanale naudotojas negalėdavo grįžti prie naujų
+  žinučių: kiekviena atėjusi žinutė padidindavo `scrollOff` tiek pat,
+  kiek vienas PgDn spaudimas sumažindavo (plūstant žinutėms slinktis
+  žemyn nešaudavo su istorijos užšaldymu ir pralaimėdavo). Dabar slenkant
+  žemyn (PgDn, ↓, ratukas) užšaldymas 1,5 s praleidžiamas, o apačioje
+  esantis antgalis rodo, kiek eilučių lieka žemiau:
+  `↑ SCROLL (+N eilučių žemiau)`.
+
+- **`/clear` nebeužblokuoja ekrano** – išvalius kanalą esant atslinktam
+  aukštyn vaizdui, sesijos slinktis atstatydavo iš naujo ir langas
+  likdavo tuščias neribotam laikui (naujos žinutės tik dar labiau
+  nutoldavo slinktį nuo apačios). Dabar `/clear` slinktį atstato į
+  apačią.
+
+- **`Ctrl+R` paieškos pozicionavimas eilutėmis, ne žinutėmis** – rasta
+  žinutė, užimanti daugiau nei vieną eilutę, atsidūrdavo ne ten, kur
+  turėtų (scrollOff buvo matuojamas žinutėmis, o braižymas vaikšto
+  eilutėmis). Dabar rastos žinutės paskutinė eilutė atsistoja matomo
+  lango apačioje.
+
+### Nauja
+
+- `Shift+PgDn` – šuolis apačion iš istorijos (vienas spaudimas;
+  dokumentuota README ir /help).
+
 ## [0.4.0] – 2026-09-29 – patogumo funkcijos
 
 ### Nauja

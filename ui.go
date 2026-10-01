@@ -772,7 +772,11 @@ func (c *Client) draw() {
 		prevCount = totalLines
 	}
 	active.drawLineCount = totalLines
-	if scrollOff > 0 && wasDrawn && totalLines > prevCount {
+	// Jei naudotojas ką tik slinko žemyn (chaseUntil galioja), neužšaldom:
+	// kitaip atėję nauji eilučių kiekis grąžų į apačią padaro neįmanoma —
+	// kiekviena žinutė padidintų scrollOff tiek pat, kiek slinktis nuskauso.
+	chase := time.Now().Before(c.chaseUntil)
+	if scrollOff > 0 && wasDrawn && totalLines > prevCount && !chase {
 		scrollOff += totalLines - prevCount
 		c.scrollOff = scrollOff
 	}
@@ -797,8 +801,12 @@ func (c *Client) draw() {
 	}
 
 	if scrollOff > 0 {
+		banner := fmt.Sprintf(" ↑ SCROLL (+%d eilučių žemiau) ─ PgDn/↓ žemyn, Shift+PgDn apačion ", scrollOff)
+		if runes := []rune(banner); len(runes) > msgW {
+			banner = string(runes[:msgW])
+		}
 		out.WriteString(moveTo(msgAreaTop, msgColStart))
-		out.WriteString(ansiYellow + ansiBold + " ↑ SCROLL ─ PgDn/↓ grįžti žemyn " + ansiReset)
+		out.WriteString(ansiYellow + ansiBold + banner + ansiReset)
 	}
 
 	// --- Nick sąrašas ---
