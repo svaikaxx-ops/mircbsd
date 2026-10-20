@@ -255,3 +255,59 @@ func TestIsValidTargetRejectsBad(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================
+// K21 — isValidServer palaiko IPv6
+// ============================================================
+
+// TestIsValidServerAcceptsIPv6 — IPv6 adresai turi būti priimami (anksčiau
+// „:“ nebuvo leistinas simbolis, todėl „::1“ atmetamas).
+func TestIsValidServerAcceptsIPv6(t *testing.T) {
+	good := []string{
+		"::1",
+		"::",
+		"2001:db8::1",
+		"fe80::1",
+		"1:2:3:4:5:6:7:8",
+		"1::2:3:4:5:6:7",
+	}
+	for _, s := range good {
+		if !isValidServer(s) {
+			t.Errorf("BUG: isValidServer(%q) = false, turėtų būti true", s)
+		}
+	}
+}
+
+// TestIsValidServerRejectsBadIPv6 — neteisingi IPv6 adresai atmetami.
+func TestIsValidServerRejectsBadIPv6(t *testing.T) {
+	bad := []string{
+		"::1::2",        // du „::“
+		"gggg::1",       // ne heksadekšimaliniai
+		"12345::1",      // per ilga grupė
+		"[::1]",         // ZIP forma (adresas ir portas atskirai)
+		"fe80::1%eth0",  // zone ID
+		"1:2:3:4:5:6:7", // be „::“ — ne 8 grupės
+		"1:2:3:4:5:6:7:8:9",
+		"",
+	}
+	for _, s := range bad {
+		if isValidServer(s) {
+			t.Errorf("BUG: isValidServer(%q) = true, turėtų būti false", s)
+		}
+	}
+}
+
+// TestJoinHostPortIPv6 — IPv6 adresas jungiamas su portu laiptų formatu.
+func TestJoinHostPortIPv6(t *testing.T) {
+	cases := []struct{ host, port, want string }{
+		{"irc.libera.chat", "6697", "irc.libera.chat:6697"},
+		{"127.0.0.1", "6667", "127.0.0.1:6667"},
+		{"::1", "6667", "[::1]:6667"},
+		{"2001:db8::1", "6697", "[2001:db8::1]:6697"},
+	}
+	for _, c := range cases {
+		if got := joinHostPort(c.host, c.port); got != c.want {
+			t.Errorf("BUG: joinHostPort(%q, %q) = %q, norėtų %q", c.host, c.port, got, c.want)
+		}
+	}
+}

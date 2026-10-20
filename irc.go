@@ -288,8 +288,7 @@ type Client struct {
 	pasteCollectUntil time.Time // kol paste „teka" iš terminalo — renkame, neconfirm
 
 	// Ping keepalive
-	lastPong   time.Time
-	pingTicker *time.Ticker
+	lastPong time.Time
 
 	channels    []*Channel
 	activeIdx   int
@@ -307,6 +306,7 @@ type Client struct {
 	inputPos      int
 	scrollOff     int
 	nickScrollOff int
+	chanScrollOff int // kanalų sąrašo slinktis (sidebar'ui)
 
 	// chaseUntil: kol galioja, naujos žinutės NEUŽŠALDO vaizdo (istorijos
 	// užšaldymas praleidžiamas) — naudotojas paskutiniu metu slinko žemyn,
@@ -325,8 +325,7 @@ type Client struct {
 	// Paieška
 	searchMode      bool
 	searchQuery     string
-	searchResult    []int // eilučių indeksai
-	searchResultIdx int   // paskutinis rastas indeksas (-1 = nerasta)
+	searchResultIdx int // paskutinis rastas indeksas (-1 = nerasta)
 	lastSearchQuery string
 
 	logDir   string
@@ -708,6 +707,20 @@ func (c *Client) switchCh(idx int) {
 		c.channels[idx].highlight = 0
 		c.nickScrollOff = 0
 		c.searchMode = false
+		// Kanalų sąrašo slinktis — aktyvus kanalas turi būti MATOMAS.
+		// (Slikties ribą skaičiuojame čia, po c.mu — visibleChannelRows()
+		// ima patį c.mu, todėl negalima jo iškviesti laikant užrakintą.)
+		rows := c.height - 4
+		if rows < 1 {
+			rows = 1
+		}
+		if idx < c.chanScrollOff {
+			// Peršokome į viršų — slinktis grįžta, kad kanalas matytųsi.
+			c.chanScrollOff = idx
+		} else if idx >= c.chanScrollOff+rows {
+			// Peršokome žemyn — slinktis nusikelia iki kanalo.
+			c.chanScrollOff = idx
+		}
 	}
 	c.mu.Unlock()
 	c.queueRedraw()
@@ -1003,9 +1016,15 @@ func (c *Client) connectLoop() {
 }
 
 // sleepReconnect laukia delay, bet anksčiau pasitraukia, kai pakeičiama epocha.
+//
+// Anksčiau kiekvieną 50 ms sukūrė naują `time.After` — per 5 minučių
+// laukimo tai ~6000 nenaudojamų timerių (kiekvienas savo runtime.timer).
+// Dabar — VIENAS periodinis laikiklis.
 func (c *Client) sleepReconnect(delay time.Duration, gen int) bool {
 	t := time.NewTimer(delay)
 	defer t.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		select {
 		case <-t.C:
@@ -1013,7 +1032,7 @@ func (c *Client) sleepReconnect(delay time.Duration, gen int) bool {
 			stale := c.connectGen != gen
 			c.mu.Unlock()
 			return !stale
-		case <-time.After(50 * time.Millisecond):
+		case <-tick.C:
 			c.mu.Lock()
 			stale := c.connectGen != gen
 			c.mu.Unlock()
@@ -1027,7 +1046,7 @@ func (c *Client) sleepReconnect(delay time.Duration, gen int) bool {
 func (c *Client) doConnect(gen int) {
 	c.mu.Lock()
 	srvName := c.server
-	srv := c.server + ":" + c.port
+	srv := joinHostPort(c.server, c.port)
 	useTLS := c.useTLS
 	nick := c.nick
 	staleGen := c.connectGen != gen
@@ -1121,7 +1140,12 @@ func (c *Client) doConnect(gen int) {
 		}
 	}()
 
-	// Ping keepalive
+	// Ping keepalive.
+	//
+	// PING siunčiamas TIESIOGINIAI į šios jungties writeCh (newWriteCh), o
+	// ne per c.send() — c.send() naudoja bendrą c.writeCh, kuris po
+	// /connect jau rodo į NAUJĄ kanalą. Senas ping tick todėl rašytų
+	// seną, nebevykdomą kanalą (serveris negauna PONG → „Ping timeout“).
 	pingStop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
@@ -1132,8 +1156,9 @@ func (c *Client) doConnect(gen int) {
 				c.mu.Lock()
 				lastPong := c.lastPong
 				connected := c.connected
+				stale := c.connectGen != gen
 				c.mu.Unlock()
-				if !connected {
+				if !connected || stale {
 					return
 				}
 				if time.Since(lastPong) > 120*time.Second {
@@ -1141,7 +1166,11 @@ func (c *Client) doConnect(gen int) {
 					conn.Close()
 					return
 				}
-				c.send(fmt.Sprintf("PING :%d", time.Now().Unix()))
+				select {
+				case newWriteCh <- fmt.Sprintf("PING :%d", time.Now().Unix()):
+				default:
+					// Eilė pilna — praleidžiame šį PING.
+				}
 			case <-pingStop:
 				return
 			}
@@ -1402,12 +1431,16 @@ func (c *Client) parseIRC(line string) {
 
 	case "QUIT":
 		msg := p(0)
+		// Casemapping'ą imame VIENĄ kartą — c.nickEqual() kiekvieną kartą
+		// ima isupMu.RLock, o cikle su 100 kanalų × 500 nick'ų tai 50 000
+		// rakinio įvedių (RWMutex.skalių operacija).
+		_, _, _, cm, _ := c.isupSnapshot()
 		c.mu.Lock()
 		// Rasti kanalus kuriuose buvo nick PRIEŠ pašalinimą
 		var affected []*Channel
 		for _, ch := range c.channels {
 			for _, n := range ch.nicks {
-				if c.nickEqual(stripMode(n, ch.prefixSigns()), fromNick) {
+				if nickEqual(stripMode(n, ch.prefixSigns()), fromNick, cm) {
 					affected = append(affected, ch)
 					break
 				}
@@ -1465,14 +1498,26 @@ func (c *Client) parseIRC(line string) {
 
 	case "NICK":
 		newNick := p(0)
+		if newNick == "" {
+			return
+		}
 		c.mu.Lock()
 		if c.nickEqual(fromNick, c.nick) {
 			c.nick = newNick
 		}
+		// Surinkti kanalus, kuriuose buvo senasis nick — ten rodykime
+		// pranešimą („*** senas → naujas“), kaip mIRC.
+		var nickChans []string
 		for _, ch := range c.channels {
-			ch.renameNick(fromNick, newNick)
+			if ch.hasNick(fromNick) {
+				ch.renameNick(fromNick, newNick)
+				nickChans = append(nickChans, ch.name)
+			}
 		}
 		c.mu.Unlock()
+		for _, chName := range nickChans {
+			c.addMsg(chName, Message{ts: now, nick: fromNick, text: newNick, msgType: MsgNick})
+		}
 		c.serverMsg(fmt.Sprintf("%s → %s", fromNick, newNick))
 
 	case "MODE":
@@ -1679,6 +1724,48 @@ func (c *Client) parseIRC(line string) {
 
 	case "366":
 		// End of NAMES
+
+	case "315": // RPL_ENDOFWHO — WHO sąrašo pabaiga
+		c.serverMsg(fmt.Sprintf("── WHO %s: pabaiga ──", p(1)))
+
+	case "352": // RPL_WHOREPLY: <client> <channel> <user> <host> <server> <nick> <flags> :<hopcount> <realname>
+		// Anksčiau šis numerikas krisdavo į `default:` ir buvo rodomas
+		// žaliai kaip „[352] …“ — vartotojas nematė, kas yra kanale.
+		whoChan := p(1)
+		whoNick := p(5)
+		whoFlags := p(6)
+		if whoNick != "" {
+			c.serverMsg(fmt.Sprintf("│  %-20s %s%s", whoChan, whoFlags, whoNick))
+		}
+
+	case "354": // RPL_WHOSPCRPL — WHOIS stilingas (whowas)
+		whoNick := p(1)
+		whoFlags := p(2)
+		whoReal := p(7)
+		if whoNick != "" {
+			c.serverMsg(fmt.Sprintf("│  %s%s — %s", whoFlags, whoNick, whoReal))
+		}
+
+	case "367": // RPL_BANLIST: <client> <channel> <mask> <who> <when>
+		c.serverMsg(fmt.Sprintf("  ban: %s", p(2)))
+	case "368": // RPL_ENDOFBANLIST
+		c.serverMsg("── Banų sąrašo pabaiga ──")
+	case "369": // RPL_ENDOFWHOWAS
+		c.serverMsg("── WHOWAS pabaiga ──")
+
+	case "251": // RPL_LUSERCLIENT
+		c.serverMsg(fmt.Sprintf("Serveris: %s vartotojų, %s nežinomų, %s kanalų", p(1), p(2), p(3)))
+	case "252": // RPL_LUSEROP
+		c.serverMsg(fmt.Sprintf("Operatorių: %s", p(1)))
+	case "253": // RPL_LUSERUNKNOWN
+		c.serverMsg(fmt.Sprintf("Nežinomų serverių: %s", p(1)))
+	case "255": // RPL_LUSERCHANNELS
+		c.serverMsg(fmt.Sprintf("Kanalų: %s", p(1)))
+
+	case "265": // RPL_LOCALUSERS
+		c.serverMsg(fmt.Sprintf("Vietinių vartotojų: %s, maks. %s", p(1), p(2)))
+	case "266": // RPL_GLOBALUSERS
+		c.serverMsg(fmt.Sprintf("Iš viso vartotojų: %s, maks. %s", p(1), p(2)))
 
 	case "391": // RPL_TIME
 		c.serverMsg(fmt.Sprintf("Serverio laikas [%s]: %s", p(1), p(2)))
@@ -1922,6 +2009,9 @@ func (c *Client) parseIRC(line string) {
 	case "AWAY": // away-notify cap
 		if fromNick != "" {
 			reason := p(0)
+			// Casemapping'ą imame vieną kartą (cikle kiekvienas
+			// c.nickEqual() → isupMu.RLock).
+			_, _, _, cm, _ := c.isupSnapshot()
 			if reason != "" {
 				nickLow := strings.ToLower(fromNick)
 				c.mu.Lock()
@@ -1932,7 +2022,7 @@ func (c *Client) parseIRC(line string) {
 					c.mu.Unlock()
 					if active != nil {
 						for _, n := range active.nicks {
-							if c.nickEqual(stripMode(n, active.prefixSigns()), fromNick) {
+							if nickEqual(stripMode(n, active.prefixSigns()), fromNick, cm) {
 								c.addMsg(active.name, Message{ts: now, nick: fromNick,
 									text:    fromNick + " yra away: " + reason,
 									msgType: MsgServer})
@@ -1953,7 +2043,7 @@ func (c *Client) parseIRC(line string) {
 				c.mu.Unlock()
 				if wasAway && active != nil {
 					for _, n := range active.nicks {
-						if c.nickEqual(stripMode(n, active.prefixSigns()), fromNick) {
+						if nickEqual(stripMode(n, active.prefixSigns()), fromNick, cm) {
 							c.addMsg(active.name, Message{ts: now, nick: fromNick,
 								text:    fromNick + " grįžo iš away",
 								msgType: MsgServer})
@@ -2076,11 +2166,25 @@ func isValidChannelFor(ch string, chantypes string) bool {
 	return len(ch) > 1
 }
 
+// joinHostPort sujungia serverio adresą ir portą tinkamu formatu.
+//
+// IPv6 adresas turi būti apgaubtas laiptaisais: „[::1]:6667“ — be jų
+// „::1:6667“ yra neaiškus adresas (portas arba adresas?).
+func joinHostPort(host, port string) string {
+	if strings.Contains(host, ":") {
+		return "[" + host + "]:" + port
+	}
+	return host + ":" + port
+}
+
 // isValidServer tikrina serverio pavadinimą: raidės, skaičiai ir
 // pagrindiniai adresės simboliai (.-_). Be to patikrinama, kad pavadinime
 // nėra tarpų, CRLF ar valdymo simbolių — serverio vardas įrašomas į IRC
 // komandas (NICK, USER, JOIN) ir į žurnalų katalogo vardą, todėl turi
 // būti apsaugotas nuo komandų injekcijos.
+//
+// Palaikomi ir IPv6 adresai (pvz. „::1“, „2001:db8::1“) — anksčiau jie
+// buvo atmetami, nes „:“ nebuvo leistinas simbolis.
 func isValidServer(server string) bool {
 	if server == "" || len(server) > 100 {
 		return false
@@ -2089,6 +2193,10 @@ func isValidServer(server string) bool {
 	// pavadinime; tokio serverio vardo nepriimame.
 	if strings.Contains(server, "..") {
 		return false
+	}
+	// IPv6 adresas — tik heksadecimaliniai skaičiai, „:“ ir „::“.
+	if strings.Contains(server, ":") {
+		return isValidIPv6(server)
 	}
 	for _, r := range server {
 		switch {
@@ -2099,6 +2207,64 @@ func isValidServer(server string) bool {
 		}
 	}
 	return true
+}
+
+// isValidIPv6 tikrina IPv6 adreso formą: 2–8 grupės, kiekviena 1–4
+// heksadecimaliniai skaičiai, atskirta „:“; galima ir „::“ (sufiksso
+// trumpinimas). ZIP formata („[::1]:6667“) NEPRIIMAMI — adresas ir portas
+// perduodami atskirai.
+//
+// Zone ID („fe80::1%eth0“) NEPRIIMAMI — retas atvejis IRC serveriams, o
+// „%“ simbolis apsunkintų žurnalų katalogų pavadinimų apsaugą.
+func isValidIPv6(s string) bool {
+	if strings.ContainsAny(s, "[]%") {
+		return false
+	}
+	// „::“ gali būti tik VIENAS.
+	if strings.Count(s, "::") > 1 {
+		return false
+	}
+	var groups []string
+	if i := strings.Index(s, "::"); i >= 0 {
+		groups = append(groups, splitIPv6Groups(s[:i])...)
+		groups = append(groups, splitIPv6Groups(s[i+2:])...)
+		// Su „::“ — nuo 0 iki 7 grupių (viena vieta skirta nuliniams).
+		if len(groups) > 7 {
+			return false
+		}
+	} else {
+		groups = splitIPv6Groups(s)
+		// Be „::“ — lygiai 8 grupės.
+		if len(groups) != 8 {
+			return false
+		}
+	}
+	for _, g := range groups {
+		if len(g) == 0 || len(g) > 4 {
+			return false
+		}
+		for _, r := range g {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// splitIPv6Groups skaido IPv6 adreso dalį į grupes. Tuščios grupės
+// (iš „:“ arba „::“) atmestos — tikrosios grupės tikrinamos atskirai.
+func splitIPv6Groups(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, g := range strings.Split(s, ":") {
+		if g != "" {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // isValidNick tikrina nick pagal IRC taisykles: leistini tik RFC nick simboliai

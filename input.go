@@ -142,6 +142,16 @@ func (c *Client) handleKey(b []byte) {
 			c.nickScrollOff++
 			c.mu.Unlock()
 			c.queueRedraw()
+		case 'H': // Ctrl+Home — kanalų sąrašo slinktis į viršų
+			c.mu.Lock()
+			c.chanScrollOff = 0
+			c.mu.Unlock()
+			c.queueRedraw()
+		case 'F': // Ctrl+End — kanalų sąrašo slinktis į apačią
+			c.mu.Lock()
+			c.chanScrollOff = len(c.channels)
+			c.mu.Unlock()
+			c.queueRedraw()
 		case 'C': // Ctrl+Right — žodis pirmyn
 			c.mu.Lock()
 			pos := c.inputPos
@@ -1160,6 +1170,12 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.chaseUntil = time.Time{}
 		activeCh.scrollOff = 0
 		activeCh.renderGen++
+		// Cache'ą reikia IŠTRINTI, ne tik „panaikinti“: senos eilutės
+		// liko cache'e, o žinutės buvo ištrintos — inkrementalus cache'as
+		// tikėtųsi, kad cache'e yra N žinučių, kurių jau nėra.
+		activeCh.rendered = nil
+		activeCh.renderedGen = -1
+		activeCh.renderedMsgCount = 0
 		c.mu.Unlock()
 		c.queueRedraw()
 
@@ -1565,8 +1581,12 @@ func (c *Client) handleMouse(b []byte) {
 		c.mu.Lock()
 		top := c.msgAreaTop
 		nChan := len(c.channels)
+		chanScroll := c.chanScrollOff
 		c.mu.Unlock()
-		idx := y - top
+		// Kanalų sąrašas gali būti paslinktas — spustelėjusio eilutės
+		// kanalas atsiranda ne tiesioginiu indeksu, o su slinkties
+		// poslinkiu.
+		idx := y - top + chanScroll
 		if x <= chanListWidth && idx >= 0 && idx < nChan {
 			c.switchCh(idx)
 		}

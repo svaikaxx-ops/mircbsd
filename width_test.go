@@ -7,8 +7,10 @@ package main
 // plotis) ir/teisinga (lietuviškos raidės, CJK, emoji) pusės.
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestWidthRangesSorted — intervalai turi būti surušiuoti, nes paieška
@@ -205,5 +207,152 @@ func TestRuneClustersNoSplit(t *testing.T) {
 	cl = runeClusters("abc")
 	if len(cl) != 3 {
 		t.Errorf("runeClusters(\"abc\") = %q, norėtų 3", cl)
+	}
+}
+
+// ============================================================
+// Nick'ų įstatymas į surūšiuotą sąrašą (našumo optimizacija)
+// ============================================================
+
+// TestAddNickKeepsSortOrder — addNick įstatydamas nick'ą į savo vietą
+// turi duoti TOKIĄ patį žaidimą kaip pilnas sortNicks. Anksčiau addNick
+// kiekvieną kartą perrankydavo visą sąrašą (O(n log n) įterpimui).
+func TestAddNickKeepsSortOrder(t *testing.T) {
+	signs := "@+"
+	base := []string{
+		"@alice", "bob", "+carol", "@dave", "erin", "@frank", "+gina", "hank",
+		"@ivan", "jill", "@kate", "leo", "@mike", "nina", "op", "@pam", "quinn",
+	}
+	// Įvairios įterpimo tvarkos — per 20 kartų sumaišoma.
+	for iter := 0; iter < 20; iter++ {
+		names := append([]string(nil), base...)
+		// paprastas pseudoatsitiktinis sumaišymas (deterministinis)
+		for i := len(names) - 1; i > 0; i-- {
+			j := (i*7 + iter*13) % (i + 1)
+			names[i], names[j] = names[j], names[i]
+		}
+
+		ch := &Channel{name: "#t", casemapping: "ascii"}
+		for _, n := range names {
+			ch.addNick(n)
+		}
+
+		ref := append([]string(nil), names...)
+		sortNicks(ref, signs)
+
+		if len(ch.nicks) != len(ref) {
+			t.Fatalf("iter %d: %d nick'ų, o turėtų būti %d", iter, len(ch.nicks), len(ref))
+		}
+		for i := range ref {
+			if ch.nicks[i] != ref[i] {
+				t.Fatalf("iter %d, poz %d: addNick=%q, sortNicks=%q", iter, i, ch.nicks[i], ref[i])
+			}
+		}
+	}
+}
+
+// ============================================================
+// Inkrementalus renderio cache'as
+// ============================================================
+
+// TestIncrementalRenderCacheMatchesFullRender — cache'as turi duoti
+// IDENTIŠKĄ vaizdą kaip pilnas renderiavimas, o pridedant naują žinutę
+// senos eilutės turi LIKTI nepakitusios (tik naujos pridedamos).
+func TestIncrementalRenderCacheMatchesFullRender(t *testing.T) {
+	c := newTestClient()
+	c.width = 100
+	c.height = 30
+	c.mu.Lock()
+	c.ensureCh("#bench")
+	ch := c.channels[1]
+	c.activeIdx = 1
+	for i := 0; i < 50; i++ {
+		ch.addMsg(Message{ts: time.Now(), nick: "k", text: fmt.Sprintf("pranesimas %d", i), msgType: MsgChat})
+	}
+	c.mu.Unlock()
+
+	silenceStdout(t, c.draw)
+	c.mu.Lock()
+	cached := append([]string(nil), ch.rendered...)
+	cachedCount := ch.renderedMsgCount
+	c.mu.Unlock()
+
+	if cachedCount != 50 {
+		t.Fatalf("cache: %d žinučių, norėtų 50", cachedCount)
+	}
+
+	// Pridedame dar 10 — cache turi IŠPLĖSTIS, o ne nukirti senas
+	for i := 50; i < 60; i++ {
+		ch.addMsg(Message{ts: time.Now(), nick: "k", text: fmt.Sprintf("pranesimas %d", i), msgType: MsgChat})
+	}
+	silenceStdout(t, c.draw)
+	c.mu.Lock()
+	cached2 := append([]string(nil), ch.rendered...)
+	cachedCount2 := ch.renderedMsgCount
+	c.mu.Unlock()
+
+	if cachedCount2 != 60 {
+		t.Fatalf("cache po pratęsimo: %d žinučių, norėtų 60", cachedCount2)
+	}
+	if len(cached2) <= len(cached) {
+		t.Errorf("cache neišaugo: %d → %d", len(cached), len(cached2))
+	}
+	for i := range cached {
+		if cached2[i] != cached[i] {
+			t.Errorf("BUG: eilutė %d pasikeitė: %q → %q", i, cached[i], cached2[i])
+		}
+	}
+
+	// Pilnas renderiavimas turi duoti TOKIĄ patį
+	msgW := c.width - chanListWidth - 2 - (nickListWidth + 1)
+	full := []string{}
+	for _, m := range ch.messages {
+		full = append(full, m.renderLines(msgW, c.nick)...)
+	}
+	if strings.Join(full, "\n") != strings.Join(cached2, "\n") {
+		t.Errorf("BUG: cache ≠ pilnas renderiavimas (%d vs %d eilutės)", len(cached2), len(full))
+	}
+}
+
+// TestClearResetsRenderCache — /clear ištrina žinutes, todėl cache'as
+// turi būti IŠTRINTAS (kitaip inkrementalus cache'as rodytų senas
+// žinutes).
+func TestClearResetsRenderCache(t *testing.T) {
+	c := newTestClient()
+	c.width = 100
+	c.height = 30
+	c.mu.Lock()
+	c.ensureCh("#bench")
+	ch := c.channels[1]
+	c.activeIdx = 1
+	for i := 0; i < 20; i++ {
+		ch.addMsg(Message{ts: time.Now(), nick: "k", text: fmt.Sprintf("pranesimas %d", i), msgType: MsgChat})
+	}
+	c.mu.Unlock()
+
+	silenceStdout(t, c.draw)
+	c.mu.Lock()
+	before := len(ch.rendered)
+	c.mu.Unlock()
+	if before == 0 {
+		t.Fatal("BUG: cache tuščias po pirmo braižimo")
+	}
+
+	c.handleCmd("clear", "")
+
+	c.mu.Lock()
+	after := len(ch.rendered)
+	count := ch.renderedMsgCount
+	msgs := len(ch.messages)
+	c.mu.Unlock()
+
+	if after != 0 {
+		t.Errorf("BUG: po /clear cache turi %d eilučių, turėtų būti 0", after)
+	}
+	if count != 0 {
+		t.Errorf("BUG: po /clear renderedMsgCount = %d, turėtų būti 0", count)
+	}
+	if msgs != 0 {
+		t.Errorf("BUG: po /clear liko %d žinučių", msgs)
 	}
 }

@@ -3,6 +3,7 @@ package main
 // Protokolo ir renderio radiniai (K5, K6, K7, K9, K11, K14, K15, K18).
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -496,5 +497,217 @@ func TestCapDelRemovesActiveCap(t *testing.T) {
 	c.mu.Unlock()
 	if active {
 		t.Error("BUG: CAP DEL nepašalino aktyvaus capa")
+	}
+}
+
+// ============================================================
+// K22 — NICK komanda rodo pranešimą kanaluose
+// ============================================================
+
+// TestNickChangeShowsInChannel — nick'o pakeitimas rodomas kanale, kuriame
+// tas nickas buvo (kaip mIRC). Anksčiau pranešimas matomas tik serverio
+// kanalo lange.
+func TestNickChangeShowsInChannel(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":testnick!u@h JOIN #kanalas")
+	c.parseIRC(":senas!u@h JOIN #kanalas")
+	c.parseIRC(":senas!u@h NICK naujas")
+
+	c.mu.Lock()
+	ch := c.findCh("#kanalas")
+	var texts []string
+	if ch != nil {
+		for _, m := range ch.messages {
+			texts = append(texts, m.text)
+		}
+	}
+	c.mu.Unlock()
+
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, "naujas") {
+		t.Errorf("BUG: nick'o pakeitimas nerodomas kanale: %q", joined)
+	}
+	// Pranešimo tipas turi būti MsgNick.
+	c.mu.Lock()
+	ch = c.findCh("#kanalas")
+	found := false
+	if ch != nil {
+		for _, m := range ch.messages {
+			if m.msgType == MsgNick && m.nick == "senas" {
+				found = true
+			}
+		}
+	}
+	c.mu.Unlock()
+	if !found {
+		t.Error("BUG: nėra MsgNick pranešimo kanale")
+	}
+}
+
+// TestNickChangeRenamesInChannel — senasis nick'as turi būti pakeistas
+// nick'ų sąraše.
+func TestNickChangeRenamesInChannel(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":senas!u@h JOIN #kanalas")
+	c.parseIRC(":senas!u@h NICK naujas")
+
+	c.mu.Lock()
+	ch := c.findCh("#kanalas")
+	var nicks []string
+	if ch != nil {
+		nicks = append(nicks, ch.nicks...)
+	}
+	c.mu.Unlock()
+
+	hasNew := false
+	for _, n := range nicks {
+		if n == "naujas" {
+			hasNew = true
+		}
+	}
+	if !hasNew {
+		t.Errorf("BUG: nickas neperpildytas: %v", nicks)
+	}
+}
+
+// TestNickChangeNotShownInUnrelatedChannel — kanale, kuriame nick'o nebuvo,
+// pranešimo nėra.
+func TestNickChangeNotShownInUnrelatedChannel(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":testnick!u@h JOIN #kazkitas")
+	c.parseIRC(":senas!u@h JOIN #kazkitas")
+	c.parseIRC(":senas!u@h NICK naujas")
+
+	c.mu.Lock()
+	ch := c.findCh("#kazkitas")
+	n := 0
+	if ch != nil {
+		for _, m := range ch.messages {
+			if m.msgType == MsgNick {
+				n++
+			}
+		}
+	}
+	c.mu.Unlock()
+	// Serverio kanalo pranešimas — ne kanalo pranešimas.
+	if n != 1 {
+		t.Errorf("BUG: MsgNick pranešimų kanale %d, norėtų 1", n)
+	}
+}
+
+// ============================================================
+// K23 — WHO ir kiti numerikai nekrenta į default:
+// ============================================================
+
+// TestWhoNumericsAreFormatted — 352/315 rodomi suprantamai, o ne kaip
+// „[352] …“ (raw numerikas).
+func TestWhoNumericsAreFormatted(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":server 352 testnick #kanalas user host srv Jonas@ H :0 Jonas Ilgavardis")
+	c.parseIRC(":server 315 testnick #kanalas :End of /WHO list.")
+
+	c.mu.Lock()
+	var texts []string
+	for _, m := range c.channels[0].messages {
+		texts = append(texts, m.text)
+	}
+	c.mu.Unlock()
+
+	joined := strings.Join(texts, "\n")
+	if strings.Contains(joined, "[352]") {
+		t.Errorf("BUG: 352 rodomas kaip raw numerikas: %q", joined)
+	}
+	if strings.Contains(joined, "[315]") {
+		t.Errorf("BUG: 315 rodomas kaip raw numerikas: %q", joined)
+	}
+	if !strings.Contains(joined, "Jonas") {
+		t.Errorf("BUG: WHO atsakymas nerodo nick'o: %q", joined)
+	}
+}
+
+// TestLuserNumericsAreFormatted — 251/255/265/266 apdorojami.
+func TestLuserNumericsAreFormatted(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":server 251 testnick :I am 42 users, 3 unknown and 7 channels")
+	c.parseIRC(":server 255 testnick :I have 7 clients and 9 servers")
+	c.parseIRC(":server 265 testnick 12 50 :Current local users 12, max 50")
+	c.parseIRC(":server 266 testnick 100 200 :Current global users 100, max 200")
+
+	c.mu.Lock()
+	var texts []string
+	for _, m := range c.channels[0].messages {
+		texts = append(texts, m.text)
+	}
+	c.mu.Unlock()
+
+	joined := strings.Join(texts, "\n")
+	for _, bad := range []string{"[251]", "[255]", "[265]", "[266]"} {
+		if strings.Contains(joined, bad) {
+			t.Errorf("BUG: %s rodomas kaip raw numerikas: %q", bad, joined)
+		}
+	}
+	if !strings.Contains(joined, "42") {
+		t.Errorf("BUG: 251 duomenys nerodomi: %q", joined)
+	}
+}
+
+// ============================================================
+// K24 — kanalų sąrašo slinktis (daugiau kanalų, nei telpa ekrane)
+// ============================================================
+
+// TestChannelListScrollsToShowActive — peršokus į kanalą, kuris yra už
+// slinkties ribos, kanalų sąrašas turi PASLINKTI, kad jis matytųsi.
+func TestChannelListScrollsToShowActive(t *testing.T) {
+	c := newTestClient()
+	c.width = 100
+	c.height = 20 // mažas ekranas — telpa tik ~16 kanalų
+	c.mu.Lock()
+	for i := 0; i < 30; i++ {
+		c.ensureCh(fmt.Sprintf("#kanalas%02d", i))
+	}
+	c.mu.Unlock()
+
+	// Peršokime į 25-ą kanalą (už slinkties ribos)
+	c.switchCh(26)
+
+	c.mu.Lock()
+	scroll := c.chanScrollOff
+	active := c.activeIdx
+	c.mu.Unlock()
+
+	if active != 26 {
+		t.Fatalf("BUG: aktyvus kanalas = %d, norėtų 26", active)
+	}
+	if scroll == 0 {
+		t.Error("BUG: kanalų sąrašas nepaslinko — aktyvus kanalas nematomas")
+	}
+	if scroll > 26 {
+		t.Errorf("BUG: slinktis = %d — per didelis (aktyvus kanalas 26)", scroll)
+	}
+}
+
+// TestChannelListScrollKeepsActiveVisible — peršokius atgal į žemesnį
+// kanalą, jis VIS TIEK turi būti matomas (sąrašas paslinkamas arba
+// grąžinamas).
+func TestChannelListScrollKeepsActiveVisible(t *testing.T) {
+	c := newTestClient()
+	c.width = 100
+	c.height = 20
+	c.mu.Lock()
+	for i := 0; i < 30; i++ {
+		c.ensureCh(fmt.Sprintf("#kanalas%02d", i))
+	}
+	c.mu.Unlock()
+
+	c.switchCh(26)
+	c.switchCh(1)
+
+	c.mu.Lock()
+	scroll := c.chanScrollOff
+	c.mu.Unlock()
+
+	rows := 20 - 4
+	if scroll > 1 || scroll+rows <= 1 {
+		t.Errorf("BUG: slinktis = %d — kanalas 1 nematomas (rows=%d)", scroll, rows)
 	}
 }

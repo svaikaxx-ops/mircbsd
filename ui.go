@@ -666,11 +666,18 @@ type Channel struct {
 
 	// Renderio cache'as: eilutės priklauso nuo žinučių, pločio ir spalvos.
 	// renderGen didinamas kiekvieną kartą pakeitus žinutes (addMsg, clear).
-	renderGen    int
-	renderedGen  int // <== renderGen kai cache galioja
-	renderedW    int
-	renderedNick string
-	rendered     []string
+	//
+	// renderedMsgCount — kiek žinučių jau IŠRENDERIUOTA cache'e. Kai
+	// pridedama nauja žinutė, senos eilutės lieka galiojančios — tik
+	// naujos pridedamos (inkrementalus renderiavimas). Anksčiau kiekviena
+	// nauja žinutė nugriaždindavo VISĄ cache'ą (5000 žinučių → 5000
+	// renderLines() kiekviename braižyme).
+	renderGen        int
+	renderedGen      int // <== renderGen kai cache galioja
+	renderedW        int
+	renderedNick     string
+	rendered         []string
+	renderedMsgCount int // kiek žinučių cache'e apskaičiuota
 }
 
 func newChannel(name string, maxMsg int) *Channel {
@@ -689,6 +696,12 @@ func (ch *Channel) addMsg(m Message) {
 		trim := ch.maxMessages / 4
 		ch.messages = ch.messages[trim:]
 		ch.renderGen++
+		// Senos eilutės cache'e nebeatitinka žinutėms — cache'ą
+		// reikia atkurti nuo nulio (kitaip inkrementalus cache'as
+		// rodytų senas, jau ištrintas žinutes).
+		ch.rendered = nil
+		ch.renderedGen = -1
+		ch.renderedMsgCount = 0
 	}
 }
 
@@ -712,8 +725,28 @@ func (ch *Channel) addNick(nick string, signOpt ...string) {
 			return
 		}
 	}
-	ch.nicks = append(ch.nicks, nick)
-	sortNicks(ch.nicks, sign)
+	// Įstatome į SAVO VIETĄ (dichotominė paieška) — anksčiau kiekvienam
+	// įterpimui buvo pilnas sortNicks (O(n log n)). 500 nick'ų kanale tai
+	// 500 × 500×log(500) operacijų; dabar — 500 × log(500) paieškų.
+	pos := sort.Search(len(ch.nicks), func(i int) bool {
+		return !nickLess(ch.nicks[i], nick, sign)
+	})
+	ch.nicks = append(ch.nicks, "")
+	copy(ch.nicks[pos+1:], ch.nicks[pos:])
+	ch.nicks[pos] = nick
+}
+
+// hasNick tikrina, ar kanalo nick'ų sąraše yra toks nick (su prefiksu arba
+// be jo). Naudojama NICK komandai — pranešimą rodoma tik ten, kur nick
+// realiai buvo.
+func (ch *Channel) hasNick(nick string) bool {
+	sign := ch.prefixSigns()
+	for _, n := range ch.nicks {
+		if nickEqual(stripMode(n, sign), stripMode(nick, sign), ch.casemapping) {
+			return true
+		}
+	}
+	return false
 }
 
 func (ch *Channel) removeNick(nick string, signOpt ...string) {
@@ -851,6 +884,31 @@ func sortNicks(nicks []string, signsOpt ...string) {
 	})
 }
 
+// nickLess atskleidžia surūšiuojimo taisyklę, kad addNick galėtų įstatyti
+// nick'ą į VIETĄ (be pilno perrankymo).
+func nickLess(a, b, signs string) bool {
+	order := func(n string) int {
+		if len(n) == 0 {
+			return len(signs)
+		}
+		if i := strings.IndexRune(signs, rune(n[0])); i >= 0 {
+			return i
+		}
+		return len(signs)
+	}
+	strip := func(n string) string {
+		if len(n) > 0 && strings.ContainsRune(signs, rune(n[0])) {
+			return n[1:]
+		}
+		return n
+	}
+	oi, oj := order(a), order(b)
+	if oi != oj {
+		return oi < oj
+	}
+	return strings.ToLower(strip(a)) < strings.ToLower(strip(b))
+}
+
 // ---- UI ----
 
 const chanListWidth = 18
@@ -880,6 +938,7 @@ func (c *Client) draw() {
 	inputPos := c.inputPos
 	scrollOff := c.scrollOff
 	nickScrollOff := c.nickScrollOff
+	chanScrollOff := c.chanScrollOff
 	connected := c.connected
 	myNick := c.nick
 	server := c.server
@@ -959,15 +1018,31 @@ func (c *Client) draw() {
 	}
 
 	// --- Kanalų sąrašas ---
+	//
+	// SLINKTIS: kanalų gali būti daugiau, nei telpa ekrane (iki 100).
+	// Anksčiau rodydavome tik pirmus 12 ir likusieji buvo NEPASIEKIAMI.
+	// Dabar — slinktis (chanScrollOff) + rodyklės ▲▼.
+	chanScroll := chanScrollOff
+	maxChanScroll := len(channels) - msgRows
+	if maxChanScroll < 0 {
+		maxChanScroll = 0
+	}
+	if chanScroll > maxChanScroll {
+		chanScroll = maxChanScroll
+	}
+	if chanScroll < 0 {
+		chanScroll = 0
+	}
 	for i := 0; i < msgRows; i++ {
 		r := msgAreaTop + i
 		out.WriteString(moveTo(r, 1))
 		out.WriteString(fmt.Sprintf("\033[%dX", chanListWidth))
 		out.WriteString(moveTo(r, 1))
-		if i < len(channels) {
-			ch := channels[i]
+		chanIdx := chanScroll + i
+		if chanIdx < len(channels) {
+			ch := channels[chanIdx]
 			name := ch.name
-			if i == activeIdx {
+			if chanIdx == activeIdx {
 				out.WriteString(ansiBgBlue + ansiBold + ansiWhite)
 			} else if ch.highlight > 0 {
 				out.WriteString(ansiRed + ansiBold)
@@ -986,13 +1061,13 @@ func (c *Client) draw() {
 				displayName = ">" + displayName
 			}
 			fkeyPrefix := ""
-			if i < 12 {
-				fkeyPrefix = fmt.Sprintf("%d:", i+1)
+			if chanIdx < 12 {
+				fkeyPrefix = fmt.Sprintf("%d:", chanIdx+1)
 			}
 			maxNameW := chanListWidth - 2 - len(fkeyPrefix)
 			displayName = truncateWidth(displayName, maxNameW)
 			label := " " + fkeyPrefix + fitWidth(displayName, maxNameW)
-			if ch.unread > 0 && i != activeIdx {
+			if ch.unread > 0 && chanIdx != activeIdx {
 				unreadW := maxNameW - 3
 				if unreadW < 1 {
 					unreadW = 1
@@ -1008,6 +1083,17 @@ func (c *Client) draw() {
 		out.WriteString(moveTo(r, chanListWidth+1))
 		out.WriteString(ansiDarkGray + "│" + ansiReset)
 	}
+	// Kanalų sąrašo rodyklės (kai kanalų daugiau, nei telpa ekrane)
+	if maxChanScroll > 0 {
+		if chanScroll > 0 {
+			out.WriteString(moveTo(msgAreaTop, chanListWidth))
+			out.WriteString(ansiYellow + "▲" + ansiReset)
+		}
+		if chanScroll < maxChanScroll {
+			out.WriteString(moveTo(msgAreaBot, chanListWidth))
+			out.WriteString(ansiYellow + "▼" + ansiReset)
+		}
+	}
 
 	// --- Žinutės ---
 	nickPanelW := 0
@@ -1020,21 +1106,47 @@ func (c *Client) draw() {
 	}
 
 	// Eilučių cache'as: nerenderiojam žinučių iš naujo kiekvienam klavišui,
-	// jei žinutės ir plotis nepasikeitę (greitis ant užimtų kanalų)
+	// jei žinutės ir plotis nepasikeitę (greitis ant užimtų kanalų).
+	//
+	// INCREMENTALUS: kai pridedama nauja žinutė, senos eilutės lieka
+	// galiojančios — renderiuojame tik NAUJAS. Tai sumažina braižmo
+	// kainą nuo O(n) iki O(naujų žinučių) kiekviename redraw.
 	c.mu.Lock()
-	var lines []string
 	gen := active.renderGen
-	if active.renderedGen == gen && active.renderedW == msgW && active.renderedNick == myNick {
+	msgs := active.messages
+	// Kiek žinučių cache'e jau apskaičiuota (ir ar tas pats plotis/nick).
+	cacheOK := active.renderedGen == gen && active.renderedW == msgW && active.renderedNick == myNick
+	// Jei žinutės tik PRIDETOS (renderGen pakito, bet senas cache galioja
+	// tame pačiame pločiu) — tęsiame cache'ą. Žinutės gali būti tik
+	// pridamos į galą (addMsg), todėl cache'o prieiga lieka tik galoje.
+	incremental := active.renderedGen != -1 && active.renderedW == msgW &&
+		active.renderedNick == myNick && active.renderedMsgCount <= len(msgs)
+	var lines []string
+	if cacheOK {
 		lines = active.rendered
 		c.mu.Unlock()
 	} else {
-		msgs := make([]Message, len(active.messages))
-		copy(msgs, active.messages)
+		// Kopijuojame tik TA DALĮ, kurią reikia renderiuoti.
+		start := 0
+		if incremental {
+			start = active.renderedMsgCount
+		}
+		// Copiuojame naujas žinutes (be c.mu — renderLines ilgas).
+		newMsgs := make([]Message, len(msgs)-start)
+		copy(newMsgs, msgs[start:])
+		existing := active.rendered
 		c.mu.Unlock()
 
-		lines = make([]string, 0, len(msgs)+len(msgs))
-		for _, m := range msgs {
-			lines = append(lines, m.renderLines(msgW, myNick)...)
+		lines = existing
+		if !incremental {
+			lines = nil
+		}
+		if len(newMsgs) > 0 {
+			fresh := make([]string, 0, len(newMsgs)+len(newMsgs))
+			for _, m := range newMsgs {
+				fresh = append(fresh, m.renderLines(msgW, myNick)...)
+			}
+			lines = append(lines, fresh...)
 		}
 
 		// Cache'uoti tik jei žinutės nepakitę renderio metu
@@ -1044,6 +1156,7 @@ func (c *Client) draw() {
 			active.renderedGen = gen
 			active.renderedW = msgW
 			active.renderedNick = myNick
+			active.renderedMsgCount = len(msgs)
 		}
 		c.mu.Unlock()
 	}

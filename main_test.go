@@ -1326,3 +1326,24 @@ func TestConfigQuotesStripped(t *testing.T) {
 		t.Error("kabutė viduje neturi būti pašalinta")
 	}
 }
+
+// silenceStdout nukreipia stdout į /dev/null, kol vykdoma funkcija.
+//
+// draw() spausina ANSI seką tiesiai į stdout — testuose tai užteršia
+// testo išvestį. Testai, kurie kviečia draw(), turi naudoti šį
+// pagalbininką.
+func silenceStdout(t *testing.T, fn func()) {
+	t.Helper()
+	orig := os.Stdout
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		fn()
+		return
+	}
+	os.Stdout = devNull
+	defer func() {
+		os.Stdout = orig
+		devNull.Close()
+	}()
+	fn()
+}
