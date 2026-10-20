@@ -770,6 +770,9 @@ func TestParseIRCNoticeIgnored(t *testing.T) {
 
 func TestParseIRC353Names(t *testing.T) {
 	c := newTestClient()
+	// Kanalas sukuriamas per JOIN — 353 tik kaupia nick'ų sąrašą.
+	// Serverio komanda neturi teisės kurti naujų kanalų (K16).
+	c.parseIRC(":testnick!u@h JOIN #chan")
 	c.parseIRC(":server 353 testnick = #chan :@ops +voiced plainuser")
 
 	c.mu.Lock()
@@ -777,10 +780,11 @@ func TestParseIRC353Names(t *testing.T) {
 	c.mu.Unlock()
 
 	if ch == nil {
-		t.Fatal("kanalas #chan nesukurtas po 353")
+		t.Fatal("kanalas #chan nesukurtas")
 	}
-	if len(ch.nicks) != 3 {
-		t.Fatalf("tikėjomės 3 nickų, gavome %d: %v", len(ch.nicks), ch.nicks)
+	// 3 nick'ų iš 353 + pats prisijungęs (JOIN) = 4.
+	if len(ch.nicks) != 4 {
+		t.Fatalf("tikėjomės 4 nickų, gavome %d: %v", len(ch.nicks), ch.nicks)
 	}
 
 	// @ops turi būti pirmoje vietoje
@@ -792,6 +796,7 @@ func TestParseIRC353Names(t *testing.T) {
 func TestParseIRC353Accumulates(t *testing.T) {
 	c := newTestClient()
 	// Didelių kanalų NAMES siunčiamas keliais pranešimais
+	c.parseIRC(":testnick!u@h JOIN #chan")
 	c.parseIRC(":server 353 testnick = #chan :@ops user1")
 	c.parseIRC(":server 353 testnick = #chan :user2 user3")
 	c.parseIRC(":server 366 testnick #chan :End of NAMES")
@@ -800,8 +805,9 @@ func TestParseIRC353Accumulates(t *testing.T) {
 	ch := c.findCh("#chan")
 	c.mu.Unlock()
 
-	if ch == nil || len(ch.nicks) != 4 {
-		t.Errorf("tikėjomės 4 nickų iš dviejų 353 pranešimų, gavome %d", len(ch.nicks))
+	// 4 nick'ų iš dviejų 353 pranešimų + pats prisijungęs (JOIN) = 5.
+	if ch == nil || len(ch.nicks) != 5 {
+		t.Errorf("tikėjomės 5 nickų iš dviejų 353 pranešimų, gavome %d", len(ch.nicks))
 	}
 }
 

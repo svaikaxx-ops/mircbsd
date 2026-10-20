@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,6 +121,44 @@ func chanModesArgLetters(chanModes, prefixModes string) string {
 	// Nick'ų statuso modos (PREFIX) taip pat imasi argumentą (nick'ą).
 	sb.WriteString(prefixModes)
 	return sb.String()
+}
+
+// handleCapNew apdoroja serverio CAP NEW pasiulymą.
+//
+// Kviečia CAP REQ su mumis pageidaujamais cap'ais arba CAP END, jei
+// nieko nereikia.
+func (c *Client) handleCapNew(capsStr string) {
+	c.mu.Lock()
+	if c.capAvailable == nil {
+		c.capAvailable = make(map[string]bool)
+	}
+	for _, cap := range strings.Fields(capsStr) {
+		name := strings.ToLower(strings.SplitN(cap, "=", 2)[0])
+		c.capAvailable[name] = true
+	}
+	available := c.capAvailable
+	var wanted []string
+	for _, want := range []string{"multi-prefix", "away-notify", "server-time", "echo-message"} {
+		if available[want] {
+			// Tik jei dar neaktyvus.
+			if !c.activeCaps[want] {
+				wanted = append(wanted, want)
+			}
+		}
+	}
+	needSASL := available["sasl"] && c.saslPass != "" && !c.saslOk
+	if needSASL {
+		wanted = append(wanted, "sasl")
+		c.capSASL = true
+	}
+	c.capAvailable = make(map[string]bool)
+	c.mu.Unlock()
+
+	if len(wanted) > 0 {
+		c.send("CAP REQ :" + strings.Join(wanted, " "))
+	} else {
+		c.send("CAP END")
+	}
 }
 
 // lowerIRC RFC 1459 casemapping (A–Z ir []\^ ↔ {}|~).
@@ -1606,11 +1645,19 @@ func (c *Client) parseIRC(line string) {
 		c.queueRedraw()
 
 	case "353":
+		// RPL_NAMREPLY — serverio komanda. Ji turi NAUJŲ kanalų nekurti:
+		// priešiškas serveris galėtų siųsti šimtais 353 numerių ir
+		// sukurti tiek langų (užpildydamas šoninę juostą). 332 (tema)
+		// jau yra užkirtas taip pat.
 		ch := p(2)
 		users := p(3)
+		if ch == "" {
+			return
+		}
 		c.mu.Lock()
-		channel := c.ensureCh(ch)
+		channel := c.findCh(ch)
 		if channel == nil {
+			// Kanalas, kurio neprisijungėme — praleidžiame.
 			c.mu.Unlock()
 			return
 		}
@@ -1794,6 +1841,38 @@ func (c *Client) parseIRC(line string) {
 			}
 		case "NAK":
 			c.send("CAP END")
+
+		case "NEW":
+			// CAP NEW — serveris siūlo naują cap'ą PO registracijos.
+			// Anksčiau ši komanda buvo ignoruojama, todėl serveris, kuris
+			// sasl'ą siūlo tik per CAP NEW, nebūdavo derybas.
+			// Atsakome CAP REQ (jei mums reikia) arba CAP END.
+			c.handleCapNew(capsStr)
+
+		case "LIST":
+			// CAP LIST — serveris klausia, kokius capus turime.
+			c.mu.Lock()
+			var active []string
+			for name := range c.activeCaps {
+				active = append(active, name)
+			}
+			c.mu.Unlock()
+			sort.Strings(active)
+			if len(active) == 0 {
+				c.send("CAP LIST :")
+			} else {
+				c.send("CAP LIST :" + strings.Join(active, " "))
+			}
+
+		case "DEL":
+			// CAP DEL — serveris atima cap'ą. Aktyvius capus pažymime
+			// neaktyviais.
+			c.mu.Lock()
+			for _, cap := range strings.Fields(capsStr) {
+				name := strings.ToLower(strings.TrimLeft(cap, "-"))
+				delete(c.activeCaps, name)
+			}
+			c.mu.Unlock()
 		}
 
 	case "AUTHENTICATE":

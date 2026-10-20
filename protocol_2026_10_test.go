@@ -386,3 +386,115 @@ func TestRPLNowawaySetsAway(t *testing.T) {
 		t.Error("BUG: po 306 c.away liko tuščias — statuso juosta nerodo [AWAY]")
 	}
 }
+
+// ============================================================
+// K16 — 353 negali sukurti kanalų
+// ============================================================
+
+// Test353DoesNotCreateChannels — serverio komanda (353) neturi teisės kurti
+// naujų kanalų. Priešiškas serveris galėtų siųsti šimtais numerių ir
+// užpildyti šoninę juostą.
+func Test353DoesNotCreateChannels(t *testing.T) {
+	c := newTestClient()
+	for i := 0; i < 5; i++ {
+		c.parseIRC(":server 353 testnick = #fake" + string(rune('a'+i)) + " :user1 user2")
+	}
+
+	c.mu.Lock()
+	n := len(c.channels)
+	c.mu.Unlock()
+	// Tik *server* (1) — nė vieno naujo kanalo.
+	if n != 1 {
+		names := []string{}
+		c.mu.Lock()
+		for _, ch := range c.channels {
+			names = append(names, ch.name)
+		}
+		c.mu.Unlock()
+		t.Errorf("BUG: 353 sukūrė %d kanalų (turėjo likti 1): %v", n-1, names)
+	}
+}
+
+// Test353AddsNicksToExistingChannel — teisingas atvejis: kanalas, kuriam
+// prisijungėme, gauna nick'ų sąrašą.
+func Test353AddsNicksToExistingChannel(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":testnick!u@h JOIN #chan")
+	c.parseIRC(":server 353 testnick = #chan :user1 user2")
+
+	c.mu.Lock()
+	ch := c.findCh("#chan")
+	var nicks []string
+	if ch != nil {
+		nicks = append(nicks, ch.nicks...)
+	}
+	c.mu.Unlock()
+
+	found := false
+	for _, n := range nicks {
+		if n == "user1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("BUG: 353 nepridėjo nick'ų į esamą kanalą: %v", nicks)
+	}
+}
+
+// ============================================================
+// K20 — CAP NEW / LIST / DEL
+// ============================================================
+
+// TestCapNewRequestsCap — serveris siunčia CAP NEW — klientas turi
+// atsakyti CAP REQ arba CAP END.
+func TestCapNewRequestsCap(t *testing.T) {
+	c := newTestClient()
+	got := captureWrites(c)
+	c.parseIRC(":server CAP * NEW :multi-prefix")
+
+	lines := got(200 * time.Millisecond)
+	found := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, "CAP REQ") || strings.HasPrefix(l, "CAP END") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("BUG: CAP NEW neapdoruotas (nėra CAP REQ/CAP END). Eilutės: %v", lines)
+	}
+}
+
+// TestCapListResponds — CAP LIST gauna atsakymą.
+func TestCapListResponds(t *testing.T) {
+	c := newTestClient()
+	got := captureWrites(c)
+	c.parseIRC(":server CAP * LIST :")
+
+	lines := got(200 * time.Millisecond)
+	found := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, "CAP LIST") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("BUG: CAP LIST neapdoruotas. Eilutės: %v", lines)
+	}
+}
+
+// TestCapDelRemovesActiveCap — CAP DEL pašalina cap'ą iš aktyviųjų.
+func TestCapDelRemovesActiveCap(t *testing.T) {
+	c := newTestClient()
+	c.mu.Lock()
+	c.activeCaps["multi-prefix"] = true
+	c.mu.Unlock()
+
+	c.parseIRC(":server CAP * DEL :multi-prefix")
+
+	c.mu.Lock()
+	active := c.activeCaps["multi-prefix"]
+	c.mu.Unlock()
+	if active {
+		t.Error("BUG: CAP DEL nepašalino aktyvaus capa")
+	}
+}

@@ -189,7 +189,7 @@ func TestDoTabDoesNotRaceWithNickMutation(t *testing.T) {
 	}()
 
 	// Reader — doTab (jis pats ima c.mu, todėl lenktynės nebūtų, jei
-	// kopijos daromos; testas apsaugo nuo回归 į seną elgseną).
+	// kopijos daromos; testas apsaugo nuo grįžimo į seną elgseną).
 	for i := 0; i < 200; i++ {
 		c.mu.Lock()
 		c.input = []rune("ni")
