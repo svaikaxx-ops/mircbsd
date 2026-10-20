@@ -875,7 +875,10 @@ func (c *Client) handleCmd(cmd, args string) {
 		// Kanalo pavadinimas įrašomas į JOIN komandą — turi būti
 		// skaidriai ribojamas (tarpai, CRLF, valdymo simboliai
 		// neleistini), kad būtų išvengta komandų injekcijos.
-		if !isValidChannel(chName) {
+		// Prefiksas tikrinamas pagal serverio CHANTYPES — kai serveris
+		// naudoja „#$“, kanalas „$kanalas“ yra galiojantis.
+		ct, _, _, _ := c.isupSnapshot()
+		if !isValidChannelFor(chName, ct) {
 			c.errMsg("Netinkamas kanalo pavadinimas (raidės, skaičiai ir .-_ ; max 50)")
 			return
 		}

@@ -51,7 +51,19 @@ func defaultConfig() Config {
 	}
 }
 
+// configWarnings — įspėjimai apie neteisingus konfigūracijos parametrus.
+// Rodomi vartotojui paleidimo metu, kad blogas nickas/portas nebūtų tyliai
+// pakeistas.
+var configWarnings []string
+
+// loadConfigWarnings grąžina paskutinio loadConfig() metu rastus
+// įspėjimus.
+func loadConfigWarnings() []string {
+	return configWarnings
+}
+
 func loadConfig(path string) Config {
+	configWarnings = nil
 	cfg := defaultConfig()
 	f, err := os.Open(path)
 	if err != nil {
@@ -77,11 +89,24 @@ func loadConfig(path string) Config {
 		case "server":
 			cfg.Server = v
 		case "port":
-			cfg.Port = v
+			// Portas turi būti skaičius 1–65535 — blogas tipas būtų
+			// perduodamas į adresą kaip „localhost:blogas“.
+			if isValidPort(v) {
+				cfg.Port = v
+			} else {
+				cfg.Port = "6667"
+				configWarnings = append(configWarnings, "Neteisingas portas: "+v+" (numatytas 6667)")
+			}
 		case "tls":
 			cfg.TLS = v == "true" || v == "1" || v == "yes"
 		case "nick":
-			cfg.Nick = v
+			// Nick'o simbolių rinkinys ir ilgis tikrinami čia — anksčiau
+			// blogas nickas iš config'o pateko tiesiog į NICK komandą.
+			if isValidNick(v) {
+				cfg.Nick = v
+			} else {
+				configWarnings = append(configWarnings, "Neteisingas nick: "+v+" (numatytas mircbsd)")
+			}
 		case "realname":
 			cfg.RealName = v
 		case "nickserv":

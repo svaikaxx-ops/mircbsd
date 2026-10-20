@@ -4,7 +4,10 @@ package main
 // Kiekvienas radinys turi DU testus: „blogas atmetamas" ir „teisingas priimamas“.
 
 import (
+	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -378,4 +381,69 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool, msg string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timeout: %s", msg)
+}
+
+// ============================================================
+// K8 — žurnalų eilių tvarka
+// ============================================================
+
+// TestLogMessagesKeepOrder — lygiagrečiai atėjusios žinutės turi būti
+// žurnale ta pačia tvarka, kokia atėjo į klientą.
+//
+// Anksčiau kiekvienai žinutei buvo paleidžiama atskira gorutina
+// (`go logMessage`), todėl 20 lygiagrečių žinučių rašydavo failą
+// beveik atsitiktine tvarka.
+func TestLogMessagesKeepOrder(t *testing.T) {
+	c := newTestClient()
+	dir := t.TempDir()
+	c.logDir = dir
+	c.server = "srv"
+	c.startLogWorker()
+	defer func() {
+		c.stopLogWorker()
+		c.closeLogs()
+	}()
+
+	const n = 40
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			c.addMsg("#kanalas", Message{
+				ts:      time.Now(),
+				nick:    "k",
+				text:    fmt.Sprintf("pranesimas-%03d", i),
+				msgType: MsgChat,
+			})
+		}
+	}()
+	wg.Wait()
+
+	// Paliekame žurnalų gorutinai apdoroti eilę.
+	deadline := time.Now().Add(3 * time.Second)
+	var data []byte
+	var err error
+	for time.Now().Before(deadline) {
+		path := filepath.Join(dir, "srv", "#kanalas-"+time.Now().Format("2006-01-02")+".log")
+		data, err = os.ReadFile(path)
+		if err == nil && len(data) > 0 {
+			// Patikriname, ar visos eilutės jau parašytos.
+			if strings.Count(string(data), "pranesimas-") == n {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != n {
+		t.Fatalf("BUG: žurnale %d eilučių, o turėjo būti %d", len(lines), n)
+	}
+	for i, l := range lines {
+		want := fmt.Sprintf("pranesimas-%03d", i)
+		if !strings.Contains(l, want) {
+			t.Errorf("BUG: %d-oji eilutė = %q, norėtų %q", i, l, want)
+		}
+	}
 }

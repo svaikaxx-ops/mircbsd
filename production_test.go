@@ -1171,6 +1171,7 @@ func TestLogRotationDaily(t *testing.T) {
 	day1 := time.Date(2026, 9, 28, 23, 59, 0, 0, time.Local)
 	day2 := time.Date(2026, 9, 29, 0, 1, 0, 0, time.Local)
 
+	defer c.closeLogs()
 	c.logMessage(dir, "srv", "#kanalas", Message{ts: day1, nick: "a", text: "pirmadienio", msgType: MsgChat})
 	time.Sleep(20 * time.Millisecond)
 	c.logMessage(dir, "srv", "#kanalas", Message{ts: day2, nick: "a", text: "naujadra", msgType: MsgChat})
@@ -1249,6 +1250,7 @@ func TestClearLogs(t *testing.T) {
 	mk := func(chanName, text string) Message {
 		return Message{ts: now, nick: "k", text: text, msgType: MsgChat}
 	}
+	defer c.closeLogs()
 	c.logMessage(dir, "srv", "#a", mk("#a", "aa"))
 	c.logMessage(dir, "srv", "#b", mk("#b", "bb"))
 	time.Sleep(30 * time.Millisecond)

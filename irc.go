@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -255,6 +256,23 @@ type Client struct {
 
 	logDir   string
 	logFiles map[string]*os.File
+
+	// Žurnalų eilė: žinutės įrašomos VIENOS gorutinos, todėl faile
+	// eilės yra tokia pačia tvarka, kokia atėjo į klientą. Anksčiau
+	// kiekvienai žinutei buvo paleidžiama atskira gorutina (`go
+	// logMessage`), todėl lygiagrečios žinutės rašydavo failą
+	// beveik atsitiktine tvarka.
+	logQueue chan logEntry
+	logStop  chan struct{}
+	logOnce  sync.Once
+}
+
+// logEntry — viena eilutė žurnalo eilutėje.
+type logEntry struct {
+	logDir   string
+	server   string
+	chanName string
+	msg      Message
 }
 
 func newClient(cfg Config) *Client {
@@ -264,10 +282,24 @@ func newClient(cfg Config) *Client {
 	if !isValidServer(server) {
 		server = ""
 	}
+	// Nick'o validacija — čia, kad VISI įėjimo keliai (config, komandinė
+	// eilutė) būtų patikrinti viename vietoje. Anksčiau tik /connect tikrino
+	// nick'ą, o CLI `mircbsd srv 6667 "blogas nick"` siųsdavo tokį nick'ą
+	// į serverį.
+	nick := cfg.Nick
+	if !isValidNick(nick) {
+		nick = "mircbsd"
+	}
+	// Portas — tik skaičius 1–65535; blogas portas turi būti atmestas, ne
+	// perduodamas į adresą.
+	port := cfg.Port
+	if !isValidPort(port) {
+		port = "6667"
+	}
 	c := &Client{
-		nick:            cfg.Nick,
+		nick:            nick,
 		server:          server,
-		port:            cfg.Port,
+		port:            port,
 		useTLS:          cfg.TLS,
 		realName:        cfg.RealName,
 		nickservPass:    cfg.NickServ,
@@ -288,6 +320,8 @@ func newClient(cfg Config) *Client {
 		historyIdx:      -1,
 		searchResultIdx: -1,
 		logFiles:        make(map[string]*os.File),
+		logQueue:        make(chan logEntry, 1024),
+		logStop:         make(chan struct{}),
 		activeCaps:      make(map[string]bool),
 		awayNotified:    make(map[string]time.Time),
 		lastPong:        time.Now(),
@@ -543,7 +577,10 @@ func (c *Client) addMsg(chanName string, m Message) {
 	if m.highlight {
 		fmt.Print("\a")
 	}
-	go c.logMessage(logDir, server, chanName, m)
+	// Į žurnalą — per eilę (viena gorutina), ne per `go logMessage`.
+	// Taip žurnalo eilės eina ta pačia tvarka kaip į klientą atėjusios
+	// žinutės.
+	c.enqueueLog(logEntry{logDir: logDir, server: server, chanName: chanName, msg: m})
 	if m.highlight && !isActive && c.notify {
 		// Desktop pranešimas: atsargiai su laiku, kad nespaustų per greitai
 		c.mu.Lock()
@@ -602,6 +639,50 @@ func (c *Client) switchCh(idx int) {
 }
 
 // ---- Logging ----
+
+// startLogWorker paleidžia žurnalų gorutiną. Ji apdoroja eilę FIFO tvarka,
+// todėl žurnalo eilės visada tokios pačios tvarkos, kokia atėjo į klientą.
+func (c *Client) startLogWorker() {
+	go func() {
+		for {
+			select {
+			case e := <-c.logQueue:
+				c.logMessage(e.logDir, e.server, e.chanName, e.msg)
+			case <-c.logStop:
+				// Ištuštiname eilę (kad neprarastų žinučių) ir
+				// sustojame.
+				for {
+					select {
+					case e := <-c.logQueue:
+						c.logMessage(e.logDir, e.server, e.chanName, e.msg)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+}
+
+// enqueueLog įdeda žinutę į žurnalų eilę. Jei eilė pilna (labai didelis
+// srautas), žinutė tiesiog atmetama — geriau prarasti žurnalą nei
+// sustabdyti klientą.
+func (c *Client) enqueueLog(e logEntry) {
+	if e.logDir == "" {
+		return
+	}
+	select {
+	case c.logQueue <- e:
+	default:
+	}
+}
+
+// stopLogWorker sustabdo žurnalų gorutiną (ištušindamas eilę).
+func (c *Client) stopLogWorker() {
+	c.logOnce.Do(func() {
+		close(c.logStop)
+	})
+}
 
 func (c *Client) logMessage(logDir, server, chanName string, m Message) {
 	if logDir == "" {
@@ -1798,12 +1879,19 @@ func isValidTarget(t string) bool {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		case r == '.' || r == '-' || r == '_':
 		case r == '#' || r == '&' || r == '!' || r == '+':
+		// Raidės (lietuviškos taip pat) — leidžiame, bet ne valdymo
+		// simbolius, ne tarpus ir ne CRLF.
+		case unicode.IsLetter(r):
 		default:
 			return false
 		}
 	}
 	return true
 }
+
+// standartinėsChanTypes — RFC numytieji kanalų prefiksai, kai serveris
+// nepaskyrė CHANTYPES (ISUPPORT).
+const standartinėsChanTypes = "#&!+"
 
 // isValidChannel tikrina kanalo pavadinimą: jis įrašomas į JOIN/PART
 // komandas, todėl turi būti ribojamas (be tarpų, be CRLF, be valdymo
@@ -1812,15 +1900,37 @@ func isValidTarget(t string) bool {
 // Pirmas simbolis yra kanalo prefiksas pagal serverio CHANTYPES
 // („#“, „&“ ir pan.); likusi dalis — raidės, skaičiai ir „.-_“.
 // Prefiksas be vardo („#“ vienas) — netinkamas.
+//
+// Naudoja standartinius prefiksus. Kai serveris skelbia kitokius
+// CHANTYPES (pvz. „#$“), naudok isValidChannelFor.
 func isValidChannel(ch string) bool {
+	return isValidChannelFor(ch, standartinėsChanTypes)
+}
+
+// isValidChannelFor tikrina kanalo pavadinimą pagal nurodytus CHANTYPES.
+//
+// Ankstesnė versija kietai kodavo „#&!+“, todėl serveris su CHANTYPES=“#$”
+// atmesdavo kanalą „$kanalas“ — o jis VIS LIEGALUS tame serveryje.
+func isValidChannelFor(ch string, chantypes string) bool {
 	if ch == "" || len(ch) > 50 {
+		return false
+	}
+	if chantypes == "" {
+		chantypes = standartinėsChanTypes
+	}
+	// Prefiksas turi būti pagal CHANTYPES.
+	first := rune(ch[0])
+	if !strings.ContainsRune(chantypes, first) {
 		return false
 	}
 	for i, r := range ch {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		case r == '.' || r == '-' || r == '_':
-		case i == 0 && (r == '#' || r == '&' || r == '!' || r == '+'):
+		case i == 0:
+			// Prefiksas (jau patikrintas aukščiau)
+		// Raidės (lietuviškos taip pat) — leidžiame.
+		case unicode.IsLetter(r):
 		default:
 			return false
 		}
@@ -1857,17 +1967,46 @@ func isValidServer(server string) bool {
 // isValidNick tikrina nick pagal IRC taisykles: leistini tik RFC nick simboliai
 // (raidės, skaičiai, _ - [ ] \ ` ^ { } |), max 30 ženklų. Čia ne tik apsauga nuo
 // protokolo klaidų, bet ir nuo valdymo simbolių (pvz. ESC) patekimo į serverį.
+//
+// Svarbu: ilgis skaičiuojamas SIMBOLIAIS (rune'ais), ne baitais. Anksčiau
+// 30 baitų riba atmete 15 lietuviškų raidžių (kiekviena = 2 baitai) —
+// lietuviškasis vartotojas negalėjo nustatyti savo nick'o.
 func isValidNick(nick string) bool {
-	if nick == "" || len(nick) > 30 {
+	if nick == "" {
+		return false
+	}
+	// RFC riba: 15 simbolių, bet daugoma serverių leidžia 30. Skaičiuojame
+	// simboliais, kad 30 lietuviškų raidžių būtų galimos.
+	if utf8.RuneCountInString(nick) > 30 {
 		return false
 	}
 	for _, r := range nick {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		case strings.ContainsRune("_-[]\\`^{}|", r):
+		// Raidės rašomos lietuviškai (ą, č, ė, į, š, ų, ū, ž) — leidžiame
+		// visas raides, išskyrus valdymo simbolius ir tarpus.
+		case unicode.IsLetter(r):
 		default:
 			return false
 		}
+	}
+	return true
+}
+
+// isValidPort tikrina TCP portą: skaičius 1–65535.
+func isValidPort(port string) bool {
+	if port == "" || len(port) > 5 {
+		return false
+	}
+	for _, r := range port {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return false
 	}
 	return true
 }

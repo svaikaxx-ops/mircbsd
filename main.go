@@ -152,6 +152,9 @@ func (c *Client) stop() {
 			fmt.Print("\033[?1002l\033[?1000l\033[?1006l")
 		}
 		c.saveHistory()
+		// Sustabdom žurnalų gorutiną (ištušindamas eilę), tik tada
+		// uždarome failus — kad neprarastų jau įrašytų žinučių.
+		c.stopLogWorker()
 		c.closeLogs()
 		close(stopCh)
 	})
@@ -181,13 +184,31 @@ func main() {
 	setTSColor(cfg.TimestampColor)
 	setHighlightColor(cfg.HighlightColor)
 	setNickColors(cfg.NickColors)
+	configWarn := loadConfigWarnings()
 
 	args := os.Args[1:]
 	if len(args) >= 2 {
-		cfg.Server = args[0]
-		cfg.Port = args[1]
+		// Komandinės eilutės argumentai VALIDUOJAMI — anksčiau serverio
+		// vardas, portas ir nick galėjo būti bet kokie (komandų injekcija
+		// į IRC komandas, neveiksmingas adresas).
+		if !isValidServer(args[0]) {
+			configWarn = append(configWarn, "Neteisingas serverio vardas: "+args[0])
+			args[0] = ""
+		}
+		if !isValidPort(args[1]) {
+			configWarn = append(configWarn, "Neteisingas portas: "+args[1])
+			args[1] = ""
+		}
+		if len(args) >= 2 {
+			cfg.Server = args[0]
+			cfg.Port = args[1]
+		}
 		if len(args) >= 3 {
-			cfg.Nick = args[2]
+			if !isValidNick(args[2]) {
+				configWarn = append(configWarn, "Neteisingas nick: "+args[2])
+			} else {
+				cfg.Nick = args[2]
+			}
 		}
 		if len(args) >= 4 && args[3] == "tls" {
 			cfg.TLS = true
@@ -203,6 +224,8 @@ func main() {
 
 	c.loadHistory()
 	c.loadIgnore()
+	// Žurnalų gorutina — vieta eilės tvarkai (viena rašytoja).
+	c.startLogWorker()
 
 	w, h, _ := term.GetSize(fd)
 	c.width, c.height = w, h
@@ -232,6 +255,9 @@ func main() {
 		c.serverMsg(fmt.Sprintf("Config: %s", cp))
 	} else {
 		c.errMsg("Nepavyko nustatyti konfigūracijos kelio (naudotojo katalogas nerastas)")
+	}
+	for _, w := range configWarn {
+		c.errMsg("ĮSPĖJIMAS: " + w)
 	}
 	if cfg.Server != "" {
 		c.serverMsg(fmt.Sprintf("Serveris: %s:%s (TLS:%v, reconnect:%v)", cfg.Server, cfg.Port, cfg.TLS, cfg.Reconnect))

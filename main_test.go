@@ -632,6 +632,7 @@ func TestLogging(t *testing.T) {
 		text:    "Labas!",
 		msgType: MsgChat,
 	}
+	defer c.closeLogs()
 	c.logMessage(dir, "irc.test.com", "#testas", msg)
 	// Leisti goroutine baigti
 	time.Sleep(20 * time.Millisecond)

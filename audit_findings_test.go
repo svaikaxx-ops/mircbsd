@@ -552,6 +552,8 @@ func TestFinding_ClearLogsDocMismatch(t *testing.T) {
 
 	c.logMessage(dir, "srv", "#a", Message{ts: time.Now(), text: "x", msgType: MsgChat})
 	c.logMessage(dir, "srv", "#b", Message{ts: time.Now(), text: "x", msgType: MsgChat})
+	// Uždaryti atvirus rankenas — kad t.TempDir() galėtų ištrinti katalogą.
+	defer c.closeLogs()
 
 	c.handleCmd("clearlogs", "")
 
