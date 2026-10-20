@@ -92,7 +92,7 @@ mircbsd irc.data.lt 6667 manick
 | `/search [žodis]` | Paieška (arba Ctrl+R) |
 | `/clearlogs [kanalas]` | Ištrinti log failus (numatytai: visi šiame serveryje) |
 | `/raw <IRC komanda>` | Tiesioginė IRC komanda |
-| `/w [nick\|kanalas]` | WHO užklausa — kas yra kanale arba internete |
+| `/w [nick\|kanalas]` | WHO užklausa — kas yra kanale arba internete (atsakymas rodomas užklaustame kanale) |
 | `/window` | Langų sąrašas / perjungimas |
 | `/quit [žinutė]` | Išeiti |
 | `/help` | Komandų sąrašas |
