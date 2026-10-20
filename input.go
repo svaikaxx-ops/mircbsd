@@ -12,6 +12,9 @@ import (
 // ---- Klavišai ----
 
 func (c *Client) readKeys() {
+	// Panika klaviatūros apdoravime (pvz. neteisingas indeksas) negali palikti
+	// terminalo raw režimu — atkursime jį ir sustabdysime klientą.
+	defer c.recoverPanic("klaviatūros įvestis")
 	buf := make([]byte, 64)
 	for {
 		n, err := os.Stdin.Read(buf)
@@ -602,6 +605,23 @@ func (c *Client) doTab() {
 	c.mu.Lock()
 	inputStr := string(c.input[:c.inputPos])
 	active := c.activeChan()
+	// Nukopijuojame nick'ų ir žinučių sąrašus — parseIRC gorutina tuo tarpu
+	// gali juos modifikuoti (sort.Nicks keičia vietomis), o be kopijos būtų
+	// duomenų lenktynė (race).
+	var nicks []string
+	var msgNicks []string
+	if active != nil {
+		nicks = append(nicks, active.nicks...)
+		for _, m := range active.messages {
+			if m.nick != "" {
+				msgNicks = append(msgNicks, m.nick)
+			}
+		}
+	}
+	prefixSigns := ""
+	if active != nil {
+		prefixSigns = active.prefixSigns()
+	}
 	c.mu.Unlock()
 	if active == nil {
 		return
@@ -649,18 +669,18 @@ func (c *Client) doTab() {
 		}
 	} else {
 		seen := map[string]bool{}
-		for _, n := range active.nicks {
-			bare := stripMode(n, active.prefixSigns())
+		for _, n := range nicks {
+			bare := stripMode(n, prefixSigns)
 			if !seen[bare] && strings.HasPrefix(strings.ToLower(bare), wordLow) {
 				seen[bare] = true
 				candidates = append(candidates, bare)
 			}
 		}
-		for _, m := range active.messages {
-			if m.nick != "" && !seen[m.nick] {
-				seen[m.nick] = true
-				if strings.HasPrefix(strings.ToLower(m.nick), wordLow) {
-					candidates = append(candidates, m.nick)
+		for _, m := range msgNicks {
+			if !seen[m] {
+				seen[m] = true
+				if strings.HasPrefix(strings.ToLower(m), wordLow) {
+					candidates = append(candidates, m)
 				}
 			}
 		}
@@ -1160,7 +1180,10 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		c.mu.Lock()
-		newList := c.ignoreList[:0]
+		// NAUJA kopija, ne filtravimas in-place: senas backing array
+		// galėjo būti perskaitytas kito goroutine (isIgnored) — in-place
+		// filtravimas padaro ją laikinai klaida (dubliuoti elementai).
+		newList := make([]string, 0, len(c.ignoreList))
 		for _, ig := range c.ignoreList {
 			if !strings.EqualFold(ig, nick) {
 				newList = append(newList, ig)

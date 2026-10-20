@@ -452,8 +452,11 @@ func (c *Client) removeCh(idx int) bool {
 func (c *Client) isIgnored(prefix string) bool {
 	// ignoreList keičiamas iš /ignore ir /unignore komandų (klaviatūros
 	// gorutinos), o skaitomas čia (parseIRC gorutinos) — reikia rakino.
+	// BŪTINA tikra kopija: /unignore filtruoja sąrašą IN-PLACE, todėl
+	// nuoroda į seną backing array matytų tarpinį (dubliuotą) elementą.
 	c.mu.Lock()
-	list := c.ignoreList
+	list := make([]string, len(c.ignoreList))
+	copy(list, c.ignoreList)
 	c.mu.Unlock()
 	if len(list) == 0 {
 		return false
@@ -1006,9 +1009,20 @@ func (c *Client) doConnect(gen int) {
 	close(pingStop)
 	close(writeStop)
 	c.mu.Lock()
-	c.connected = false
-	c.conn = nil
+	// Sena jungtis gali nutrūkti PO to, kai jau įsteigta nauja (vartotojas
+	// spaudė /connect). Tokiu atveju šio teardown'o negriebti naujos
+	// jungties būsenos — liko be `conn` (fd nutekėjimas) ir `connected=false`.
+	stale := c.connectGen != gen
+	if !stale {
+		c.connected = false
+		c.conn = nil
+	}
 	c.mu.Unlock()
+	if stale {
+		// Nutraukta jau nebevykdoma jungtis — nauja jungtis tvarkoma
+		// savo goroutine.
+		return
+	}
 	c.errMsg("Ryšys nutrūko")
 	c.queueRedraw()
 }
@@ -1020,6 +1034,9 @@ func (c *Client) doConnect(gen int) {
 // '\n', o atmintis nesusikaupia (priešingai nei ReadString be ribos, kur
 // priešiškas serveris galėtų kaupti megabaitus).
 func (c *Client) readLoop(reader *bufio.Reader) {
+	// Panika (pvz. neteisingai interpretuotas serverio numeris) negali
+	// palikti terminalo raw režimu — atkursime jį ir išeisime švariai.
+	defer c.recoverPanic("serverio eilutės skaitymas")
 	for {
 		line, err := reader.ReadSlice('\n')
 		if err == bufio.ErrBufferFull {
@@ -1642,10 +1659,20 @@ func (c *Client) parseIRC(line string) {
 
 	case "AUTHENTICATE":
 		if p(0) == "+" {
+			// Serveris prašo slaptažodžio TIK jeigu mes patys užsakėme SASL
+			// (saslPending). Be šios patikros priešiškas serveris galėtų
+			// gauti mūsų SASL slaptažodį už bet kokio prašymo.
 			c.mu.Lock()
+			pending := c.saslPending
 			nick := c.nick
 			pass := c.saslPass
 			c.mu.Unlock()
+			if !pending {
+				// Atsakome tuščiu slaptažodžiu — neatsakymas liktų
+				// serverį laukiančioje būsenoje.
+				c.send("AUTHENTICATE +")
+				return
+			}
 			payload := base64.StdEncoding.EncodeToString([]byte("\x00" + nick + "\x00" + pass))
 			c.send("AUTHENTICATE " + payload)
 		}

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -99,6 +100,50 @@ var (
 	stopOnce sync.Once
 )
 
+// termRestoreOnce — terminalo atkūrimas turi įvykti VISIŠKAI KARTĄ, net jei
+// panika nutikptų keliuose goroutine (kitaip terminalas liktų raw režimu
+// ir š Shell neveiktų).
+var termRestoreOnce sync.Once
+
+// globalStateMu saugo globalOldState (naudojama atkūrimo funkcijoms).
+var (
+	globalStateMu  sync.Mutex
+	globalOldState *term.State
+)
+
+// restoreTerminal grąžina terminalą iš raw režimo: atkuria seną būsenį,
+// parodo kursorių ir nuvalo ekraną. Saugu kvieti kelis kartus.
+//
+// Jei globalOldState == nil (testai) — nieko nedarome, kad neužterštume
+// stdout'o ANSI kodus.
+func restoreTerminal() {
+	termRestoreOnce.Do(func() {
+		globalStateMu.Lock()
+		st := globalOldState
+		globalStateMu.Unlock()
+		if st == nil {
+			return
+		}
+		term.Restore(int(os.Stdin.Fd()), st)
+		fmt.Print(ansiShowCur + "\033[2J\033[H")
+	})
+}
+
+// recoverPanic atkuria terminalą ir sustabdo klientą, jei goroutine viduje
+// įvyko panika. Be to terminalas liktų raw režimu, o klaviatūra — neveikti.
+//
+// recoverPanic turi būti IŠKVIEČIAMAS per `defer` pačios funkcijos pradžioje.
+func (c *Client) recoverPanic(context string) {
+	if r := recover(); r != nil {
+		fmt.Fprintf(os.Stderr, "\r\nmircBSD: panika (%s): %v\r\n", context, r)
+		if dbg := os.Getenv("MIRCBSD_DEBUG"); dbg != "" {
+			debug.PrintStack()
+		}
+		restoreTerminal()
+		c.stop()
+	}
+}
+
 func (c *Client) stop() {
 	// stop() gali būti kviečiamas ir iš /quit, ir iš signalo — uždarome tik kartą
 	stopOnce.Do(func() {
@@ -126,6 +171,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Nepavyko nustatyti raw terminalo:", err)
 		os.Exit(1)
 	}
+	// Globalus būsenas — kad panikos atkūrimas galėtų atkurti terminalą
+	// iš bet kurios goroutine.
+	globalStateMu.Lock()
+	globalOldState = oldState
+	globalStateMu.Unlock()
 
 	cfg := loadConfig(configPath())
 	setTSColor(cfg.TimestampColor)
@@ -195,11 +245,22 @@ func main() {
 	c.draw()
 	go c.readKeys()
 
+	// deferred recover — panika pagrindiniame cikle (pvz. draw()) taip pat
+	// turi atkurti terminalą, o ne palikti jį raw režimu.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "\r\nmircBSD: panika (pagrindinis ciklas): %v\r\n", r)
+			if dbg := os.Getenv("MIRCBSD_DEBUG"); dbg != "" {
+				debug.PrintStack()
+			}
+			restoreTerminal()
+		}
+	}()
+
 	for {
 		select {
 		case <-stopCh:
-			term.Restore(fd, oldState)
-			fmt.Print(ansiShowCur + "\033[2J\033[H")
+			restoreTerminal()
 			fmt.Println("Viso gero!")
 			return
 		case <-c.redraw:
