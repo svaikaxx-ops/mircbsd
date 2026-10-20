@@ -752,3 +752,102 @@ func TestFinding_CommandInjectionViaTargets(t *testing.T) {
 		mu.Unlock()
 	}
 }
+
+// ==================================================================
+// 22. PLAUSIBLE — validatoriai neturi netikti „blogo“ atmetimo.
+//     Vien už „blogo“ testai nepastebi, kad validatorius atmeta VISKĄ
+//     (t.y. kad komanda neveikia visai). Čia tikrinama, kad TEISINGI
+//     pavadinimai primi.
+// ==================================================================
+
+func TestFinding_ValidatorsAcceptValidNames(t *testing.T) {
+	channels := []string{"#kazkas", "#kanalas", "#a", "#x-y_z", "#testas123", "&special"}
+	for _, ch := range channels {
+		if !isValidChannel(ch) {
+			t.Errorf("BUG: isValidChannel(%q) = false — teisingas kanalas atmestas", ch)
+		}
+	}
+	targets := []string{"victim", "kazkas", "#kanalas", "nick_1", "a.b-c", "Nick99"}
+	for _, tg := range targets {
+		if !isValidTarget(tg) {
+			t.Errorf("BUG: isValidTarget(%q) = false — teisingas gavėjas atmestas", tg)
+		}
+	}
+	servers := []string{"irc.libera.chat", "127.0.0.1", "localhost", "srv-1", "example.org"}
+	for _, s := range servers {
+		if !isValidServer(s) {
+			t.Errorf("BUG: isValidServer(%q) = false — teisingas serverio vardas atmestas", s)
+		}
+	}
+}
+
+// Kraštiniai atvejai: per lengvas ar tuščias pavadinimas turi būti atmestas.
+func TestFinding_ValidatorsRejectEdgeCases(t *testing.T) {
+	bad := []struct {
+		kind string
+		val  string
+	}{
+		{"channel", ""},
+		{"channel", "#"},       // prefiksas be vardo
+		{"channel", "&"},       // prefiksas be vardo
+		{"channel", "#a b"},    // tarpas
+		{"channel", "#a\r\nX"}, // CRLF
+		{"channel", "#a\x1b"},  // valdymo simbolis
+		{"channel", "a#b"},     // prefiksas ne pirmoje vietoje
+		{"channel", "#" + strings.Repeat("a", 60)},
+		{"target", ""},
+		{"target", "a b"},
+		{"target", "a\r\nX"},
+		{"target", "a\x1b"},
+		{"server", ""},
+		{"server", "a b"},
+		{"server", "a..b"},
+		{"server", "a\r\nX"},
+		{"server", "a\x1b"},
+	}
+	for _, tc := range bad {
+		var ok bool
+		switch tc.kind {
+		case "channel":
+			ok = isValidChannel(tc.val)
+		case "target":
+			ok = isValidTarget(tc.val)
+		case "server":
+			ok = isValidServer(tc.val)
+		}
+		if ok {
+			t.Errorf("BUG: %s validacija priėmė netinkamą pavadinimą %q", tc.kind, tc.val)
+		}
+	}
+}
+
+// Teisingas kanalas turi būti PASIEKIAMAS serveriui — ne tik praeiti
+// validatorių.
+func TestFinding_JoinReachesServer(t *testing.T) {
+	c := newTestClient()
+	c.connected = true
+	ch := make(chan string, 20)
+	c.writeCh = ch
+	var got []string
+	var mu sync.Mutex
+	go func() {
+		for l := range ch {
+			mu.Lock()
+			got = append(got, l)
+			mu.Unlock()
+		}
+	}()
+	c.handleCmd("join", "#kazkas")
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, l := range got {
+		if l == "JOIN #kazkas" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("BUG: /join #kazkas nepasiekė serverio (išsiųsta: %v)", got)
+	}
+}

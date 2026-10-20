@@ -1781,19 +1781,25 @@ func isValidTarget(t string) bool {
 // isValidChannel tikrina kanalo pavadinimą: jis įrašomas į JOIN/PART
 // komandas, todėl turi būti ribojamas (be tarpų, be CRLF, be valdymo
 // simbolių) — kitaip galima komandų injekcija.
+//
+// Pirmas simbolis yra kanalo prefiksas pagal serverio CHANTYPES
+// („#“, „&“ ir pan.); likusi dalis — raidės, skaičiai ir „.-_“.
+// Prefiksas be vardo („#“ vienas) — netinkamas.
 func isValidChannel(ch string) bool {
 	if ch == "" || len(ch) > 50 {
 		return false
 	}
-	for _, r := range ch {
+	for i, r := range ch {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		case r == '.' || r == '-' || r == '_':
+		case i == 0 && (r == '#' || r == '&' || r == '!' || r == '+'):
 		default:
 			return false
 		}
 	}
-	return true
+	// bent vienas simbolis po prefikso
+	return len(ch) > 1
 }
 
 // isValidServer tikrina serverio pavadinimą: raidės, skaičiai ir
