@@ -340,16 +340,85 @@ func wrapText(text string, width int) []string {
 	return lines
 }
 
+// highlightURLs apvynioja URL'us ANSI spalva.
+//
+// Anksčiau naudota `strings.Fields` + `strings.Replace(..., 1)`:
+//   - tekstas jau būdavo su ANSI kodais, todėl spalvotame tekste URL niekada
+//     neatpažįstamas (kodai pačioje URL pradžioje);
+//   - antrą kartą aptinkamas tas pats URL (jau apvyniotas) → įdubiniai
+//     ANSI kodai, o antrasis URL likdavo neapvyniotas.
+//
+// Dabar tekstas skenuojamas simbolį po simbolį: ANSI seka praleidžiama,
+// o kiekvienas URL apvyniojamas lygiai VIENĄ kartą.
 func highlightURLs(text string) string {
-	words := strings.Fields(text)
-	result := text
-	for _, w := range words {
-		bare := strings.TrimRight(w, ".,!?)")
-		if strings.HasPrefix(bare, "http://") || strings.HasPrefix(bare, "https://") || strings.HasPrefix(bare, "ftp://") {
-			result = strings.Replace(result, bare, ansiCyan+ansiBold+bare+ansiReset, 1)
+	var b strings.Builder
+	b.Grow(len(text) + 32)
+	i := 0
+	for i < len(text) {
+		// ANSI pakeitimo seka (ESC [ ... m) — praleidžiama, nekeičiama.
+		if text[i] == 0x1b {
+			j := skipANSISeq(text, i)
+			b.WriteString(text[i:j])
+			i = j
+			continue
 		}
+		// URL?
+		if hasURLPrefix(text[i:]) {
+			j := i
+			for j < len(text) && !isURLBoundary(text[j]) {
+				j++
+			}
+			core := strings.TrimRight(text[i:j], ".,!?)")
+			if len(core) > 0 {
+				b.WriteString(ansiCyan + ansiBold + core + ansiReset)
+				// Uždarymo punctacija — neapvyniota.
+				b.WriteString(text[i+len(core) : j])
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(text[i])
+		i++
 	}
-	return result
+	return b.String()
+}
+
+// hasURLPrefix tikrina, ar tekstas prasideda URL schema.
+func hasURLPrefix(s string) bool {
+	return strings.HasPrefix(s, "http://") ||
+		strings.HasPrefix(s, "https://") ||
+		strings.HasPrefix(s, "ftp://")
+}
+
+// isURLBoundary tikrina, ar simbolis baigia URL'ą.
+func isURLBoundary(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '<', '>', '"', '\'', 0x1b:
+		return true
+	}
+	return false
+}
+
+// skipANSISeq grąžina indeksą už ANSI pakeitimo sekos (ESC [ ... m).
+func skipANSISeq(s string, i int) int {
+	j := i + 1
+	if j < len(s) && s[j] == '[' {
+		j++
+		for j < len(s) && !isANSITerminator(s[j]) {
+			j++
+		}
+		if j < len(s) {
+			j++
+		}
+		return j
+	}
+	// Ne CSI seka — 2 simboliai.
+	return i + 2
+}
+
+// isANSITerminator tikrina, ar simbolis baigia ANSI seką.
+func isANSITerminator(c byte) bool {
+	return c >= 0x40 && c <= 0x7e
 }
 
 func (m Message) renderLines(msgW int, myNick string) []string {
@@ -462,17 +531,113 @@ func (m Message) renderLines(msgW int, myNick string) []string {
 
 // findChunk bando rasti atitinkamą dalį originaliame tekste (su formatavimo kodais)
 // Jei nepavyksta - grąžina plain chunk
+// findChunk bando rasti atitinkamą dalį originaliame tekste (su
+// formatavimo kodais).
+//
+// Anksčiau ieškojo PLAIN tekste ir grąžindavo plainChunk (be formatavimo
+// kodų) — todėl spalvos ir paryškiavimas išgyveno TIK vienos eilutės
+// žinutėse. Dabar ieškoma originaliame tekste, ieškant ribų pagal plain
+// indeksą, todėl formatavimo kodai išsaugomi.
+//
+// Jei eilutė yra trumpesnė nei plotis (viena eilutė) — grąžinamas visas
+// originalas.
 func findChunk(original, plainChunk string) string {
 	plain := stripIRCFormat(original)
-	idx := strings.Index(plain, strings.TrimSpace(plainChunk))
-	if idx == -1 {
+	trimmed := strings.TrimSpace(plainChunk)
+	if trimmed == "" {
 		return plainChunk
 	}
-	// Grąžiname originalą jei trumpas (viena eilutė)
-	if len([]rune(plain)) == len([]rune(plainChunk)) {
+	// Būtina visas originalo tekstas (viena eilutė) — grąžiname ją.
+	if len([]rune(plain)) == len([]rune(trimmed)) {
 		return original
 	}
-	return plainChunk
+	// Ieškome PLAIN tekste ribų, tada atsižvelgiame į formatavimo kodus.
+	plainIdx := strings.Index(plain, trimmed)
+	if plainIdx == -1 {
+		return plainChunk
+	}
+	start, end := plainToOriginalBounds(original, plainIdx, len([]rune(trimmed)))
+	if start < 0 || end < 0 {
+		return plainChunk
+	}
+	return original[start:end]
+}
+
+// plainToOriginalBounds konvertuoja indeksus PLAIN tekste į indeksus
+// originaliame tekste (su IRC formatavimo kodais).
+//
+// plainIdx — simbolio indeksas be formatavimo kodų;
+// plainLen — simbolių skaičius.
+//
+// Grąžina [start, end) baitų indeksus originaliame tekste.
+func plainToOriginalBounds(original string, plainIdx, plainLen int) (int, int) {
+	runes := []rune(original)
+	plainSeen := 0
+	startByte := -1
+	endByte := -1
+	bytePos := 0
+	// inColor — esame spalvos kodo parametruose (skaičiai po \x03).
+	inColor := false
+	// pendingCodeByte — baitų pozicija, kurioje prasidėjo formatavimo kodas.
+	// Jei plain turis prasideda tiesiog po kodo, riba turi būti PRADEDAMA
+	// nuo kodo pradžios (kitaip spalvos kodas atitrūksta nuo savo teksto).
+	codeStart := -1
+	// lastCodeEnd — baitų pozicija, kur baigėsi paskutinis formatavimo kodas.
+	lastCodeEnd := -1
+
+	for _, r := range runes {
+		rlen := len(string(r))
+		isCode := false
+		switch r {
+		case '\x02', '\x1d', '\x1f', '\x16', '\x0f':
+			isCode = true
+			inColor = false
+		case '\x03':
+			isCode = true
+			inColor = true
+		default:
+			if inColor {
+				if (r >= '0' && r <= '9') || r == ',' {
+					// spalvos parametro dalis — kodas tęsiasi.
+					isCode = true
+				} else {
+					inColor = false
+				}
+			}
+		}
+
+		if isCode {
+			if codeStart < 0 {
+				codeStart = bytePos
+			}
+			bytePos += rlen
+			lastCodeEnd = bytePos
+			continue
+		}
+
+		// Įprastas simbolis — skaičiuojamas į plain tekstą.
+		if plainSeen == plainIdx && startByte < 0 {
+			if codeStart >= 0 && lastCodeEnd == bytePos {
+				// Plain turis prasideda po formatavimo kodo — įtraukiame
+				// kodą į gabalą, kad spalva liktų su savo tekstu.
+				startByte = codeStart
+			} else {
+				startByte = bytePos
+			}
+		}
+		if plainSeen == plainIdx+plainLen {
+			endByte = bytePos
+			return startByte, endByte
+		}
+		plainSeen++
+		bytePos += rlen
+		lastCodeEnd = -1
+		codeStart = -1
+	}
+	if startByte >= 0 && endByte < 0 {
+		endByte = len(original)
+	}
+	return startByte, endByte
 }
 
 // ---- Channel ----

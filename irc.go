@@ -49,10 +49,10 @@ const maxCTCPBytes = 64
 //
 // NB: negalima naudoti named return kintamųjų (chantypes, prefixSigns, ...)
 // — jie uždengtų laukus ir funkcija grąžintų tuščias reikšmes.
-func (c *Client) isupSnapshot() (string, string, string, string) {
+func (c *Client) isupSnapshot() (string, string, string, string, string) {
 	c.isupMu.RLock()
 	defer c.isupMu.RUnlock()
-	return c.chantypes, c.prefixSigns, c.prefixModes, c.casemapping
+	return c.chantypes, c.prefixSigns, c.prefixModes, c.casemapping, c.chanModes
 }
 
 // applyISUPPORT nuskaiko ISUPPORT (005) tokeno: CHANTYPES=, PREFIX=?, CASEMAPPING=.
@@ -78,6 +78,10 @@ func (c *Client) applyISUPPORT(tokens []string) {
 					c.prefixSigns = signs
 				}
 			}
+		case strings.HasPrefix(tok, "CHANMODES="):
+			// CHANMODES formatas: <tipai su argumentu>,<tipai su argumentu>,<tipai be argumento>
+			// pvz. "eIbq,k,flj,CFLMPQScgimnprstz"
+			c.chanModes = tok[len("CHANMODES="):]
 		case strings.HasPrefix(tok, "CASEMAPPING="):
 			switch tok[len("CASEMAPPING="):] {
 			case "ascii", "rfc1459", "strict-rfc1459":
@@ -85,6 +89,37 @@ func (c *Client) applyISUPPORT(tokens []string) {
 			}
 		}
 	}
+}
+
+// defaultChanModes — standartinės CHANMODES, kai serveris jų nepaskyrė.
+// RFC 2811: "eIbq,k,flj,CFLMPQScgimnprstz".
+const defaultChanModes = "eIbq,k,flj,CFLMPQScgimnprstz"
+
+// chanModesArgLetters grąžina modas, kurios IMASI ARGUMENTĄ.
+//
+// CHANMODES formatas: <su argumentu>,<su argumentu>,<be argumento>.
+// Grąžinama visų trijų dalių raidžių junginys — todėl indeksai nesulaužo
+// nežinant tikslaus serverio CHANMODES.
+//
+// Fallback: jei serveris CHANMODES nepaskyrė, naudojamas standartinis
+// RFC 2811 rinkinys.
+func chanModesArgLetters(chanModes, prefixModes string) string {
+	if chanModes == "" {
+		chanModes = defaultChanModes
+	}
+	parts := strings.Split(chanModes, ",")
+	var sb strings.Builder
+	// Pirma dalis — visada su argumentu. Antra — su argumentu.
+	// Trečia — be argumento (jos NEĄTRAUKIAME).
+	for i, p := range parts {
+		if i >= 2 {
+			break
+		}
+		sb.WriteString(p)
+	}
+	// Nick'ų statuso modos (PREFIX) taip pat imasi argumentą (nick'ą).
+	sb.WriteString(prefixModes)
+	return sb.String()
 }
 
 // lowerIRC RFC 1459 casemapping (A–Z ir []\^ ↔ {}|~).
@@ -108,7 +143,7 @@ func lowerIRC(r rune) rune {
 // nickEqual palygina nick'us pagal serverio casemapping
 // (RFC: nick'yra didžiųjų/mažųjų raidžių nejausmi, bet [] != {} pagal ASCII).
 func (c *Client) nickEqual(a, b string) bool {
-	_, _, _, cm := c.isupSnapshot()
+	_, _, _, cm, _ := c.isupSnapshot()
 	return nickEqual(a, b, cm)
 }
 
@@ -130,7 +165,7 @@ func (c *Client) isChannel(name string) bool {
 	if name == "" {
 		return false
 	}
-	ct, _, _, _ := c.isupSnapshot()
+	ct, _, _, _, _ := c.isupSnapshot()
 	return strings.ContainsRune(ct, rune(name[0]))
 }
 
@@ -206,6 +241,7 @@ type Client struct {
 	prefixSigns string // nick'o statuso prefiksai pagal svarbą (q a o h v)
 	prefixModes string // mode raidės, atitinkančios prefixSigns
 	casemapping string // nick palyginimų taisyklės
+	chanModes   string // CHANMODES: "eIbq,k,flj,CFLMPQScgimnprstz"
 
 	// Paste apsauga
 	pasteBuf          []string
@@ -386,7 +422,7 @@ func (c *Client) ensureCh(name string) *Channel {
 	// Kanalas prisimena serverio ISUPPORT parametrus, kad nick'ų
 	// lygiavimas ir sortavimas būtų nuoseklūs (ir nepriklausomų
 	// nuo to, kas tuo metu yra globalioje būsenoje).
-	_, signs, modes, cm := c.isupSnapshot()
+	_, signs, modes, cm, _ := c.isupSnapshot()
 	ch.prefix = signs
 	ch.prefixModes = modes
 	ch.casemapping = cm
@@ -1367,9 +1403,25 @@ func (c *Client) parseIRC(line string) {
 		c.queueRedraw()
 
 	case "INVITE":
-		// :nick!user@host INVITE testnick :#channel
-		invitedTo := p(1)
-		c.serverMsg(fmt.Sprintf("*** %s kviečia tave į %s (rašyk /join %s)", fromNick, invitedTo, invitedTo))
+		// :nick!user@host INVITE <target-nick> :#channel
+		// p(0) — kuris nick pakviestas, p(1) — kanalas į kurį kviečia.
+		// Anksčiau rodomas buvo p(0) (target nick), todėl kanalas niekada
+		// nepasiekdavo vartotojo (rašydavo „rašyk /join manick“).
+		invitedTo := p(0)
+		inviteChan := p(1)
+		if inviteChan == "" {
+			return
+		}
+		if invitedTo != "" {
+			c.mu.Lock()
+			isMe := c.nickEqual(invitedTo, c.nick)
+			c.mu.Unlock()
+			if !isMe {
+				// Mus kitaip — pakvietė (mums pačiams skirtas pranešimas).
+				return
+			}
+		}
+		c.serverMsg(fmt.Sprintf("*** %s kviečia tave į %s (rašyk /join %s)", fromNick, inviteChan, inviteChan))
 		c.queueRedraw()
 
 	case "NICK":
@@ -1389,7 +1441,7 @@ func (c *Client) parseIRC(line string) {
 		modeStr := p(1)
 		// Nick mode kanaluose
 		if c.isChannel(target) {
-			_, signs, modes, _ := c.isupSnapshot()
+			_, signs, modes, _, _ := c.isupSnapshot()
 			c.mu.Lock()
 			ch := c.findCh(target)
 			if ch != nil && len(params) > 2 {
@@ -1620,6 +1672,12 @@ func (c *Client) parseIRC(line string) {
 		c.queueRedraw()
 
 	case "306": // RPL_NOWAWAY — serveris patvirtino away įjungimą
+		// Nustatome away būseną — anksčiau statuso juosta nerodė [AWAY].
+		c.mu.Lock()
+		if c.away == "" {
+			c.away = "Away"
+		}
+		c.mu.Unlock()
 		c.serverMsg("Away įjungtas")
 		c.queueRedraw()
 

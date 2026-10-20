@@ -268,7 +268,7 @@ func TestFinding_ISUPPORTIsolatedPerClient(t *testing.T) {
 
 	c1.applyISUPPORT([]string{"CHANTYPES=!@"})
 
-	if ct, _, _, _ := c2.isupSnapshot(); ct != "#&" {
+	if ct, _, _, _, _ := c2.isupSnapshot(); ct != "#&" {
 		t.Errorf("CONFIRMED: vieno kliento ISUPPORT pakeitė kito: %q (turi likti \"#&\")", ct)
 	}
 }

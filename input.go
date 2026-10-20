@@ -597,7 +597,7 @@ var allCommands = []string{
 	"/nick", "/open", "/op", "/deop", "/voice", "/devoice",
 	"/part", "/query", "/quit", "/q",
 	"/raw", "/reconnect", "/search", "/time", "/topic",
-	"/unignore", "/urls", "/w", "/wc", "/whois", "/wi", "/win",
+	"/unignore", "/urls", "/w", "/wc", "/whois", "/wi", "/win", "/window",
 	"/help", "/keys",
 }
 
@@ -631,8 +631,7 @@ func (c *Client) doTab() {
 		c.tabIdx = (c.tabIdx + 1) % len(c.tabCandidates)
 		chosen := c.tabCandidates[c.tabIdx]
 		c.mu.Lock()
-		wb := wordBefore(c.tabPrefix)
-		prefix := c.tabPrefix[:len([]rune(c.tabPrefix))-len([]rune(wb))]
+		prefix := stripLastWord(c.tabPrefix)
 		suffix := ""
 		if !strings.HasPrefix(c.tabPrefix, "/") {
 			if prefix == "" {
@@ -696,7 +695,7 @@ func (c *Client) doTab() {
 
 	chosen := candidates[0]
 	c.mu.Lock()
-	prefix := inputStr[:len([]rune(inputStr))-len([]rune(word))]
+	prefix := stripLastWord(inputStr)
 	suffix := ""
 	if !strings.HasPrefix(word, "/") {
 		if prefix == "" {
@@ -714,6 +713,20 @@ func (c *Client) doTab() {
 	c.inputPos = len([]rune(prefix + chosen + suffix))
 	c.mu.Unlock()
 	c.queueRedraw()
+}
+
+// stripLastWord grąžina s be paskutinio žodžio (iki jo pradžios).
+//
+// Anksčiau buvo `s[:len([]rune(s))-len([]rune(word))]` — tai BYTE slicing
+// su RUNE'ų skaičiumi: „žinutė kai“ nukirpo iki „žinut\xc4“ (nutrūkusi
+// UTF-8 seka). Dabar skaičiuojama rune'ais.
+func stripLastWord(s string) string {
+	r := []rune(s)
+	word := []rune(wordBefore(s))
+	if len(word) >= len(r) {
+		return ""
+	}
+	return string(r[:len(r)-len(word)])
 }
 
 func wordBefore(s string) string {
@@ -756,7 +769,43 @@ func isSensitiveHistory(line string) bool {
 			return true
 		}
 	}
+	// Trumpinta forma: „set p <slaptažodis>“. NickServ leidžia rašyti „set p
+	// password“ trumpai — anksčiau ši forma nebuvo aptinkama, todėl
+	// slaptažodis likdavo įvedimo istorijoje.
+	if isSetPasswordShort(low) {
+		return true
+	}
 	return false
+}
+
+// isSetPasswordShort tikrina NickServ komandą „set p <slaptažodis>“.
+//
+// Atpažįstamos formos: „/msg NickServ set p <pass>“, „/ns set p <pass>“
+// (ir bet koks kitas NickServ komandos pavadinimas).
+func isSetPasswordShort(low string) bool {
+	// Ieškome žodžio „set“ ir po jo — raidės „p“ (arba „pass“).
+	idx := 0
+	for {
+		i := strings.Index(low[idx:], "set ")
+		if i == -1 {
+			return false
+		}
+		i += idx
+		rest := strings.TrimSpace(low[i+4:])
+		if rest == "" {
+			return false
+		}
+		// Pirmas žodis po „set“ turi būti slaptažodžio parametras.
+		word := rest
+		if j := strings.IndexAny(rest, " 	"); j != -1 {
+			word = rest[:j]
+		}
+		switch word {
+		case "p", "pass", "password":
+			return true
+		}
+		idx = i + 4
+	}
 }
 
 func decodeRune(b []byte) (rune, int) {
@@ -877,7 +926,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		// neleistini), kad būtų išvengta komandų injekcijos.
 		// Prefiksas tikrinamas pagal serverio CHANTYPES — kai serveris
 		// naudoja „#$“, kanalas „$kanalas“ yra galiojantis.
-		ct, _, _, _ := c.isupSnapshot()
+		ct, _, _, _, _ := c.isupSnapshot()
 		if !isValidChannelFor(chName, ct) {
 			c.errMsg("Netinkamas kanalo pavadinimas (raidės, skaičiai ir .-_ ; max 50)")
 			return
@@ -1276,7 +1325,27 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.send(args)
 		}
 
-	case "w", "win", "window":
+	case "w":
+		// /w — WHO (kaip visuose IRC klientuose). Anksčiau /w rodė langų
+		// sąrašą, todėl WHO komanda niekada nesiunčiama, o 352/354/315
+		// numerikai liko neapdoroti.
+		target := ""
+		if args != "" {
+			target = firstField(args)
+		}
+		if target == "" {
+			c.mu.Lock()
+			if ch := c.activeChan(); ch != nil {
+				target = ch.name
+			}
+			c.mu.Unlock()
+		}
+		if target == "" {
+			target = "*"
+		}
+		c.send("WHO " + target)
+
+	case "win", "window":
 		if args == "" {
 			c.mu.Lock()
 			type winRow struct {
@@ -1382,7 +1451,8 @@ func (c *Client) handleCmd(cmd, args string) {
 			"/open [n]                            atidaryti URL naršyklėje",
 			"/clear                               išvalyti kanalo istoriją",
 			"/clearlogs [kanalas]                 ištrinti log failus (numatytai: visi šiame serveryje)",
-			"/w [n]                               langų sąrašas",
+			"/w [mask]                            WHO (serverio vartotojai)",
+			"/window [n]                          langų sąrašas / perjungti",
 			"/quit                                išeiti",
 			"───────────────────────────────────────────────────",
 			"PgUp/PgDn       scroll      ↑↓   scroll / istorija",
