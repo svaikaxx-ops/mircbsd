@@ -6,6 +6,8 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1058,5 +1060,37 @@ func TestWhoisReplyGoesToActiveChannel(t *testing.T) {
 	joined := strings.Join(chanTexts, "\n")
 	if !strings.Contains(joined, "Jonas") {
 		t.Errorf("BUG: WHOIS atsakymas ne kanale — %q", joined)
+	}
+}
+
+// TestLogNickChangeKeepsContext — žurnale nick'o pakeitimas turi rodyti
+// „*** senas → naujas“. Anksčiau rašydavo tik naują nick'ą („Žilvinas2“)
+// — nebuvo aišku, kas į ką pasikeitė.
+func TestLogNickChangeKeepsContext(t *testing.T) {
+	dir := t.TempDir()
+	c := newTestClient()
+	c.logDir = dir
+	c.server = "irc.test.com"
+	c.startLogWorker()
+	c.parseIRC(":testnick!u@h JOIN #k")
+	c.parseIRC(":testnick!u@h NICK :naujasnick")
+
+	// Žurnalas rašomas per atskirą gorutiną — paliekame laiko užbaigti.
+	time.Sleep(200 * time.Millisecond)
+
+	var content string
+	entries, err := os.ReadDir(filepath.Join(dir, "irc.test.com"))
+	if err != nil {
+		t.Fatalf("BUG: žurnalo katalogo nėra: %v", err)
+	}
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(dir, "irc.test.com", e.Name()))
+		if err != nil {
+			t.Fatalf("klaida skaitant žurnalą: %v", err)
+		}
+		content += string(b)
+	}
+	if !strings.Contains(content, "*** testnick → naujasnick") {
+		t.Errorf("BUG: žurnale nėra nick'o pakeitimo konteksto: %q", content)
 	}
 }

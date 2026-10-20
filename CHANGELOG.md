@@ -46,6 +46,11 @@ atmetamas“ **ir** „teisingas priimamas“).
   (pridėtas per `JOIN`), prefiksas tyliai dingdavo — vartotojas nematė,
   kad jis operatorius. Dabar prefiksas atnaujinamas.
 
+- **Žurnale matomas nick’o pakeitimas** – `MsgNick` neturėjo žurnalo atvejo,
+  todėl rašydavo tik naują nick’ą (`Žilvinas2`) — nebuvo aišku, kas į ką
+  pasikeitė. Dabar: `*** Žilvinas → Žilvinas2`. Taip pat `MsgNotice` rašomas
+  su prefiksu (`-nick-`).
+
 - **Serverio slaptažodis (`PASS`)** – naujas konfigūracijos parametras
   `password=`. Siunčiamas prieš `NICK`, kaip reikalauja RFC 2812 (bouncer,
   privatus serveris).

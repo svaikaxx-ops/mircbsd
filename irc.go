@@ -905,6 +905,12 @@ func (c *Client) logMessage(logDir, server, chanName string, m Message) {
 		line = fmt.Sprintf("[%s] <-- %s išėjo (%s)\n", ts, nick, plain)
 	case MsgQuit:
 		line = fmt.Sprintf("[%s] <-- %s atsijungė (%s)\n", ts, nick, plain)
+	case MsgNick:
+		// Nick'o pakeitimas: „*** senas → naujas“. Be to žurnale likdavo
+		// tik naujas nick'as („Žilvinas2“) — neaišku, kas į ką pasikeitė.
+		line = fmt.Sprintf("[%s] *** %s → %s\n", ts, nick, plain)
+	case MsgNotice:
+		line = fmt.Sprintf("[%s] -%s- %s\n", ts, nick, plain)
 	default:
 		line = fmt.Sprintf("[%s] %s\n", ts, plain)
 	}
