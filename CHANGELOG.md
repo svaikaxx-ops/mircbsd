@@ -10,6 +10,20 @@ Peržiūra aptiko 23 klaidą — dauguma jų galėjo sukelti paniką arba
 kompromituoti terminalą. Visos ištaisytos; saugumo regresijos testai
 įtraukti į CI (`audit_findings_test.go`, build tag `audit`).
 
+### Taisyta (elgsena)
+
+- **Kanalų validacija nebeatmeta teisingų kanalų** – saugumo pataisymai
+  įvedė `isValidChannel()` validatoriu, bet jis neleido kanalių prefikso
+  („#“, „&“, „!“, „+“), todėl `/join #kanalas` niekada nepasiekdavo
+  serverio. Prefiksas leidžiamas tik pirmoje vietoje; prefiksas be
+  vardo („#“ vienas) atmetamas.
+
+- `/clearlogs` be argumentų dabar ištrina **visus** dabartinio serverio
+  žurnalus (pagal `/help` tekstą) — anksčiau trynė tik aktyvų kanalą.
+
+- `/close` dabar priima argumentą: `/close <kanalas>` uždaro nurodytą
+  langą (anksčiau argumentas buvo ignoruojamas, užverdavo aktyvų).
+
 ### Taisyta (stabilumas)
 
 - **Serverio `PART *server*` nebeišprovokuoja panikos** – kai serveris
@@ -70,14 +84,6 @@ kompromituoti terminalą. Visos ištaisytos; saugumo regresijos testai
 - **Visos siunčiamos eilutės ≤ 512 baitų** – ilgos `/notice`, `/topic`
   ir `/away` komandos nutrumpinamos UTF-8 saugiai (anksčiau serveris
   nutraukdavo ryšį).
-
-### Taisyta (elgsena)
-
-- `/clearlogs` be argumentų dabar ištrina **visus** dabartinio serverio
-  žurnalus (pagal `/help` tekstą) — anksčiau trynė tik aktyvų kanalą.
-
-- `/close` dabar priima argumentą: `/close <kanalas>` uždaro nurodytą
-  langą (anksčiau argumentas buvo ignoruojamas, užverdavo aktyvų).
 
 ## [0.4.1] – 2026-10-01 – slinkimo (scroll) taisymai
 
