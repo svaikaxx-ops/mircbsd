@@ -1146,6 +1146,13 @@ func (c *Client) handleCmd(cmd, args string) {
 
 	case "whois", "wi":
 		if w := firstField(args); c.isConnected() && w != "" {
+			// WHOIS atsakymai rodomi aktyviame kanale (jei esame kanale) —
+			// anksčiau jie visada eidavo į *server* langą.
+			if act := c.activeName(); c.isChannel(act) {
+				c.setWhoisTarget(act)
+			} else {
+				c.setWhoisTarget("")
+			}
 			c.send("WHOIS " + w)
 		}
 
@@ -1379,6 +1386,13 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 		if target == "" {
 			target = "*"
+		}
+		// Atsakymus rodykime kanale, kuriame užklausta (jei tai kanalas) —
+		// anksčiau jie visada eidavo į *server* langą ir kanale buvo nematomi.
+		if c.isChannel(target) {
+			c.setWhoTarget(target)
+		} else {
+			c.setWhoTarget("")
 		}
 		c.send("WHO " + target)
 

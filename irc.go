@@ -307,6 +307,14 @@ type Client struct {
 	// Away throttle: nick -> paskutinio pranešimo laikas
 	awayNotified map[string]time.Time
 
+	// WHO/WHOIS atsakymų adresatas. Numerikai (352/315, 311–318) atėksta
+	// be žinios, kurioje vietoje vartotojas juos užsakė — anksčiau visi
+	// šie atsakymai eidavo į *server* langą, todėl kanale, kuriame buvo
+	// užklausta, jų nebuvo matoma. Čia saugome kanalo, kuriame užklausta
+	// (jei tai buvo kanalas), kad atsakymai grįžtų į TEN.
+	whoChan   string
+	whoisChan string
+
 	// Serverio protokolo parametrai (ISUPPORT/005) — PER SERVERĮ.
 	// Gydoma isupMu: skaitytojai RLock, applyISUPPORT Lock.
 	isupMu      sync.RWMutex
@@ -521,6 +529,45 @@ func (c *Client) activeName() string {
 		return ch.name
 	}
 	return ""
+}
+
+// setWhoTarget prisimena, į kurį langą grąžinti WHO atsakymus.
+// target — kanalas, kuriame užklausta (jei ne kanalas — tuščia, tada
+// atsakymai eina į *server*).
+func (c *Client) setWhoTarget(target string) {
+	c.mu.Lock()
+	c.whoChan = target
+	c.mu.Unlock()
+}
+
+// setWhoisTarget prisimena, į kurį langą grąžinti WHOIS atsakymus.
+func (c *Client) setWhoisTarget(target string) {
+	c.mu.Lock()
+	c.whoisChan = target
+	c.mu.Unlock()
+}
+
+// whoReplyMsg — WHO atsakymas. Jei užklausta buvo kanale, atsakymas
+// rodomas TEN (o ne *server* lange) — kitaip vartotojas kanale jo nemato.
+func (c *Client) whoReplyMsg(text string) {
+	c.mu.Lock()
+	target := c.whoChan
+	c.mu.Unlock()
+	if target == "" || !c.isChannel(target) {
+		target = "*server*"
+	}
+	c.addMsg(target, Message{ts: time.Now(), text: text, msgType: MsgServer})
+}
+
+// whoisReplyMsg — WHOIS atsakymas (analogiškai whoReplyMsg).
+func (c *Client) whoisReplyMsg(text string) {
+	c.mu.Lock()
+	target := c.whoisChan
+	c.mu.Unlock()
+	if target == "" || !c.isChannel(target) {
+		target = "*server*"
+	}
+	c.addMsg(target, Message{ts: time.Now(), text: text, msgType: MsgServer})
 }
 
 // isConnected grąžina ryšio būklę saugiai (su rakinu). c.connected keičiamas
@@ -1769,7 +1816,7 @@ func (c *Client) parseIRC(line string) {
 		// End of NAMES
 
 	case "315": // RPL_ENDOFWHO — WHO sąrašo pabaiga
-		c.serverMsg(fmt.Sprintf("── WHO %s: pabaiga ──", p(1)))
+		c.whoReplyMsg(fmt.Sprintf("── WHO %s: pabaiga ──", p(1)))
 
 	case "352": // RPL_WHOREPLY: <client> <channel> <user> <host> <server> <nick> <flags> :<hopcount> <realname>
 		// Anksčiau šis numerikas krisdavo į `default:` ir buvo rodomas
@@ -1778,7 +1825,7 @@ func (c *Client) parseIRC(line string) {
 		whoNick := p(5)
 		whoFlags := p(6)
 		if whoNick != "" {
-			c.serverMsg(fmt.Sprintf("│  %-20s %s%s", whoChan, whoFlags, whoNick))
+			c.whoReplyMsg(fmt.Sprintf("│  %-20s %s%s", whoChan, whoFlags, whoNick))
 		}
 
 	case "354": // RPL_WHOSPCRPL — WHOIS stilingas (whowas)
@@ -1786,7 +1833,7 @@ func (c *Client) parseIRC(line string) {
 		whoFlags := p(2)
 		whoReal := p(7)
 		if whoNick != "" {
-			c.serverMsg(fmt.Sprintf("│  %s%s — %s", whoFlags, whoNick, whoReal))
+			c.whoReplyMsg(fmt.Sprintf("│  %s%s — %s", whoFlags, whoNick, whoReal))
 		}
 
 	case "367": // RPL_BANLIST: <client> <channel> <mask> <who> <when>
@@ -1814,15 +1861,15 @@ func (c *Client) parseIRC(line string) {
 		c.serverMsg(fmt.Sprintf("Serverio laikas [%s]: %s", p(1), p(2)))
 
 	case "301":
-		c.serverMsg(fmt.Sprintf("%s yra away: %s", p(1), p(2)))
+		c.whoisReplyMsg(fmt.Sprintf("%s yra away: %s", p(1), p(2)))
 
 	case "311": // RPL_WHOISUSER: nick user host * :realname
 		nick, user2, host, realname := p(1), p(2), p(3), p(5)
-		c.serverMsg(fmt.Sprintf("┌─[whois] %s (%s@%s) — %s", nick, user2, host, realname))
+		c.whoisReplyMsg(fmt.Sprintf("┌─[whois] %s (%s@%s) — %s", nick, user2, host, realname))
 	case "312": // RPL_WHOISSERVER: nick server :info
-		c.serverMsg(fmt.Sprintf("│  Serveris : %s (%s)", p(2), p(3)))
+		c.whoisReplyMsg(fmt.Sprintf("│  Serveris : %s (%s)", p(2), p(3)))
 	case "313": // RPL_WHOISOPERATOR
-		c.serverMsg(fmt.Sprintf("│  Operatorius: %s", p(1)))
+		c.whoisReplyMsg(fmt.Sprintf("│  Operatorius: %s", p(1)))
 	case "317": // RPL_WHOISIDLE: nick idle signon
 		idle, _ := strconv.Atoi(p(2))
 		signonTs, _ := strconv.ParseInt(p(3), 10, 64)
@@ -1831,15 +1878,15 @@ func (c *Client) parseIRC(line string) {
 		if signonTs > 0 {
 			signonStr = "  prisijungė: " + time.Unix(signonTs, 0).Format("2006-01-02 15:04")
 		}
-		c.serverMsg(fmt.Sprintf("│  Idle      : %s%s", idleStr, signonStr))
+		c.whoisReplyMsg(fmt.Sprintf("│  Idle      : %s%s", idleStr, signonStr))
 	case "319": // RPL_WHOISCHANNELS
-		c.serverMsg(fmt.Sprintf("│  Kanalai   : %s", p(2)))
+		c.whoisReplyMsg(fmt.Sprintf("│  Kanalai   : %s", p(2)))
 	case "330": // RPL_WHOISACCOUNT: nick account :is logged in as
-		c.serverMsg(fmt.Sprintf("│  Paskyra   : %s", p(2)))
+		c.whoisReplyMsg(fmt.Sprintf("│  Paskyra   : %s", p(2)))
 	case "671": // RPL_WHOISSECURE
-		c.serverMsg(fmt.Sprintf("│  Ryšys     : TLS (šifruotas)"))
+		c.whoisReplyMsg(fmt.Sprintf("│  Ryšys     : TLS (šifruotas)"))
 	case "318": // RPL_ENDOFWHOIS
-		c.serverMsg(fmt.Sprintf("└─[whois] %s — pabaiga", p(1)))
+		c.whoisReplyMsg(fmt.Sprintf("└─[whois] %s — pabaiga", p(1)))
 
 	case "305": // RPL_UNAWAY — serveris patvirtino away išjungimą
 		c.mu.Lock()

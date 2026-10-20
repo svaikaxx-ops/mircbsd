@@ -36,6 +36,16 @@ atmetamas“ **ir** „teisingas priimamas“).
   `266`, `367`–`369` anksčiau krisdavo į `default:` ir buvo rodomi
   žaliai kaip „[352] …“. Dabar formatuojami (`/w` komanda juos siunčia).
 
+- **WHO/WHOIS atsakymai grįžta į užklaustą kanalą** – anksčiau visi šie
+  atsakymai eidavo į `*server*` langą, todėl kanale, kuriame vartotojas
+  užklausė, jų nebuvo matoma (reikėjo peršokti į serverio langą).
+  Dabar atsakymai rodomi ten, kur užklausta.
+
+- **Operatoriaus prefiksas neišnyksta** – kai `353` (NAMES) atnešdavo
+  nick’ą su statuso prefiksu (`@nick`), o jis jau buvo sąraše be prefikso
+  (pridėtas per `JOIN`), prefiksas tyliai dingdavo — vartotojas nematė,
+  kad jis operatorius. Dabar prefiksas atnaujinamas.
+
 - **Serverio slaptažodis (`PASS`)** – naujas konfigūracijos parametras
   `password=`. Siunčiamas prieš `NICK`, kaip reikalauja RFC 2812 (bouncer,
   privatus serveris).

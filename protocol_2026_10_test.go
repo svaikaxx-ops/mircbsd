@@ -898,3 +898,165 @@ func TestNickRejectedWhenOverServerLimit(t *testing.T) {
 		t.Error("BUG: trumpas nick atmestas, nors NICKLEN=10")
 	}
 }
+
+// ---- E2E patikra aptiktos klaidos (2026-10-20) ----
+
+// TestNickPrefixUpdatedFromNames — 353 (NAMES) atneša STATUSO prefiksą
+// („@nick“), kuris ankstesniam JOIN įrašui nebuvo. Anksčiau addNick
+// ignoravo „dublikatus“ → prefiksas tyliai dingdavo, o vartotojas nematė,
+// kad jis operatorius.
+//
+// BUG atkurtas: JOIN pridėjo „testnick“ (be prefikso), tada 353 atnešė
+// „@testnick“ → sąraše turi likti „@testnick“.
+func TestNickPrefixUpdatedFromNames(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":testnick!u@h JOIN #k")
+	c.parseIRC(":srv 353 testnick = #k :@testnick Opas +Balsas testnick Paprastas")
+
+	c.mu.Lock()
+	var nicks []string
+	for _, ch := range c.channels {
+		if ch.name == "#k" {
+			nicks = append(nicks, ch.nicks...)
+		}
+	}
+	c.mu.Unlock()
+
+	joined := strings.Join(nicks, ",")
+	if !strings.Contains(joined, "@testnick") {
+		t.Errorf("BUG: operatoriaus prefiksas @ dingęs — nicks=%q", joined)
+	}
+	// Prefiksas turi būti ir teisingoje vietoje ( operatorius — pirmas).
+	if len(nicks) == 0 || nicks[0] != "@testnick" {
+		t.Errorf("BUG: prefiksuotas nick'as ne pirmas — nicks=%q", joined)
+	}
+}
+
+// TestNickPrefixNotDuplicated — kai prefiksas jau yra (iš 353), vėlesnis
+// 353 su tuo pačiu nick'u NEPRIDEDA dar vieno prefikso.
+func TestNickPrefixNotDuplicated(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":testnick!u@h JOIN #k")
+	c.parseIRC(":srv 353 testnick = #k :@testnick")
+	c.parseIRC(":srv 353 testnick = #k :@testnick")
+
+	c.mu.Lock()
+	var nicks []string
+	for _, ch := range c.channels {
+		if ch.name == "#k" {
+			nicks = append(nicks, ch.nicks...)
+		}
+	}
+	c.mu.Unlock()
+
+	joined := strings.Join(nicks, ",")
+	if strings.Count(joined, "testnick") != 1 {
+		t.Errorf("BUG: nick'as dubliuojasi — nicks=%q", joined)
+	}
+	if strings.Contains(joined, "@@") {
+		t.Errorf("BUG: prefiksas dubliuojasi — nicks=%q", joined)
+	}
+}
+
+// TestNickPrefixKeptWhenNamesHasNone — jei 353 atneša nick'ą BE prefikso,
+// o jis jau sąraše su prefiksu (iš MODE komandos) — prefiksas LIEKA.
+func TestNickPrefixKeptWhenNamesHasNone(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":testnick!u@h JOIN #k")
+	c.parseIRC(":srv MODE #k +o testnick")
+	c.parseIRC(":srv 353 testnick = #k :testnick")
+
+	c.mu.Lock()
+	var nicks []string
+	for _, ch := range c.channels {
+		if ch.name == "#k" {
+			nicks = append(nicks, ch.nicks...)
+		}
+	}
+	c.mu.Unlock()
+
+	joined := strings.Join(nicks, ",")
+	if !strings.Contains(joined, "@testnick") {
+		t.Errorf("BUG: prefiksas dingo, kai 353 atnešė nick'ą be prefikso — nicks=%q", joined)
+	}
+}
+
+// TestWhoReplyGoesToQueriedChannel — WHO atsakymai rodomi kanale, kuriame
+// buvo užklausta. Anksčiau jie visada eidavo į *server* langą, todėl
+// vartotojas kanale jų nematė.
+func TestWhoReplyGoesToQueriedChannel(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":testnick!u@h JOIN #lietuva")
+	c.setWhoTarget("#lietuva")
+	c.parseIRC(":srv 352 testnick #lietuva user host srv Jonas H@ :0 Jonas Ilgavardis")
+	c.parseIRC(":srv 315 testnick #lietuva :End of /WHO list.")
+
+	c.mu.Lock()
+	var chanTexts, serverTexts []string
+	for _, ch := range c.channels {
+		for _, m := range ch.messages {
+			if ch.name == "#lietuva" {
+				chanTexts = append(chanTexts, m.text)
+			} else {
+				serverTexts = append(serverTexts, m.text)
+			}
+		}
+	}
+	c.mu.Unlock()
+
+	joined := strings.Join(chanTexts, "\n")
+	if !strings.Contains(joined, "Jonas") {
+		t.Errorf("BUG: WHO atsakymas ne kanale #lietuva — kanale=%q", joined)
+	}
+	if strings.Contains(strings.Join(serverTexts, "\n"), "Jonas") {
+		t.Errorf("BUG: WHO atsakymas vis tiek *server* lange — server=%q", strings.Join(serverTexts, "\n"))
+	}
+}
+
+// TestWhoReplyGoesToServerWhenNotChannel — jei WHO užklausta ne kanale
+// (pvz. „WHO *“), atsakymai eina į *server* langą.
+func TestWhoReplyGoesToServerWhenNotChannel(t *testing.T) {
+	c := newTestClient()
+	c.setWhoTarget("")
+	c.parseIRC(":srv 352 testnick * user host srv Jonas H@ :0 Jonas Ilgavardis")
+
+	c.mu.Lock()
+	var serverTexts []string
+	for _, ch := range c.channels {
+		if ch.name == "*server*" {
+			for _, m := range ch.messages {
+				serverTexts = append(serverTexts, m.text)
+			}
+		}
+	}
+	c.mu.Unlock()
+
+	if !strings.Contains(strings.Join(serverTexts, "\n"), "Jonas") {
+		t.Errorf("BUG: WHO atsakymas nerastas *server* lange — %q", strings.Join(serverTexts, "\n"))
+	}
+}
+
+// TestWhoisReplyGoesToActiveChannel — WHOIS atsakymai rodomi aktyviame kanale.
+func TestWhoisReplyGoesToActiveChannel(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":testnick!u@h JOIN #lietuva")
+	c.setWhoisTarget("#lietuva")
+	c.parseIRC(":srv 311 testnick Jonas user host * :Jonas Ilgavardis")
+	c.parseIRC(":srv 318 testnick Jonas :End of /WHOIS list.")
+
+	c.mu.Lock()
+	var chanTexts []string
+	for _, ch := range c.channels {
+		if ch.name == "#lietuva" {
+			for _, m := range ch.messages {
+				chanTexts = append(chanTexts, m.text)
+			}
+		}
+	}
+	c.mu.Unlock()
+
+	joined := strings.Join(chanTexts, "\n")
+	if !strings.Contains(joined, "Jonas") {
+		t.Errorf("BUG: WHOIS atsakymas ne kanale — %q", joined)
+	}
+}

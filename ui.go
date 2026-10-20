@@ -720,8 +720,21 @@ func (ch *Channel) prefixSigns(opt ...string) string {
 
 func (ch *Channel) addNick(nick string, signOpt ...string) {
 	sign := ch.prefixSigns(signOpt...)
-	for _, n := range ch.nicks {
+	for i, n := range ch.nicks {
 		if nickEqual(stripMode(n, sign), stripMode(nick, sign), ch.casemapping) {
+			// Nick'as jau yra sąraše. Bet 353 (NAMES) gali atneši STATUSO
+			// prefiksą, kurio nebuvo, kai jis įrašytas (pvz. JOIN pridėjo
+			// „Žilvinas“, o 353 atnešė „@Žilvinas“). Anksčiau čia buvo
+			// grynas „return“ → prefiksas tyliai dingdavo ir vartotojas
+			// nematė, kad jis operatorius.
+			// Atnaujiname tik tada, kai NAUJAS nick'as turi prefiksą —
+			// jei jo nėra, esantis prefiksas (iš MODE komandos) lieka.
+			newPrefix := modePrefix(nick, sign)
+			if newPrefix == "" || newPrefix == modePrefix(n, sign) {
+				return
+			}
+			ch.nicks[i] = newPrefix + stripMode(n, sign)
+			sortNicks(ch.nicks, sign)
 			return
 		}
 	}
