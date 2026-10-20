@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // ---- ANSI ----
@@ -268,24 +267,76 @@ type Message struct {
 	highlight bool
 }
 
+// wrapText apvynio tekstą pagal plotį LĄSTELĖMIS (ne rune'ais).
+//
+// CJK ideogramai užima 2 ląsteles, o derinamieji ženklai (ą, č, emoji odų
+// tonai) — 0. Rune'ų skaičiavimas todėl perlydavo terminalo plotį.
+// Tekstas taip pat skaidomas į grafinius klasterius, kad akcentuota raidė arba
+// emoji nebūtų nutrūkta perpusę.
 func wrapText(text string, width int) []string {
 	if width <= 0 {
 		width = 1
 	}
-	var lines []string
-	runes := []rune(text)
-	for len(runes) > width {
-		cut := width
-		for cut > width/2 && runes[cut-1] != ' ' {
-			cut--
-		}
-		if cut <= width/2 {
-			cut = width
-		}
-		lines = append(lines, string(runes[:cut]))
-		runes = []rune(strings.TrimLeft(string(runes[cut:]), " "))
+	clusters := runeClusters(text)
+	if len(clusters) == 0 {
+		return []string{""}
 	}
-	lines = append(lines, string(runes))
+	var lines []string
+	cur := make([]string, 0, width)
+	curW := 0
+	for _, cl := range clusters {
+		cw := clusterWidth(cl)
+		if curW+cw > width {
+			// Eilutė pilna — ieškome pertraukimo vietos (tarpai).
+			// Žodis per ilgas (neteliko nė vienos eilutės) — nukerpame
+			// paskutinį klasterį.
+			cut := -1
+			for i := len(cur) - 1; i >= 0; i-- {
+				if cur[i] == " " {
+					cut = i
+					break
+				}
+			}
+			if cut < 0 {
+				// Žodis neteliko — kirsti pagal plotį.
+				if len(cur) == 0 {
+					// Vienas klasteris (pvz. 2 ląstelės) viršija plotį —
+					// vis tiek jį išspausdiname, kad tekstas nebūtų
+					// prarastas.
+					cur = append(cur, cl)
+					curW = cw
+					lines = append(lines, strings.Join(cur, ""))
+					cur = cur[:0]
+					curW = 0
+					continue
+				}
+				lines = append(lines, strings.Join(cur, ""))
+				cur = cur[:0]
+				curW = 0
+				// Pridedame klasterį į naują eilutę.
+				cur = append(cur, cl)
+				curW = cw
+				continue
+			}
+			// Perskirsti iki paskutinio tarpo: turinys po tarpu — kita
+			// eilutė.
+			lines = append(lines, strings.Join(cur[:cut], ""))
+			rest := cur[cut+1:]
+			cur = append(cur[:0], rest...)
+			curW = 0
+			for _, r := range cur {
+				curW += clusterWidth(r)
+			}
+			cur = append(cur, cl)
+			curW += cw
+			continue
+		}
+		cur = append(cur, cl)
+		curW += cw
+	}
+	if len(cur) > 0 || len(lines) == 0 {
+		lines = append(lines, strings.Join(cur, ""))
+	}
 	return lines
 }
 
@@ -330,14 +381,14 @@ func (m Message) renderLines(msgW int, myNick string) []string {
 		hl := hlBgCode
 		nickStr := "<" + m.nick + "> "
 		if m.highlight {
-			p = part{hl + ansiBold + ts + nc + nickStr + ansiReset + hl, tsLen + len([]rune(nickStr))}
+			p = part{hl + ansiBold + ts + nc + nickStr + ansiReset + hl, tsLen + stringWidth(nickStr)}
 		} else {
-			p = part{ts + nc + nickStr + ansiReset, tsLen + len([]rune(nickStr))}
+			p = part{ts + nc + nickStr + ansiReset, tsLen + stringWidth(nickStr)}
 		}
 	case MsgAction:
 		nc := nickColor(m.nick)
 		pfx := "* " + m.nick + " "
-		p = part{ts + nc + pfx, tsLen + len([]rune(pfx))}
+		p = part{ts + nc + pfx, tsLen + stringWidth(pfx)}
 	case MsgJoin:
 		p = part{ts + ansiGreen, tsLen}
 	case MsgPart:
@@ -348,7 +399,7 @@ func (m Message) renderLines(msgW int, myNick string) []string {
 		p = part{ts + ansiGreen, tsLen}
 	case MsgNotice:
 		pfx := "-" + m.nick + "- "
-		p = part{ts + ansiCyan + pfx, tsLen + len([]rune(pfx))}
+		p = part{ts + ansiCyan + pfx, tsLen + stringWidth(pfx)}
 	case MsgServer:
 		p = part{ts + ansiCyan, tsLen}
 	case MsgError:
@@ -703,7 +754,7 @@ func (c *Client) draw() {
 	}
 	statusRight := " PgUp/Dn:scroll Ctrl+N/P:kan Ctrl+←→:žodis Tab:AC /help "
 	statusLeft = sanitizeText(statusLeft)
-	pad := w - utf8.RuneCountInString(statusLeft) - utf8.RuneCountInString(statusRight)
+	pad := w - stringWidth(statusLeft) - stringWidth(statusRight)
 	if pad < 0 {
 		pad = 0
 	}
@@ -718,9 +769,7 @@ func (c *Client) draw() {
 		out.WriteString(ansiDarkGray + " ✦ " + ansiReset)
 		topicPlain := sanitizeText(stripIRCFormat(topic))
 		maxTopic := w - 4
-		if len([]rune(topicPlain)) > maxTopic {
-			topicPlain = string([]rune(topicPlain)[:maxTopic-1]) + "…"
-		}
+		topicPlain = truncateWidth(topicPlain, maxTopic)
 		out.WriteString(ansiCyan + topicPlain + ansiReset)
 		row++
 	}
@@ -776,10 +825,8 @@ func (c *Client) draw() {
 				fkeyPrefix = fmt.Sprintf("%d:", i+1)
 			}
 			maxNameW := chanListWidth - 2 - len(fkeyPrefix)
-			if len([]rune(displayName)) > maxNameW {
-				displayName = string([]rune(displayName)[:maxNameW])
-			}
-			label := fmt.Sprintf(" %s%-*s", fkeyPrefix, maxNameW, displayName)
+			displayName = truncateWidth(displayName, maxNameW)
+			label := " " + fkeyPrefix + fitWidth(displayName, maxNameW)
 			if ch.unread > 0 && i != activeIdx {
 				unreadW := maxNameW - 3
 				if unreadW < 1 {
@@ -914,15 +961,12 @@ func (c *Client) draw() {
 					}
 					hint = fmt.Sprintf("(%d/%d)", shown, len(nicks))
 				}
-				out.WriteString(ansiBold + ansiCyan + fmt.Sprintf("%-*s", nickListWidth, " Nick"+hint) + ansiReset)
+				out.WriteString(ansiBold + ansiCyan + fitWidth(" Nick"+hint, nickListWidth) + ansiReset)
 			} else {
 				ni := nickScrollOff + i - 1
 				if ni < len(nicks) {
 					n := sanitizeText(nicks[ni])
-					display := n
-					if len([]rune(display)) > nickListWidth {
-						display = string([]rune(display)[:nickListWidth])
-					}
+					display := truncateWidth(n, nickListWidth)
 					color := ansiWhite
 					switch modePrefix(n, active.prefixSigns()) {
 					case "~", "&", "@":
@@ -932,7 +976,7 @@ func (c *Client) draw() {
 					case "+":
 						color = ansiCyan
 					}
-					out.WriteString(color + fmt.Sprintf("%-*s", nickListWidth, display) + ansiReset)
+					out.WriteString(color + fitWidth(display, nickListWidth) + ansiReset)
 				}
 			}
 		}
