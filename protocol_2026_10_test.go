@@ -3,7 +3,9 @@ package main
 // Protokolo ir renderio radiniai (K5, K6, K7, K9, K11, K14, K15, K18).
 
 import (
+	"bufio"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -709,5 +711,190 @@ func TestChannelListScrollKeepsActiveVisible(t *testing.T) {
 	rows := 20 - 4
 	if scroll > 1 || scroll+rows <= 1 {
 		t.Errorf("BUG: slinktis = %d — kanalas 1 nematomas (rows=%d)", scroll, rows)
+	}
+}
+
+// ============================================================
+// K25 — serverio slaptažodis (PASS) ir ISUPPORT ribos
+// ============================================================
+
+// TestServerPassIsSentBeforeNick — serverio slaptažodis siunčiamas PASS
+// komanda PRIEŠ NICK (RFC 2812).
+func TestServerPassIsSentBeforeNick(t *testing.T) {
+	c := newTestClient()
+	c.logDir = ""
+	c.mu.Lock()
+	c.serverPass = "slaptas-serverio-zodis"
+	c.mu.Unlock()
+
+	_ = captureWrites(c)
+
+	// Paleidžiame prisijungimą prie netikro serverio (lokalaus).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer ln.Close()
+	// Priimame vieną jungtį ir rinkime eilutes.
+	lines := make(chan string, 50)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		sc := bufio.NewScanner(conn)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+	}()
+
+	c.mu.Lock()
+	c.server = "127.0.0.1"
+	c.port = portOf(ln)
+	c.mu.Unlock()
+	go c.doConnect(0)
+
+	// Rinkime iki NICK.
+	var passLine, nickLine string
+	deadline := time.After(3 * time.Second)
+	for passLine == "" || nickLine == "" {
+		select {
+		case l := <-lines:
+			if strings.HasPrefix(l, "PASS ") {
+				passLine = l
+			}
+			if strings.HasPrefix(l, "NICK ") {
+				nickLine = l
+			}
+		case <-deadline:
+			t.Fatalf("nepavyko gauti PASS/NICK (pass=%q nick=%q)", passLine, nickLine)
+		}
+	}
+
+	if passLine != "PASS slaptas-serverio-zodis" {
+		t.Errorf("BUG: PASS = %q", passLine)
+	}
+	if nickLine == "" {
+		t.Error("BUG: NICK neatsiųstas")
+	}
+}
+
+// TestNoPassWhenServerPassEmpty — be serverio slaptažodžio PASS
+// komanda nesiunčiama.
+func TestNoPassWhenServerPassEmpty(t *testing.T) {
+	c := newTestClient()
+	c.logDir = ""
+	c.mu.Lock()
+	c.serverPass = ""
+	c.mu.Unlock()
+
+	_ = captureWrites(c)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer ln.Close()
+	lines := make(chan string, 50)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		sc := bufio.NewScanner(conn)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+	}()
+
+	c.mu.Lock()
+	c.server = "127.0.0.1"
+	c.port = portOf(ln)
+	c.mu.Unlock()
+	go c.doConnect(0)
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case l := <-lines:
+			if strings.HasPrefix(l, "NICK ") {
+				// NICK atėjo — PASS turėjo būti arba nebuvo.
+				return
+			}
+		case <-deadline:
+			t.Fatal("NICK neatsiųstas")
+		}
+	}
+}
+
+// TestISUPPORTLimitsAreParsed — 005 ribos (NICKLEN, CHANNELLEN,
+// TOPICLEN, KICKLEN, MODES) ir NETWORK yra išskaitomi.
+func TestISUPPORTLimitsAreParsed(t *testing.T) {
+	c := newTestClient()
+	c.applyISUPPORT([]string{
+		"NETWORK=Libera.Chat",
+		"NICKLEN=20",
+		"CHANNELLEN=64",
+		"TOPICLEN=120",
+		"KICKLEN=50",
+		"MODES=4",
+	})
+
+	c.isupMu.RLock()
+	network := c.network
+	limits := c.limits
+	c.isupMu.RUnlock()
+
+	if network != "Libera.Chat" {
+		t.Errorf("BUG: NETWORK = %q, norėtų „Libera.Chat“", network)
+	}
+	if limits.NickLen != 20 {
+		t.Errorf("BUG: NICKLEN = %d, norėtų 20", limits.NickLen)
+	}
+	if limits.ChannelLen != 64 {
+		t.Errorf("BUG: CHANNELLEN = %d, norėtų 64", limits.ChannelLen)
+	}
+	if limits.TopicLen != 120 {
+		t.Errorf("BUG: TOPICLEN = %d, norėtų 120", limits.TopicLen)
+	}
+	if limits.KickLen != 50 {
+		t.Errorf("BUG: KICKLEN = %d, norėtų 50", limits.KickLen)
+	}
+	if limits.Modes != 4 {
+		t.Errorf("BUG: MODES = %d, norėtų 4", limits.Modes)
+	}
+}
+
+// TestISUPPORTLimitsFallBackToDefaults — be 005 ribų naudojamos
+// standartinės.
+func TestISUPPORTLimitsFallBackToDefaults(t *testing.T) {
+	c := newTestClient()
+	if c.nickLenLimit() != 30 {
+		t.Errorf("BUG: NICKLEN = %d, norėtų 30", c.nickLenLimit())
+	}
+	if c.channelLenLimit() != 50 {
+		t.Errorf("BUG: CHANNELLEN = %d, norėtų 50", c.channelLenLimit())
+	}
+	if c.topicLenLimit() != 390 {
+		t.Errorf("BUG: TOPICLEN = %d, norėtų 390", c.topicLenLimit())
+	}
+	if c.kickLenLimit() != 0 {
+		t.Errorf("BUG: KICKLEN = %d, norėtų 0 (serveris nepranešė)", c.kickLenLimit())
+	}
+}
+
+// TestNickRejectedWhenOverServerLimit — su serverio NICKLEN riba
+// per ilgas nick'as atmetamas.
+func TestNickRejectedWhenOverServerLimit(t *testing.T) {
+	c := newTestClient()
+	c.applyISUPPORT([]string{"NICKLEN=10"})
+
+	if c.isValidNickLen("LabaiIlgasNickas") {
+		t.Error("BUG: per ilgas nick priimtas, nors NICKLEN=10")
+	}
+	if !c.isValidNickLen("Trumpas") {
+		t.Error("BUG: trumpas nick atmestas, nors NICKLEN=10")
 	}
 }

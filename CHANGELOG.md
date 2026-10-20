@@ -4,6 +4,143 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [0.4.3] – 2026-10-20 – protokolo, renderio ir našumo pataisymai
+
+Antroji peržiūra (po 23 saugumo radinių) aptiko dar 24 radinius —
+daugiausia protokolo nesuderinamumai, ekrano pločio klainos ir našumo
+trūkumai. Visi ištaisyti, kiekvienas — su regresijos testu („blogas
+atmetamas“ **ir** „teisingas priimamas“).
+
+### Taisyta (protokolas)
+
+- **`353` nebekuria kanalų** – serverio komanda (RPL_NAMREPLY) anksčiau
+  galėjo sukurti šimtais naujų langų (užpildydamas šoninę juostą).
+  Dabar naudojama tik esamo kanalo paieška. Toks pat elgesys kaip `332`.
+
+- **CAP `NEW` / `LIST` / `DEL`** – anksčiau buvo tik `LS`/`ACK`/`NAK`.
+  Serveris, kuris siūlo `sasl` (ar kitą cap’ą) po registracijos, dabar
+  suderamas; `CAP LIST` atsako aktyvių cap’ų sąrašu; `CAP DEL` pašalina
+  cap’ą.
+
+- **`MODE` argumentų indeksai pagal `CHANMODES`** – režimai, kurie ima
+  parametrą, buvo nustatyti kietai (`blkeI`), todėl serveris su kitomis
+  `CHANMODES` praleido argumentus ir statuso prefiksas atiteko
+  neteisingam nick’ui. Dabar `CHANMODES` (iš 005) yra skaitomas ir
+  naudojamas.
+
+- **`INVITE` rodo kanalą, o ne target nick’ą** – tikras formatas yra
+  `INVITE <target-nick> :#kanalas`; anksčiau komandai buvo naudojami
+  atvirkštiniai indeksai, todėl kanalo niekada nebuvo matoma.
+
+- **WHO atsakymai suprantami** – `352`, `315`, `354`, `251`–`255`, `265`,
+  `266`, `367`–`369` anksčiau krisdavo į `default:` ir buvo rodomi
+  žaliai kaip „[352] …“. Dabar formatuojami (`/w` komanda juos siunčia).
+
+- **Serverio slaptažodis (`PASS`)** – naujas konfigūracijos parametras
+  `password=`. Siunčiamas prieš `NICK`, kaip reikalauja RFC 2812 (bouncer,
+  privatus serveris).
+
+- **ISUPPORT ribos naudojamos** – `NICKLEN`, `CHANNELLEN`, `TOPICLEN`,
+  `KICKLEN` ir `MODES` anksčiau buvo apleisti (serverio ribos ignoruotos).
+  Dabar `/nick`, `/join`, `/topic` ir `/kick` patikrina serverio ribą ir
+  aiškiai pasako, kiek simbolių leidžiama. Taip pat skaitomas `NETWORK`.
+
+- **`306` nustato away būseną** – po `RPL_NOWAWAY` statuso juosta rodo
+  `[AWAY]`.
+
+- **Nick’o pakeitimas rodomas kanaluose** – kaip mIRC. Anksčiau
+  pranešimas buvo tik serverio lange.
+
+### Taisyta (elgsena)
+
+- **Lietuviškas nick’as** – `isValidNick()` skaičiavo ilgį BAITAIS (30
+  baitų riba atmetė 15 lietuviškų raidžių) ir leido tik ASCII simbolius.
+  Dabar riba yra 30 simbolių ir leidžiamos lietuviškos raidės. Nick’as
+  validuojamas visuose keliuose: CLI argumentai, konfigūracijos failas,
+  `/connect`, `/nick`.
+
+- **IPv6 serveriai** – `isValidServer()` atmetdavo „::1“ (kolonas nebuvo
+  leistinas simbolis). Dabar palaikomi IPv6 adresai, jungiami kaip
+  `[::1]:6667`.
+
+- **`/w` siunčia WHO** – `/w` paviršius buvo užimtas langų sąrašui
+  (`/window`). Dabar `/w` užklausa serverio, `/window` rodo langus.
+
+- **Kanalų sąrašas slankosi** – anksčiau rodydavome tik pirmus 12
+  kanalų, likusieji (iki 100) buvo nepasiekiami. Dabar sąrašas slinkosi
+  (`Ctrl+Home` / `Ctrl+End`), rodo rodykles ▲▼, o peršokimas į
+  nematomą kanalą jį paslinka.
+
+- **Kanalų validacija pagal serverio `CHANTYPES`** – `isValidChannel()`
+  kietai kodino `#&!+`, todėl serveris su `CHANTYPES=#$` atmetdavo
+  `$kanalas`.
+
+### Taisyta (stabilumas)
+
+- **Panikos atkūrimas** – `recover()` buvo tik testuose. Panika
+  `parseIRC`/`readKeys` metu palikdavo terminalą raw režimu (shell
+  neveikdavo). Dabar kiekviena gorutina atkuria terminalą ir sustabdo
+  klientą.
+
+- **Senos jungties išardymas negriebia naujos** – po `/connect` sena
+  jungties teardown-as nulauždavo naujos būseną (`connected=false`,
+  `conn=nil` — fd nutekėjimas). Dabar tikrinama `connectGen` epocha.
+
+- **`AUTHENTICATE` nebeatlieka slaptažodžio** – serverio nepageidaujamas
+  `AUTHENTICATE +` (be mūsų SASL užklausos) dabar negauna mūsų
+  slaptažodžio.
+
+- **Duomenų lenktynės** – `doTab` skaitė nick’ų sąrašą be rakino (ryškiausia
+  race visame kode); `isIgnored` duodavo tarpinį (dubliuotą) sąrašą.
+
+- **Žurnalų eilių tvarka** – kiekvienai žinutei buvo paleidžiama
+  atskira gorutina, todėl 20 lygiagrečių žinučių rašydavo failą beveik
+  atsitiktine tvarka. Dabar žurnalą rašo VIENA gorutina per eilę.
+
+### Taisyta (ekrano plotis)
+
+- **Plotis matuojamas ląstelėmis, ne rune’ais** – CJK tekstas (2 ląstelės
+  simbolis) ir emoji perlipo liniją. Įvestas pločio modulis (`width.go`)
+  su grapheme clusteriais (ZWJ emoji, vėliavos, odų modifikatoriai) ir
+  dvejetaine paieška intervalųose.
+
+- **IRC spalvos išgyvena apvyniuotose eilutėse** – `findChunk()` ieškojo
+  PLAIN tekste ir grąžindavo be formatavimo kodų, todėl spalva likdavo
+  tik 1 eilutės žinutėse.
+
+- **URL apvyniojamas vieną kartą** – `highlightURLs()` lygino kodus jau
+  paruoštame tekste: pirmas URL gaudavo dvigubus kodus, antras —
+  nukirpamas. Dabar URL aptinkamas ANSI-aware skeneriu.
+
+- **Tab-baigimas neperpja UTF-8** – `wordBefore()` grąžindavo baitų slice,
+  o ilgis skaičiuojamas rune’ais → nutrūkusi seka („žinutė kai“ →
+  `žinut\xc4`).
+
+### Našumas
+
+- **Inkrementalus renderio cache’as** – nauja žinutė anksčiau
+  nugriaždindavo VISĄ kanalo cache’ą (5000 žinučių → 5000
+  `renderLines()` kiekviename braižyme). Dabar senos eilutės lieka
+  galiojančios, renderiuojamos tik naujos.
+  **Išmatuota: 28.8 ms → 1.76 ms (16×) 5000 žinučių kanale.**
+
+- **Nick’ų įstatymas į surūšiuotą sąrašą** – `addNick()` kiekvieną kartą
+  perrankydavo visą sąrašą (O(n log n) įterpimui). Dabar dichotominė
+  paieška (O(log n) paieška).
+
+- **`sleepReconnect`** kiekvieną 50 ms kurdavo naują `time.After` — dabar
+  vienas `time.Ticker`.
+
+- **Ping siunčiamas į savo kanalą** – senas ping gorutina rašydavo į
+  bendrą `writeCh`, kuris po `/connect` jau rodo į naują jungtį →
+  „Ping timeout“ klaida nors serveris atsakydavo.
+
+### Sutvarkyta
+
+- Pašalinti neveikiantys laukai (`pingTicker`, `searchResult`).
+- Kanalų prefiksai (F1–F12) rodomi pagal realų indeksą, ne visada
+  pirmuosius 12.
+
 ## [0.4.2] – 2026-10-20 – saugumo ir stabilumo pataisymai
 
 Peržiūra aptiko 23 klaidą — dauguma jų galėjo sukelti paniką arba

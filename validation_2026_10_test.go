@@ -311,3 +311,37 @@ func TestJoinHostPortIPv6(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================
+// K25 — serverio slaptažodis (config `password=`) ir ISUPPORT ribos
+// ============================================================
+
+// TestLoadConfigReadsServerPassword — config `password=` nuskaitomas.
+func TestLoadConfigReadsServerPassword(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	if err := os.WriteFile(path, []byte("password=slaptas-zodis\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg := loadConfig(path)
+	if cfg.ServerPass != "slaptas-zodis" {
+		t.Errorf("BUG: ServerPass = %q, norėtų „slaptas-zodis“", cfg.ServerPass)
+	}
+}
+
+// TestLoadConfigWithoutServerPassword — be `password=` lauko slaptažodžio
+// nėra (ir įspėjimo nėra).
+func TestLoadConfigWithoutServerPassword(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config")
+	if err := os.WriteFile(path, []byte("server=irc.example.org\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg := loadConfig(path)
+	if cfg.ServerPass != "" {
+		t.Errorf("BUG: ServerPass = %q, turėtų būti tuščias", cfg.ServerPass)
+	}
+	if len(loadConfigWarnings()) != 0 {
+		t.Errorf("BUG: netikėtinos įspėjimai: %v", loadConfigWarnings())
+	}
+}

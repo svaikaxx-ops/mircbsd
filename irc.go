@@ -88,8 +88,41 @@ func (c *Client) applyISUPPORT(tokens []string) {
 			case "ascii", "rfc1459", "strict-rfc1459":
 				c.casemapping = tok[len("CASEMAPPING="):]
 			}
+		case strings.HasPrefix(tok, "NETWORK="):
+			// Serverio tinklo pavadinimas (pvz. „Libera.Chat“). Naudojamas
+			// tik informacijai — pats serveris lieka adresu.
+			c.network = tok[len("NETWORK="):]
+		case strings.HasPrefix(tok, "NICKLEN="):
+			c.limits.NickLen = atoiDefault(tok[len("NICKLEN="):], c.limits.NickLen)
+		case strings.HasPrefix(tok, "CHANNELLEN="):
+			c.limits.ChannelLen = atoiDefault(tok[len("CHANNELLEN="):], c.limits.ChannelLen)
+		case strings.HasPrefix(tok, "TOPICLEN="):
+			c.limits.TopicLen = atoiDefault(tok[len("TOPICLEN="):], c.limits.TopicLen)
+		case strings.HasPrefix(tok, "KICKLEN="):
+			c.limits.KickLen = atoiDefault(tok[len("KICKLEN="):], c.limits.KickLen)
+		case strings.HasPrefix(tok, "MODES="):
+			c.limits.Modes = atoiDefault(tok[len("MODES="):], c.limits.Modes)
 		}
 	}
+}
+
+// isupLimits — serverio ribos (005). Nulyba reiškia „serveris nepranešė“
+// (naudojamos standartinės reikšmės).
+type isupLimits struct {
+	NickLen    int
+	ChannelLen int
+	TopicLen   int
+	KickLen    int
+	Modes      int
+}
+
+// atoiDefault konvertuoja skaičių; neteisinga reikšmė → numatytoji.
+func atoiDefault(s string, def int) int {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
 }
 
 // defaultChanModes — standartinės CHANMODES, kai serveris jų nepaskyrė.
@@ -242,6 +275,7 @@ type Client struct {
 	realName     string
 	nickservPass string
 	saslPass     string
+	serverPass   string // serverio slaptažodis (PASS komanda)
 	autoJoin     []string
 	away         string
 	perform      []string
@@ -276,11 +310,13 @@ type Client struct {
 	// Serverio protokolo parametrai (ISUPPORT/005) — PER SERVERĮ.
 	// Gydoma isupMu: skaitytojai RLock, applyISUPPORT Lock.
 	isupMu      sync.RWMutex
-	chantypes   string // kanalų pavadinimų prefiksai
-	prefixSigns string // nick'o statuso prefiksai pagal svarbą (q a o h v)
-	prefixModes string // mode raidės, atitinkančios prefixSigns
-	casemapping string // nick palyginimų taisyklės
-	chanModes   string // CHANMODES: "eIbq,k,flj,CFLMPQScgimnprstz"
+	chantypes   string     // kanalų pavadinimų prefiksai
+	prefixSigns string     // nick'o statuso prefiksai pagal svarbą (q a o h v)
+	prefixModes string     // mode raidės, atitinkančios prefixSigns
+	casemapping string     // nick palyginimų taisyklės
+	chanModes   string     // CHANMODES: "eIbq,k,flj,CFLMPQScgimnprstz"
+	network     string     // NETWORK — serverio tinklo pavadinimas
+	limits      isupLimits // ribos: NICKLEN, CHANNELLEN, TOPICLEN, KICKLEN, MODES
 
 	// Paste apsauga
 	pasteBuf          []string
@@ -378,6 +414,7 @@ func newClient(cfg Config) *Client {
 		realName:        cfg.RealName,
 		nickservPass:    cfg.NickServ,
 		saslPass:        cfg.SASLPass,
+		serverPass:      cfg.ServerPass,
 		autoJoin:        cfg.AutoJoin,
 		perform:         cfg.Perform,
 		highlightWords:  cfg.HighlightWords,
@@ -1179,12 +1216,18 @@ func (c *Client) doConnect(gen int) {
 
 	c.mu.Lock()
 	realName := c.realName
+	serverPass := c.serverPass
 	c.mu.Unlock()
 	if realName == "" {
 		realName = "mircBSD IRC Client"
 	}
 	// IRCv3 CAP derybos — serveris laukia CAP END prieš siųsdamas 001
 	c.send("CAP LS 302")
+	// PASS (serverio slaptažodis) — bouncer arba privatus serveris.
+	// Siunčiamas PRIEŠ NICK, kaip reikalauja RFC 2812.
+	if serverPass != "" {
+		c.send("PASS " + serverPass)
+	}
 	c.send("NICK " + nick)
 	c.send(fmt.Sprintf("USER %s 0 * :%s", nick, realName))
 
@@ -2295,6 +2338,50 @@ func isValidNick(nick string) bool {
 		}
 	}
 	return true
+}
+
+// isValidNickLen tikrina nick'o ilgį pagal serverio NICKLEN ribą.
+// Kai serveris ribos nepranešė (0) — naudojama standartinė (30).
+func (c *Client) isValidNickLen(nick string) bool {
+	limit := c.nickLenLimit()
+	return utf8.RuneCountInString(nick) <= limit
+}
+
+// nickLenLimit grąžina serverio NICKLEN ribą (arba standartinę 30).
+func (c *Client) nickLenLimit() int {
+	c.isupMu.RLock()
+	defer c.isupMu.RUnlock()
+	if c.limits.NickLen > 0 {
+		return c.limits.NickLen
+	}
+	return 30
+}
+
+// channelLenLimit grąžina serverio CHANNELLEN ribą (arba standartinę 50).
+func (c *Client) channelLenLimit() int {
+	c.isupMu.RLock()
+	defer c.isupMu.RUnlock()
+	if c.limits.ChannelLen > 0 {
+		return c.limits.ChannelLen
+	}
+	return 50
+}
+
+// topicLenLimit grąžina serverio TOPICLEN ribą (arba standartinę 390).
+func (c *Client) topicLenLimit() int {
+	c.isupMu.RLock()
+	defer c.isupMu.RUnlock()
+	if c.limits.TopicLen > 0 {
+		return c.limits.TopicLen
+	}
+	return 390
+}
+
+// kickLenLimit grąžina serverio KICKLEN ribą (0 = serveris nepranešė).
+func (c *Client) kickLenLimit() int {
+	c.isupMu.RLock()
+	defer c.isupMu.RUnlock()
+	return c.limits.KickLen
 }
 
 // isValidPort tikrina TCP portą: skaičius 1–65535.

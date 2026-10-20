@@ -25,11 +25,21 @@ import (
 
 // captureWrites grąžina kanalą, kuris fiksuoja visas c.send() iškvietimus.
 // Grąžina slice po delay, kai eilė nurimsta.
+//
+// NB: writeCh imamas SU RAKINU (c.mu) — doConnect jį keičia prisijungimo
+// metu, o be rakino tai duomenų lenktynė (aptikta `go test -race`).
 func captureWrites(c *Client) func(d time.Duration) []string {
 	var mu sync.Mutex
 	var out []string
 	go func() {
-		for line := range c.writeCh {
+		for {
+			c.mu.Lock()
+			ch := c.writeCh
+			c.mu.Unlock()
+			line, ok := <-ch
+			if !ok {
+				return
+			}
 			mu.Lock()
 			out = append(out, line)
 			mu.Unlock()

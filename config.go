@@ -18,6 +18,7 @@ type Config struct {
 	RealName       string
 	NickServ       string
 	SASLPass       string // SASL PLAIN slaptažodis (vartotojas = Nick)
+	ServerPass     string // serverio slaptažodis (PASS komanda) — bouncer, privatus serveris
 	AutoJoin       []string
 	Perform        []string // komandos vykdomos po prisijungimo
 	HighlightWords []string // papildomi žodžiai highlight'inimui
@@ -111,6 +112,10 @@ func loadConfig(path string) Config {
 			cfg.RealName = v
 		case "nickserv":
 			cfg.NickServ = v
+		case "password":
+			// Serverio slaptažodis (PASS komanda) — bouncer arba privatus
+			// serveris. Nesiunčiamas į žurnalus, tik į serverį.
+			cfg.ServerPass = v
 		case "autojoin":
 			for _, ch := range strings.Split(v, ",") {
 				ch = strings.TrimSpace(ch)

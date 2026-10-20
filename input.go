@@ -913,6 +913,11 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.errMsg("Netinkamas slapyvardis (leistini simboliai: raidės, skaičiai, _-[]\\^{}|, max 30)")
 			return
 		}
+		// Serverio NICKLEN riba (kai pranešta 005).
+		if !c.isValidNickLen(newNick) {
+			c.errMsg(fmt.Sprintf("Slapyvardis per ilgas — serveris leidžia %d simbolius", c.nickLenLimit()))
+			return
+		}
 		c.mu.Lock()
 		c.nick = newNick
 		conn := c.conn
@@ -939,6 +944,11 @@ func (c *Client) handleCmd(cmd, args string) {
 		ct, _, _, _, _ := c.isupSnapshot()
 		if !isValidChannelFor(chName, ct) {
 			c.errMsg("Netinkamas kanalo pavadinimas (raidės, skaičiai ir .-_ ; max 50)")
+			return
+		}
+		// Serverio CHANNELLEN riba (kai pranešta 005).
+		if len([]rune(chName)) > c.channelLenLimit() {
+			c.errMsg(fmt.Sprintf("Kanalo pavadinimas per ilgas — serveris leidžia %d simbolius", c.channelLenLimit()))
 			return
 		}
 		c.mu.Lock()
@@ -1084,6 +1094,12 @@ func (c *Client) handleCmd(cmd, args string) {
 			if args == "" {
 				c.send("TOPIC " + activeName)
 			} else {
+				// TOPICLEN riba (kai pranešta 005) — per ilga tema
+				// serveris atmetins, o kai kurie serveriai nutrūksta.
+				if len([]rune(args)) > c.topicLenLimit() {
+					c.errMsg(fmt.Sprintf("Tema per ilga — serveris leidžia %d simbolius", c.topicLenLimit()))
+					return
+				}
 				c.send(fmt.Sprintf("TOPIC %s :%s", activeName, args))
 			}
 		}
@@ -1102,6 +1118,11 @@ func (c *Client) handleCmd(cmd, args string) {
 		reason := "Kicked"
 		if len(parts) == 2 && parts[1] != "" {
 			reason = parts[1]
+		}
+		// KICKLEN riba (kai pranešta 005).
+		if c.kickLenLimit() > 0 && len([]rune(reason)) > c.kickLenLimit() {
+			c.errMsg(fmt.Sprintf("Priežastis per ilga — serveris leidžia %d simbolius", c.kickLenLimit()))
+			return
 		}
 		c.send(fmt.Sprintf("KICK %s %s :%s", chName, parts[0], reason))
 
@@ -1478,6 +1499,7 @@ func (c *Client) handleCmd(cmd, args string) {
 			"Ctrl+←/→        žodžio navigacija",
 			"F1-F12 / Alt+1-9  kanalas pagal numerį",
 			"Tab             autocomplete   Ctrl+↑↓  nick scroll",
+			"Ctrl+Home/End   kanalų sąrašo slinktis",
 			"───────────────────────────────────────────────────",
 			"/ignore dabar palaiko maskes: nick!user@host, *!user@*, *",
 		}

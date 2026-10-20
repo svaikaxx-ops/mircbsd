@@ -176,7 +176,16 @@ type sentCollector struct {
 func collectSent(c *Client) *sentCollector {
 	sc := &sentCollector{}
 	go func() {
-		for line := range c.writeCh {
+		for {
+			// writeCh imamas SU RAKINU — doConnect jį keičia prisijungimo
+			// metu (be rakino — duomenų lenktynė).
+			c.mu.Lock()
+			ch := c.writeCh
+			c.mu.Unlock()
+			line, ok := <-ch
+			if !ok {
+				return
+			}
 			sc.mu.Lock()
 			sc.list = append(sc.list, line)
 			sc.mu.Unlock()

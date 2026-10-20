@@ -92,7 +92,8 @@ mircbsd irc.data.lt 6667 manick
 | `/search [žodis]` | Paieška (arba Ctrl+R) |
 | `/clearlogs [kanalas]` | Ištrinti log failus (numatytai: visi šiame serveryje) |
 | `/raw <IRC komanda>` | Tiesioginė IRC komanda |
-| `/w [n]` | Langų sąrašas / perjungimas |
+| `/w [nick\|kanalas]` | WHO užklausa — kas yra kanale arba internete |
+| `/window` | Langų sąrašas / perjungimas |
 | `/quit [žinutė]` | Išeiti |
 | `/help` | Komandų sąrašas |
 
@@ -110,6 +111,7 @@ mircbsd irc.data.lt 6667 manick
 | `Ctrl+←` / `Ctrl+→` | Žodžio navigacija |
 | `Ctrl+W` | Ištrinti žodį prieš kursorių |
 | `Ctrl+↑` / `Ctrl+↓` | Slinkti nick sąrašu |
+| `Ctrl+Home` / `Ctrl+End` | Kanalų sąrašo slinktis į viršų / apačią |
 | **Pelė** | Ratukas: sulinkti; paspaudimas kanalo juostoje: pakeisti |
 
 ## Failų vietos
@@ -123,7 +125,7 @@ mircbsd irc.data.lt 6667 manick
 
 ## Saugumas
 
-- **Config su slaptažodžiu** (`sasl=` arba `nickserv=`) – apribokite teises:
+- **Config su slaptažodžiu** (`sasl=`, `nickserv=` arba `password=`) – apribokite teises:
 
   ```sh
   chmod 600 ~/.config/mircbsd/config
