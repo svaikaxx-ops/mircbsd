@@ -65,15 +65,15 @@ func (c *Client) handleKey(b []byte) {
 				c.mu.Lock()
 				lines := c.pasteBuf
 				c.pasteBuf = nil
-				active := c.channels[c.activeIdx]
+				active := c.activeChan()
 				c.mu.Unlock()
-				if c.connected && active.name != "*server*" {
+				if c.isConnected() && active != nil && active.name != "*server*" {
 					for _, l := range lines {
 						if l == "" {
 							continue
 						}
 						c.send(fmt.Sprintf("PRIVMSG %s :%s", active.name, l))
-						c.addMsg(active.name, Message{ts: time.Now(), nick: c.nick, text: l, msgType: MsgChat})
+						c.addMsg(active.name, Message{ts: time.Now(), nick: c.myNick(), text: l, msgType: MsgChat})
 					}
 				}
 			case 0x1b:
@@ -347,13 +347,21 @@ func (c *Client) handleKey(b []byte) {
 
 		case 14: // Ctrl+N
 			c.mu.Lock()
-			idx := (c.activeIdx + 1) % len(c.channels)
+			cur := c.activeIdx
+			if cur < 0 {
+				cur = 0
+			}
+			idx := (cur + 1) % len(c.channels)
 			c.mu.Unlock()
 			c.switchCh(idx)
 
 		case 16: // Ctrl+P
 			c.mu.Lock()
-			idx := c.activeIdx - 1
+			cur := c.activeIdx
+			if cur < 0 {
+				cur = 0
+			}
+			idx := cur - 1
 			if idx < 0 {
 				idx = len(c.channels) - 1
 			}
@@ -447,9 +455,9 @@ func (c *Client) handleSearchKey(b []byte) {
 		case '\r', '\n': // Enter - atlikti paiešką
 			c.mu.Lock()
 			q := c.searchQuery
-			active := c.channels[c.activeIdx]
+			active := c.activeChan()
 			c.mu.Unlock()
-			if q != "" {
+			if q != "" && active != nil {
 				c.doSearch(active, q)
 			} else {
 				c.mu.Lock()
@@ -505,7 +513,7 @@ func (c *Client) doSearch(ch *Channel, query string) {
 			// Astatom langą taip, kad rastos žinutės paskutinė eilutė
 			// atsidurtų matomo lango apačioje.
 			msgW := c.width - chanListWidth - 2
-			if isChannel(ch.name) {
+			if c.isChannel(ch.name) {
 				msgW -= nickListWidth + 1
 			}
 			if msgW < 10 {
@@ -593,8 +601,11 @@ var allCommands = []string{
 func (c *Client) doTab() {
 	c.mu.Lock()
 	inputStr := string(c.input[:c.inputPos])
-	active := c.channels[c.activeIdx]
+	active := c.activeChan()
 	c.mu.Unlock()
+	if active == nil {
+		return
+	}
 
 	if len(c.tabCandidates) > 0 {
 		c.tabIdx = (c.tabIdx + 1) % len(c.tabCandidates)
@@ -639,7 +650,7 @@ func (c *Client) doTab() {
 	} else {
 		seen := map[string]bool{}
 		for _, n := range active.nicks {
-			bare := stripMode(n)
+			bare := stripMode(n, active.prefixSigns())
 			if !seen[bare] && strings.HasPrefix(strings.ToLower(bare), wordLow) {
 				seen[bare] = true
 				candidates = append(candidates, bare)
@@ -753,19 +764,19 @@ func (c *Client) handleInput(text string) {
 		return
 	}
 	c.mu.Lock()
-	active := c.channels[c.activeIdx]
+	active := c.activeChan()
 	c.mu.Unlock()
-	if active.name == "*server*" {
+	if active == nil || active.name == "*server*" {
 		c.serverMsg("Rašyk /join #kanalas kad prisijungtum")
 		return
 	}
-	if !c.connected {
+	if !c.isConnected() {
 		c.errMsg("Neprisijungta")
 		return
 	}
 	for _, part := range splitForPrivmsg(active.name, text) {
 		c.send(fmt.Sprintf("PRIVMSG %s :%s", active.name, part))
-		c.addMsg(active.name, Message{ts: time.Now(), nick: c.nick, text: part, msgType: MsgChat})
+		c.addMsg(active.name, Message{ts: time.Now(), nick: c.myNick(), text: part, msgType: MsgChat})
 	}
 }
 
@@ -783,6 +794,13 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 		if len(parts) >= 3 && !isValidNick(parts[2]) {
 			c.errMsg("Netinkamas slapyvardis (leistini simboliai: raidės, skaičiai, _-[]\\^{}|, max 30)")
+			return
+		}
+		// Serverio pavadinimas įrašomas į IRC komandas (NICK, JOIN, USER) ir
+		// naudojamas kaip žurnalų katalogo vardas — todėl turi būti
+		// apribotas: be tarpų, be CRLF (komandų injekcija), ne per ilgas.
+		if !isValidServer(parts[0]) {
+			c.errMsg("Netinkamas serverio pavadinimas (leistini simboliai: raidės, skaičiai, . - _ max 100)")
 			return
 		}
 		c.mu.Lock()
@@ -831,13 +849,20 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 		parts := strings.SplitN(args, " ", 2)
 		chName := parts[0]
-		if !isChannel(chName) {
+		if !c.isChannel(chName) {
 			chName = "#" + chName
+		}
+		// Kanalo pavadinimas įrašomas į JOIN komandą — turi būti
+		// skaidriai ribojamas (tarpai, CRLF, valdymo simboliai
+		// neleistini), kad būtų išvengta komandų injekcijos.
+		if !isValidChannel(chName) {
+			c.errMsg("Netinkamas kanalo pavadinimas (raidės, skaičiai ir .-_ ; max 50)")
+			return
 		}
 		c.mu.Lock()
 		c.ensureCh(chName)
 		c.mu.Unlock()
-		if c.connected {
+		if c.isConnected() {
 			if len(parts) == 2 && parts[1] != "" {
 				c.send("JOIN " + chName + " " + parts[1])
 			} else {
@@ -846,15 +871,13 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 
 	case "part", "leave":
-		c.mu.Lock()
-		active := c.channels[c.activeIdx]
-		c.mu.Unlock()
+		chName := c.activeName()
 		msg := args
 		if msg == "" {
 			msg = "Viso gero!"
 		}
-		if c.connected && isChannel(active.name) {
-			c.send(fmt.Sprintf("PART %s :%s", active.name, msg))
+		if c.isConnected() && c.isChannel(chName) {
+			c.send(fmt.Sprintf("PART %s :%s", chName, msg))
 		}
 
 	case "msg", "query", "m":
@@ -864,7 +887,11 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		target, text := parts[0], parts[1]
-		if c.connected {
+		if !isValidTarget(target) {
+			c.errMsg("Netinkamas gavėjas (raidės, skaičiai ir .-_ ; max 100)")
+			return
+		}
+		if c.isConnected() {
 			for _, part := range splitForPrivmsg(target, text) {
 				c.send(fmt.Sprintf("PRIVMSG %s :%s", target, part))
 			}
@@ -872,7 +899,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.mu.Lock()
 		c.ensureCh(target)
 		c.mu.Unlock()
-		c.addMsg(target, Message{ts: time.Now(), nick: c.nick, text: text, msgType: MsgChat})
+		c.addMsg(target, Message{ts: time.Now(), nick: c.myNick(), text: text, msgType: MsgChat})
 
 	case "notice":
 		parts := strings.SplitN(args, " ", 2)
@@ -880,7 +907,11 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.errMsg("Naudojimas: /notice <nick> <žinutė>")
 			return
 		}
-		if c.connected {
+		if !isValidTarget(parts[0]) {
+			c.errMsg("Netinkamas gavėjas (raidės, skaičiai ir .-_ ; max 100)")
+			return
+		}
+		if c.isConnected() {
 			c.send(fmt.Sprintf("NOTICE %s :%s", parts[0], parts[1]))
 			c.serverMsg(fmt.Sprintf("-> -%s- %s", parts[0], parts[1]))
 		}
@@ -896,25 +927,20 @@ func (c *Client) handleCmd(cmd, args string) {
 		if len(parts) >= 2 {
 			chName = parts[1]
 		} else {
-			c.mu.Lock()
-			chName = c.channels[c.activeIdx].name
-			c.mu.Unlock()
+			chName = c.activeName()
 		}
-		if c.connected {
+		if c.isConnected() {
 			c.send(fmt.Sprintf("INVITE %s %s", nick, chName))
 			c.serverMsg(fmt.Sprintf("Pakviestas %s į %s", nick, chName))
 		}
 
 	case "cycle":
-		c.mu.Lock()
-		active := c.channels[c.activeIdx]
-		chName := active.name
-		c.mu.Unlock()
-		if !isChannel(chName) {
+		chName := c.activeName()
+		if !c.isChannel(chName) {
 			c.errMsg("/cycle galima tik kanale")
 			return
 		}
-		if c.connected {
+		if c.isConnected() {
 			msg := args
 			if msg == "" {
 				msg = "cycle"
@@ -928,10 +954,8 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.errMsg("Naudojimas: /op <nick>")
 			return
 		}
-		c.mu.Lock()
-		chName := c.channels[c.activeIdx].name
-		c.mu.Unlock()
-		if c.connected {
+		chName := c.activeName()
+		if c.isConnected() {
 			c.send(fmt.Sprintf("MODE %s +o %s", chName, firstField(args)))
 		}
 
@@ -940,10 +964,8 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.errMsg("Naudojimas: /deop <nick>")
 			return
 		}
-		c.mu.Lock()
-		chName := c.channels[c.activeIdx].name
-		c.mu.Unlock()
-		if c.connected {
+		chName := c.activeName()
+		if c.isConnected() {
 			c.send(fmt.Sprintf("MODE %s -o %s", chName, firstField(args)))
 		}
 
@@ -952,10 +974,8 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.errMsg("Naudojimas: /voice <nick>")
 			return
 		}
-		c.mu.Lock()
-		chName := c.channels[c.activeIdx].name
-		c.mu.Unlock()
-		if c.connected {
+		chName := c.activeName()
+		if c.isConnected() {
 			c.send(fmt.Sprintf("MODE %s +v %s", chName, firstField(args)))
 		}
 
@@ -964,44 +984,36 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.errMsg("Naudojimas: /devoice <nick>")
 			return
 		}
-		c.mu.Lock()
-		chName := c.channels[c.activeIdx].name
-		c.mu.Unlock()
-		if c.connected {
+		chName := c.activeName()
+		if c.isConnected() {
 			c.send(fmt.Sprintf("MODE %s -v %s", chName, firstField(args)))
 		}
 
 	case "me":
-		c.mu.Lock()
-		active := c.channels[c.activeIdx]
-		c.mu.Unlock()
-		if c.connected && active.name != "*server*" {
-			c.send(fmt.Sprintf("PRIVMSG %s :\x01ACTION %s\x01", active.name, args))
-			c.addMsg(active.name, Message{ts: time.Now(), nick: c.nick, text: args, msgType: MsgAction})
+		activeName := c.activeName()
+		if c.isConnected() && activeName != "" && activeName != "*server*" {
+			c.send(fmt.Sprintf("PRIVMSG %s :\x01ACTION %s\x01", activeName, args))
+			c.addMsg(activeName, Message{ts: time.Now(), nick: c.myNick(), text: args, msgType: MsgAction})
 		}
 
 	case "topic":
-		c.mu.Lock()
-		active := c.channels[c.activeIdx]
-		c.mu.Unlock()
-		if c.connected {
+		activeName := c.activeName()
+		if c.isConnected() && activeName != "" {
 			if args == "" {
-				c.send("TOPIC " + active.name)
+				c.send("TOPIC " + activeName)
 			} else {
-				c.send(fmt.Sprintf("TOPIC %s :%s", active.name, args))
+				c.send(fmt.Sprintf("TOPIC %s :%s", activeName, args))
 			}
 		}
 
 	case "kick", "k":
 		parts := strings.SplitN(args, " ", 2)
-		if !c.connected || len(parts) < 1 || parts[0] == "" {
+		if !c.isConnected() || len(parts) < 1 || parts[0] == "" {
 			c.errMsg("Naudojimas: /kick <nick> [priežastis]")
 			return
 		}
-		c.mu.Lock()
-		chName := c.channels[c.activeIdx].name
-		c.mu.Unlock()
-		if !isChannel(chName) {
+		chName := c.activeName()
+		if !c.isChannel(chName) {
 			c.errMsg("/kick galima tik kanale")
 			return
 		}
@@ -1012,23 +1024,25 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.send(fmt.Sprintf("KICK %s %s :%s", chName, parts[0], reason))
 
 	case "mode":
-		if !c.connected || args == "" {
+		if !c.isConnected() || args == "" {
 			c.errMsg("Naudojimas: /mode <target|+/-mode> [parametrai]")
 			return
 		}
 		fields := strings.Fields(args)
+		if len(fields) == 0 {
+			c.errMsg("Naudojimas: /mode <target|+/-mode> [parametrai]")
+			return
+		}
 		// Jei pirmasis argumentas prasideda +/-, taikome aktyviam kanalui
 		if strings.HasPrefix(fields[0], "+") || strings.HasPrefix(fields[0], "-") {
-			c.mu.Lock()
-			chName := c.channels[c.activeIdx].name
-			c.mu.Unlock()
+			chName := c.activeName()
 			c.send("MODE " + chName + " " + args)
 		} else {
 			c.send("MODE " + args)
 		}
 
 	case "whois", "wi":
-		if w := firstField(args); c.connected && w != "" {
+		if w := firstField(args); c.isConnected() && w != "" {
 			c.send("WHOIS " + w)
 		}
 
@@ -1037,7 +1051,7 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.mu.Lock()
 			c.away = ""
 			c.mu.Unlock()
-			if c.connected {
+			if c.isConnected() {
 				c.send("AWAY")
 			}
 			c.serverMsg("Away išjungtas")
@@ -1045,7 +1059,7 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.mu.Lock()
 			c.away = args
 			c.mu.Unlock()
-			if c.connected {
+			if c.isConnected() {
 				c.send("AWAY :" + args)
 			}
 			c.serverMsg("Away: " + args)
@@ -1053,7 +1067,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.queueRedraw()
 
 	case "time":
-		if c.connected {
+		if c.isConnected() {
 			c.send("TIME")
 		} else {
 			c.errMsg("Neprisijungta")
@@ -1061,25 +1075,27 @@ func (c *Client) handleCmd(cmd, args string) {
 
 	case "clear":
 		c.mu.Lock()
-		c.channels[c.activeIdx].messages = nil
+		activeCh := c.activeChan()
+		if activeCh == nil {
+			c.mu.Unlock()
+			return
+		}
+		activeCh.messages = nil
 		// Svarbu: nuplauti ir aktyvios sesijos slinktį — kitaip buvusi
 		// pozicija nuo apačios lieka „kabanti" tuščioje istorijoje, o
 		// naujos žinutės dar labiau jos nesumažina (langas lieka tuščias).
 		c.scrollOff = 0
 		c.chaseUntil = time.Time{}
-		c.channels[c.activeIdx].scrollOff = 0
-		c.channels[c.activeIdx].renderGen++
+		activeCh.scrollOff = 0
+		activeCh.renderGen++
 		c.mu.Unlock()
 		c.queueRedraw()
 
 	case "clearlogs":
-		c.mu.Lock()
-		active := c.channels[c.activeIdx]
-		c.mu.Unlock()
+		// Be argumentų — trinami VISI šio serverio logai (kaip nurodo /help).
+		// Su argumentu — tik to kanalo logai.
 		chanName := args
-		if chanName == "" {
-			chanName = active.name
-		} else {
+		if chanName != "" {
 			c.mu.Lock()
 			target := c.findCh(chanName)
 			c.mu.Unlock()
@@ -1089,17 +1105,24 @@ func (c *Client) handleCmd(cmd, args string) {
 			}
 		}
 		n := c.clearLogs(chanName)
+		label := chanName
+		if label == "" {
+			label = "šis serveris"
+		}
 		if n == 0 {
-			c.serverMsg("Log failų („" + chanName + "“) nerasta")
+			c.serverMsg("Log failų („" + label + "“) nerasta")
 		} else {
-			c.serverMsg(fmt.Sprintf("Išvalyta %d log failas(-ai) („%s“)", n, chanName))
+			c.serverMsg(fmt.Sprintf("Išvalyta %d log failas(-ai) („%s“)", n, label))
 		}
 
 	case "names":
 		c.mu.Lock()
-		active := c.channels[c.activeIdx]
-		chName := active.name
-		do := c.connected && isChannel(chName)
+		active := c.activeChan()
+		chName := ""
+		if active != nil {
+			chName = active.name
+		}
+		do := c.connected && c.isChannel(chName)
 		if do {
 			active.nicks = nil
 		}
@@ -1112,7 +1135,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.mu.Lock()
 		c.away = ""
 		c.mu.Unlock()
-		if c.connected {
+		if c.isConnected() {
 			c.send("AWAY")
 		}
 		c.serverMsg("Away išjungtas")
@@ -1160,7 +1183,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 
 	case "list":
-		if c.connected {
+		if c.isConnected() {
 			if args != "" {
 				c.send("LIST " + args)
 			} else {
@@ -1176,9 +1199,11 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.mu.Unlock()
 		} else {
 			c.mu.Lock()
-			active := c.channels[c.activeIdx]
+			active := c.activeChan()
 			c.mu.Unlock()
-			c.doSearch(active, args)
+			if active != nil {
+				c.doSearch(active, args)
+			}
 		}
 		c.queueRedraw()
 
@@ -1221,7 +1246,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 
 	case "raw":
-		if c.connected && args != "" {
+		if c.isConnected() && args != "" {
 			c.send(args)
 		}
 
@@ -1256,17 +1281,25 @@ func (c *Client) handleCmd(cmd, args string) {
 	case "close", "wc":
 		c.mu.Lock()
 		idx := c.activeIdx
-		if idx == 0 {
+		chName := ""
+		if args != "" {
+			// /close <kanalas> — uždaro nurodytą langą (jei egzistuoja)
+			for i, ch := range c.channels {
+				if strings.EqualFold(ch.name, sanitizeText(args)) {
+					idx = i
+					break
+				}
+			}
+		}
+		if idx <= 0 || idx >= len(c.channels) {
+			// 0 = *server* langas (neuždarytinas); neegalius indeksas — ignoruoti
 			c.mu.Unlock()
 			return
 		}
-		chName := c.channels[idx].name
-		c.channels = append(c.channels[:idx], c.channels[idx+1:]...)
-		if c.activeIdx >= len(c.channels) {
-			c.activeIdx = len(c.channels) - 1
-		}
+		chName = c.channels[idx].name
+		c.removeCh(idx)
 		c.mu.Unlock()
-		if c.connected && isChannel(chName) {
+		if c.isConnected() && c.isChannel(chName) {
 			c.send("PART " + chName + " :Langas uždarytas")
 		}
 		c.queueRedraw()
@@ -1276,7 +1309,7 @@ func (c *Client) handleCmd(cmd, args string) {
 		if msg == "" {
 			msg = "mircBSD"
 		}
-		if c.connected {
+		if c.isConnected() {
 			c.send(fmt.Sprintf("QUIT :%s", msg))
 		}
 		c.stop()
@@ -1295,7 +1328,7 @@ func (c *Client) handleCmd(cmd, args string) {
 			"/join #kanalas [slaptažodis]         įeiti į kanalą",
 			"/part [priežastis]                   išeiti",
 			"/cycle [priežastis]                  išeiti ir vėl įeiti",
-			"/close                               uždaryti langą (+ PART)",
+			"/close [kanalas]                    uždaryti langą (+ PART)",
 			"/msg <nick> <žinutė>                 privati žinutė",
 			"/notice <nick> <žinutė>              notice žinutė",
 			"/invite <nick> [#kanalas]            pakviesti į kanalą",

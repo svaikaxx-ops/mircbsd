@@ -208,4 +208,4 @@ func main() {
 	}
 }
 
-const version = "0.4.0"
+const version = "0.4.2"

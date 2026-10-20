@@ -428,6 +428,11 @@ func findChunk(original, plainChunk string) string {
 
 const defaultMaxMessages = 5000
 
+// defaultPrefixSigns / defaultPrefixModes — standartinės IRC statuso
+// prefiksų eilutės, kai serveris nepaskyrė savo PREFIX parametro (ISUPPORT).
+const defaultPrefixSigns = "~&@%+"
+const defaultPrefixModes = "qaohv"
+
 type Channel struct {
 	name          string
 	messages      []Message
@@ -437,8 +442,11 @@ type Channel struct {
 	topic         string
 	maxMessages   int
 	scrollOff     int
-	isPrivate     bool // tiesioginis pokalbis (ne kanalas)
-	drawLineCount int  // eilučių skaičius paskutiniam braižymui (istorijos užšaldymui)
+	isPrivate     bool   // tiesioginis pokalbis (ne kanalas)
+	drawLineCount int    // eilučių skaičius paskutiniam braižymui (istorijos užšaldymui)
+	casemapping   string // serverio nick'ų palyginimo taisyklė (ISUPPORT)
+	prefix        string // serverio PREFIX statuso prefiksai (ISUPPORT)
+	prefixModes   string // serverio PREFIX mode raidės (ISUPPORT)
 
 	// Renderio cache'as: eilutės priklauso nuo žinučių, pločio ir spalvos.
 	// renderGen didinamas kiekvieną kartą pakeitus žinutes (addMsg, clear).
@@ -468,36 +476,62 @@ func (ch *Channel) addMsg(m Message) {
 	}
 }
 
-func (ch *Channel) addNick(nick string) {
+// addNick prideda nick'ą į kanalo sąrašą. sign/modes — serverio PREFIX
+// parametrai (iš ISUPPORT), kad sortavimas ir lygiavimas būtų nuoseklūs.
+// prefixSigns grąžina kanalui priskirtą PREFIX parametrą arba standartinį.
+func (ch *Channel) prefixSigns(opt ...string) string {
+	if len(opt) > 0 {
+		return opt[0]
+	}
+	if ch != nil && ch.prefix != "" {
+		return ch.prefix
+	}
+	return defaultPrefixSigns
+}
+
+func (ch *Channel) addNick(nick string, signOpt ...string) {
+	sign := ch.prefixSigns(signOpt...)
 	for _, n := range ch.nicks {
-		if nickEqual(stripMode(n), stripMode(nick)) {
+		if nickEqual(stripMode(n, sign), stripMode(nick, sign), ch.casemapping) {
 			return
 		}
 	}
 	ch.nicks = append(ch.nicks, nick)
-	sortNicks(ch.nicks)
+	sortNicks(ch.nicks, sign)
 }
 
-func (ch *Channel) removeNick(nick string) {
+func (ch *Channel) removeNick(nick string, signOpt ...string) {
+	sign := ch.prefixSigns(signOpt...)
 	for i, n := range ch.nicks {
-		if nickEqual(stripMode(n), stripMode(nick)) {
+		if nickEqual(stripMode(n, sign), stripMode(nick, sign), ch.casemapping) {
 			ch.nicks = append(ch.nicks[:i], ch.nicks[i+1:]...)
 			return
 		}
 	}
 }
 
-func (ch *Channel) renameNick(oldNick, newNick string) {
+func (ch *Channel) renameNick(oldNick, newNick string, signOpt ...string) {
+	sign := ch.prefixSigns(signOpt...)
 	for i, n := range ch.nicks {
-		if nickEqual(stripMode(n), oldNick) {
-			ch.nicks[i] = modePrefix(n) + newNick
-			sortNicks(ch.nicks)
+		if nickEqual(stripMode(n, sign), oldNick, ch.casemapping) {
+			ch.nicks[i] = modePrefix(n, sign) + newNick
+			sortNicks(ch.nicks, sign)
 			return
 		}
 	}
 }
 
-func (ch *Channel) setMode(nick, mode string) {
+func (ch *Channel) setMode(nick, mode string, signsOpt ...string) {
+	signs := ch.prefixSigns()
+	modes := ch.prefixModes
+	if modes == "" {
+		modes = defaultPrefixModes
+	}
+	if len(signsOpt) == 2 {
+		signs, modes = signsOpt[0], signsOpt[1]
+	} else if len(signsOpt) == 1 {
+		signs = signsOpt[0]
+	}
 	adding := true
 	for _, mr := range mode {
 		switch mr {
@@ -507,23 +541,23 @@ func (ch *Channel) setMode(nick, mode string) {
 			adding = false
 		default:
 			// mode raidė → statuso prefiksas pagal serverio PREFIX parametrą
-			if i := strings.IndexRune(prefixModes, mr); i >= 0 && i < len(prefixSigns) {
-				ch.changeNickMode(nick, prefixSigns[i], adding)
+			if i := strings.IndexRune(modes, mr); i >= 0 && i < len(signs) {
+				ch.changeNickMode(nick, signs[i], adding, signs)
 			}
 		}
 	}
 }
 
-func (ch *Channel) changeNickMode(nick string, prefix byte, adding bool) {
+func (ch *Channel) changeNickMode(nick string, prefix byte, adding bool, signs string) {
 	for i, n := range ch.nicks {
-		if nickEqual(stripMode(n), nick) {
-			bare := stripMode(n)
+		if nickEqual(stripMode(n, signs), nick, ch.casemapping) {
+			bare := stripMode(n, signs)
 			if adding {
 				ch.nicks[i] = string(prefix) + bare
 			} else {
 				ch.nicks[i] = bare
 			}
-			sortNicks(ch.nicks)
+			sortNicks(ch.nicks, signs)
 			return
 		}
 	}
@@ -531,37 +565,73 @@ func (ch *Channel) changeNickMode(nick string, prefix byte, adding bool) {
 
 // stripMode/prefixStatus naudoja serverio parametrus (PREFIX iš ISUPPORT),
 // o ne hardkoduotą "~&@%+" sąrašą.
-func stripMode(nick string) string {
-	if len(nick) > 0 && strings.ContainsRune(prefixSigns, rune(nick[0])) {
+// stripMode pašalina statuso prefiksą. signs — serverio PREFIX prefiksai;
+// jei nepaduodami, naudojami standartiniai („~&@%+“).
+func stripMode(nick string, signsOpt ...string) string {
+	signs := defaultPrefixSigns
+	if len(signsOpt) > 0 {
+		signs = signsOpt[0]
+	}
+	if len(nick) > 0 && strings.ContainsRune(signs, rune(nick[0])) {
 		return nick[1:]
 	}
 	return nick
 }
 
-func modePrefix(nick string) string {
-	if len(nick) > 0 && strings.ContainsRune(prefixSigns, rune(nick[0])) {
+// modePrefix grąžina nick'o statuso prefiksą (arba "").
+func modePrefix(nick string, signsOpt ...string) string {
+	signs := defaultPrefixSigns
+	if len(signsOpt) > 0 {
+		signs = signsOpt[0]
+	}
+	if len(nick) > 0 && strings.ContainsRune(signs, rune(nick[0])) {
 		return string(nick[0])
 	}
 	return ""
 }
 
-func nickOrder(n string) int {
-	if len(n) == 0 {
-		return len(prefixSigns)
+func nickOrder(n string, signsOpt ...string) int {
+	signs := defaultPrefixSigns
+	if len(signsOpt) > 0 {
+		signs = signsOpt[0]
 	}
-	if i := strings.IndexRune(prefixSigns, rune(n[0])); i >= 0 {
+	if len(n) == 0 {
+		return len(signs)
+	}
+	if i := strings.IndexRune(signs, rune(n[0])); i >= 0 {
 		return i
 	}
-	return len(prefixSigns)
+	return len(signs)
 }
 
-func sortNicks(nicks []string) {
+func sortNicks(nicks []string, signsOpt ...string) {
+	// Surūšiuoti pagal prefix'ų hierarchiją — signs imamas vieną kartą
+	// iš kvietėjo, kad visi nicks būtų surūšiuoti pagal tą patį PREFIX parametrą.
+	signs := defaultPrefixSigns
+	if len(signsOpt) > 0 {
+		signs = signsOpt[0]
+	}
+	order := func(n string) int {
+		if len(n) == 0 {
+			return len(signs)
+		}
+		if i := strings.IndexRune(signs, rune(n[0])); i >= 0 {
+			return i
+		}
+		return len(signs)
+	}
+	strip := func(n string) string {
+		if len(n) > 0 && strings.ContainsRune(signs, rune(n[0])) {
+			return n[1:]
+		}
+		return n
+	}
 	sort.Slice(nicks, func(i, j int) bool {
-		oi, oj := nickOrder(nicks[i]), nickOrder(nicks[j])
+		oi, oj := order(nicks[i]), order(nicks[j])
 		if oi != oj {
 			return oi < oj
 		}
-		return strings.ToLower(stripMode(nicks[i])) < strings.ToLower(stripMode(nicks[j]))
+		return strings.ToLower(strip(nicks[i])) < strings.ToLower(strip(nicks[j]))
 	})
 }
 
@@ -577,7 +647,12 @@ func (c *Client) draw() {
 		c.mu.Unlock()
 		return
 	}
-	active := c.channels[c.activeIdx]
+	active := c.activeChan()
+	if active == nil {
+		// Aktyvaus kanalo nėra (activeIdx negaliojantis) — nebraižyk
+		c.mu.Unlock()
+		return
+	}
 	channels := make([]*Channel, len(c.channels))
 	copy(channels, c.channels)
 	activeIdx := c.activeIdx
@@ -598,7 +673,7 @@ func (c *Client) draw() {
 	searchQuery := c.searchQuery
 	c.mu.Unlock()
 
-	showNicks := isChannel(active.name)
+	showNicks := c.isChannel(active.name)
 	out := &strings.Builder{}
 	out.WriteString(ansiHideCur)
 
@@ -691,7 +766,10 @@ func (c *Client) draw() {
 			}
 			displayName := sanitizeText(name)
 			if ch.isPrivate {
-				displayName = ">" + name
+				// Privatūs kanalai pažymėti „>“ — pavadinimas taip pat
+				// turi būti sanitizuotas (priešiškas serveris gali atsiųsti
+				// PRIVMSG su ESC simboliais nick'e).
+				displayName = ">" + displayName
 			}
 			fkeyPrefix := ""
 			if i < 12 {
@@ -846,7 +924,7 @@ func (c *Client) draw() {
 						display = string([]rune(display)[:nickListWidth])
 					}
 					color := ansiWhite
-					switch modePrefix(n) {
+					switch modePrefix(n, active.prefixSigns()) {
 					case "~", "&", "@":
 						color = ansiYellow
 					case "%":

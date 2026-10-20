@@ -175,4 +175,4 @@ GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o mircbsd-linux .
 
 ## Versija
 
-v0.4.0 – patogumo funkcijos (žr. CHANGELOG.md)
+v0.4.2 – saugumo pataisymai: panikos, data race, terminalo injekcija, komandų injekcija (žr. CHANGELOG.md)

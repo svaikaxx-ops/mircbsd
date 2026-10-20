@@ -22,6 +22,9 @@ jobs:
       - name: Testai su race detector
         run: go test -race -v ./...
 
+      - name: Saugumo regresijos testai (audit)
+        run: go test -tags audit -race -v ./...
+
       - name: Fuzz smoke (10s)
         run: |
           go test -run='^$' -fuzz=FuzzParseIRC -fuzztime=10s .

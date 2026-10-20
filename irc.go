@@ -26,26 +26,46 @@ const maxLineBytes = 512
 // ircSendBurst – didžiausias eilučių skaičius per sekundę išėjimui (flood apsauga).
 const ircSendBurst = 5
 
+// maxCTCPBytes – didžiausias CTCP atspindžio (PING) dydis baitais. Be ribos
+// užpuolėjas galėtų priversti serverį gauti tiek pat atspindą.
+const maxCTCPBytes = 64
+
 // Serverio protokolo parametrai (ISUPPORT/005) — numatytieji RFC reikšmės,
-// atnaujinamos c.applyISUPPORT(). Vienas klientas viename procese — paketo
-// lygmeniu, lygiai kaip tsColorCode.
-var (
-	chantypes   = "#&"      // kanalų pavadinimų prefiksai
-	prefixSigns = "~&@%+"   // nick'o statuso prefiksai pagal svarbą (q a o h v)
-	prefixModes = "qaohv"   // mode raidės, atitinkančios prefixSigns
-	casemapping = "rfc1459" // nick palyginimų taisyklės
-)
+// atnaujinamos c.applyISUPPORT().
+//
+// Parametrai yra PER SERVERĮ (Client laukuose), ne paketinio lygio globaliai:
+// vienas serveris neturi teisės gadinti kito nustatymų (ir testų —
+// viena būsena turi būti izoliuota nuo kitų).
+//
+// ISUPPORT keičiamas parseIRC gorutinoje (005 numeriu), o skaitomas
+// iš kitų gorutinių (UI braižymas, klaviatūra). Todėl apsaugotas
+// sync.RWMutex (Client lauke): skaitytojai ima RLock, applyISUPPORT — Lock.
+//
+// SKAITYTOJAI NEGALI TIESIOGINIAI LIEPTI SIEMS KINTAMIESIEMS — naudok
+// snapshot'ą (žr. c.isupSnapshot), kad matytų nuoseklų vaizdą.
+
+// isupSnapshot grąžina nuoseklų ISUPPORT parametrų kopiją.
+//
+// NB: negalima naudoti named return kintamųjų (chantypes, prefixSigns, ...)
+// — jie uždengtų laukus ir funkcija grąžintų tuščias reikšmes.
+func (c *Client) isupSnapshot() (string, string, string, string) {
+	c.isupMu.RLock()
+	defer c.isupMu.RUnlock()
+	return c.chantypes, c.prefixSigns, c.prefixModes, c.casemapping
+}
 
 // applyISUPPORT nuskaiko ISUPPORT (005) tokeno: CHANTYPES=, PREFIX=?, CASEMAPPING=.
 func (c *Client) applyISUPPORT(tokens []string) {
+	c.isupMu.Lock()
+	defer c.isupMu.Unlock()
 	for _, tok := range tokens {
 		switch {
 		case strings.HasPrefix(tok, "CHANTYPES="):
 			v := tok[len("CHANTYPES="):]
 			if v != "" {
-				chantypes = strings.Trim(v, "-") // "-" reiškia "kanalų nėra"
-				if chantypes == "" {
-					chantypes = "#&"
+				c.chantypes = strings.Trim(v, "-") // "-" reiškia "kanalų nėra"
+				if c.chantypes == "" {
+					c.chantypes = "#&"
 				}
 			}
 		case strings.HasPrefix(tok, "PREFIX="):
@@ -53,14 +73,14 @@ func (c *Client) applyISUPPORT(tokens []string) {
 			if i := strings.IndexByte(v, ')'); i > 0 {
 				modes, signs := v[1:i], v[i+1:]
 				if modes != "" && len([]rune(modes)) == len([]rune(signs)) {
-					prefixModes = modes
-					prefixSigns = signs
+					c.prefixModes = modes
+					c.prefixSigns = signs
 				}
 			}
 		case strings.HasPrefix(tok, "CASEMAPPING="):
 			switch tok[len("CASEMAPPING="):] {
 			case "ascii", "rfc1459", "strict-rfc1459":
-				casemapping = tok[len("CASEMAPPING="):]
+				c.casemapping = tok[len("CASEMAPPING="):]
 			}
 		}
 	}
@@ -86,11 +106,18 @@ func lowerIRC(r rune) rune {
 
 // nickEqual palygina nick'us pagal serverio casemapping
 // (RFC: nick'yra didžiųjų/mažųjų raidžių nejausmi, bet [] != {} pagal ASCII).
-func nickEqual(a, b string) bool {
+func (c *Client) nickEqual(a, b string) bool {
+	_, _, _, cm := c.isupSnapshot()
+	return nickEqual(a, b, cm)
+}
+
+// nickEqual — laisva versija su casemapping parametru (naudojama
+// kanale, kur nėra prieigos prie Client).
+func nickEqual(a, b, cm string) bool {
 	if a == "" || b == "" {
 		return a == b
 	}
-	if casemapping == "ascii" {
+	if cm == "ascii" {
 		return strings.EqualFold(a, b)
 	}
 	return strings.Map(lowerIRC, a) == strings.Map(lowerIRC, b)
@@ -98,11 +125,12 @@ func nickEqual(a, b string) bool {
 
 // isChannel arba pavadinimas yra kanalas pagal serverio CHANTYPES.
 // Ypatingieji "*server*" — ne kanalas.
-func isChannel(name string) bool {
+func (c *Client) isChannel(name string) bool {
 	if name == "" {
 		return false
 	}
-	return strings.ContainsRune(chantypes, rune(name[0]))
+	ct, _, _, _ := c.isupSnapshot()
+	return strings.ContainsRune(ct, rune(name[0]))
 }
 
 // splitForPrivmsg dalija tekstą į dalis, kurios kiekviena po PRIVMSG antraštės
@@ -170,6 +198,14 @@ type Client struct {
 	// Away throttle: nick -> paskutinio pranešimo laikas
 	awayNotified map[string]time.Time
 
+	// Serverio protokolo parametrai (ISUPPORT/005) — PER SERVERĮ.
+	// Gydoma isupMu: skaitytojai RLock, applyISUPPORT Lock.
+	isupMu      sync.RWMutex
+	chantypes   string // kanalų pavadinimų prefiksai
+	prefixSigns string // nick'o statuso prefiksai pagal svarbą (q a o h v)
+	prefixModes string // mode raidės, atitinkančios prefixSigns
+	casemapping string // nick palyginimų taisyklės
+
 	// Paste apsauga
 	pasteBuf          []string
 	pastePartial      string    // nevienos eilutės gabaliukas (paste ateina ~64B gabaliukais)
@@ -222,9 +258,15 @@ type Client struct {
 }
 
 func newClient(cfg Config) *Client {
+	// Serverio pavadinimas iš konfigūracijos / komandinės eilutės taip pat
+	// turi būti saugus — jis įrašomas į IRC komandas ir žurnalų katalogą.
+	server := cfg.Server
+	if !isValidServer(server) {
+		server = ""
+	}
 	c := &Client{
 		nick:            cfg.Nick,
-		server:          cfg.Server,
+		server:          server,
 		port:            cfg.Port,
 		useTLS:          cfg.TLS,
 		realName:        cfg.RealName,
@@ -249,47 +291,184 @@ func newClient(cfg Config) *Client {
 		activeCaps:      make(map[string]bool),
 		awayNotified:    make(map[string]time.Time),
 		lastPong:        time.Now(),
+		// ISUPPORT numatytosios reikšmės (RFC) — per serverį
+		chantypes:   "#&",
+		prefixSigns: "~&@%+",
+		prefixModes: "qaohv",
+		casemapping: "rfc1459",
 	}
 	return c
 }
 
+// findCh ieško kanalo pagal pavadinimą. Lyginama su SANITIZUOTU pavadinimu —
+// nes kanalui sukūrimas buvo sanitizuotas, serverio atsiųstas originalus
+// pavadinimas turi būti išvalomas prieš palyginimą.
 func (c *Client) findCh(name string) *Channel {
+	safe := sanitizeText(name)
 	for _, ch := range c.channels {
-		if strings.EqualFold(ch.name, name) {
+		if strings.EqualFold(ch.name, safe) {
 			return ch
 		}
 	}
 	return nil
 }
 
+// maxChannels – didžiausias kanalų (langų) skaičius viename seanse.
+// Be ribos priešiškas serveris galėtų siųsti JOIN/PM flood — klientas
+// kurstų šimtus kanalų (atmintis + sidebar).
+const maxChannels = 100
+
+// ensureCh sukuria kanalą, jei jo nėra. Tuščių pavadinimų nepriima —
+// serverio komanda be kanalo parametro (pvz. „:srv 332 :topic“) neturi
+// teisės sukurti kanalo su tuščiu pavadinimu.
+//
+// Pavadinimas sanitizuojamas ČIA, kai kanalas sukuriamas: priešiškas
+// serveris gali atsiųsti PRIVMSG su ESC simboliais nick'e — jei tokie
+// simboliai liktų ch.name, jie būtų braižomi į ekraną (terminalo
+// injekcija) ir rašomi į žurnalų failų vardus.
 func (c *Client) ensureCh(name string) *Channel {
+	if name == "" {
+		return nil
+	}
 	ch := c.findCh(name)
 	if ch != nil {
 		return ch
 	}
-	ch = newChannel(name, c.maxMessages)
+	// Per didelis kanalų skaičius — atmetame naują kanalą (flood apsauga).
+	// Visada paliekame bent *server* kanalą.
+	if len(c.channels) >= maxChannels {
+		return nil
+	}
+	// Sanitizuojame PRIEŠ sukurdami — kad ch.name (kuris braižomas į ekraną
+	// ir naudojamas žurnalų failų vardams) niekada nebūtų su terminalo
+	// valdymo simboliais ar kelio elementais.
+	safe := sanitizeText(name)
+	if safe == "" {
+		// Pavadinimas susidėjo tik iš valdymo simbolių — tokio kanalo
+		// nekūriame (kitaip atsirastų tuščias / beprasmis langas).
+		return nil
+	}
+	ch = newChannel(safe, c.maxMessages)
+	// Kanalas prisimena serverio ISUPPORT parametrus, kad nick'ų
+	// lygiavimas ir sortavimas būtų nuoseklūs (ir nepriklausomų
+	// nuo to, kas tuo metu yra globalioje būsenoje).
+	_, signs, modes, cm := c.isupSnapshot()
+	ch.prefix = signs
+	ch.prefixModes = modes
+	ch.casemapping = cm
 	c.channels = append(c.channels, ch)
 	return ch
+}
+
+// activeChan grąžina aktyvų kanalą, visada ne-nil. activeIdx gali būti -1
+// (serverio PART *server* pašalino *server* kanalą), todėl indeksas
+// tikrinamas PRIEŠ naudojant — kitaip draw()/addMsg() panikuoja.
+func (c *Client) activeChan() *Channel {
+	if c.activeIdx < 0 || c.activeIdx >= len(c.channels) {
+		return nil
+	}
+	return c.channels[c.activeIdx]
+}
+
+// activeName grąžina aktyvaus kanalo pavadinimą (arba "" jei nėra).
+func (c *Client) activeName() string {
+	if ch := c.activeChan(); ch != nil {
+		return ch.name
+	}
+	return ""
+}
+
+// isConnected grąžina ryšio būklę saugiai (su rakinu). c.connected keičiamas
+// connect/disconnect gorutinese, o skaitomas iš klaviatūros — tiesiogus
+// skaitymas be rakino yra data race.
+func (c *Client) isConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connected
+}
+
+// myNick grąžina dabartinį nick'ą saugiai (su rakinu). c.nick keičiamas
+// /nick komanda ir serverio NICK pranešimu — skaitymas be rakino yra race.
+func (c *Client) myNick() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.nick
+}
+
+// normalizeActiveIdx sugrąžina activeIdx į galiojamas ribas. Naudojamas
+// po kanalų sąrašo keitimo (PART, /close), kad aktyvus kanalas liktų tas
+// pats (o jei jis buvo pašalintas — kad indeksas vis tiek būtų galiojantis).
+func (c *Client) normalizeActiveIdx(removedIdx int) {
+	// Pašalintas kanalas buvo aktyvus → atsirinkti kitą.
+	if removedIdx >= 0 && removedIdx == c.activeIdx {
+		if removedIdx < len(c.channels) {
+			c.activeIdx = removedIdx // kanalas po pašalinto užimą tą patį indeksą
+		} else {
+			c.activeIdx = len(c.channels) - 1
+		}
+		if c.activeIdx < 0 {
+			c.activeIdx = 0
+		}
+		return
+	}
+	// Pašalintas kanalas buvo PRIEŠ aktyvaus → visi indeksai po juo
+	// pasikeitė vienu žemyn, aktyvaus kanalas dabar yra senas indeksas-1.
+	if removedIdx >= 0 && removedIdx < c.activeIdx {
+		c.activeIdx--
+	}
+	// Bendra patikra — aktyvus visada turi būti galiojančioje zonoje.
+	if c.activeIdx < 0 {
+		c.activeIdx = 0
+	}
+	if c.activeIdx >= len(c.channels) {
+		c.activeIdx = len(c.channels) - 1
+	}
+	if c.activeIdx < 0 {
+		c.activeIdx = 0
+	}
+}
+
+// removeCh pašalina kanalą iš sąrašo (indeksuoti pagal c.channels) ir
+// sugalioja activeIdx. Užtikrina, kad sąraše visada liktų bent vienas
+// kanalas — serverio PART negali ištrukti vienintelio *server* kanalo ir
+// palikti activeIdx = -1 (nuo to vėliau draw()/addMsg() panikuoja).
+// Grąžina true, jei kanalas buvo pašalintas.
+func (c *Client) removeCh(idx int) bool {
+	if idx < 0 || idx >= len(c.channels) {
+		return false
+	}
+	// Visada paliekame bent vieną kanalą (pvz. *server*).
+	if len(c.channels) <= 1 {
+		return false
+	}
+	c.channels = append(c.channels[:idx], c.channels[idx+1:]...)
+	c.normalizeActiveIdx(idx)
+	return true
 }
 
 // isIgnored tikrina arba šaltinio `prefix` (nick!user@host) atitinka ignore
 // sąrašą. Palaikomos ir paprastos nick'ų eilutės (senas elgesys), ir wildcards
 // (*, ?) maskės: "gaidys!*@*", "*!*@sraunus.host.tld", "bot*".
 func (c *Client) isIgnored(prefix string) bool {
-	if len(c.ignoreList) == 0 {
+	// ignoreList keičiamas iš /ignore ir /unignore komandų (klaviatūros
+	// gorutinos), o skaitomas čia (parseIRC gorutinos) — reikia rakino.
+	c.mu.Lock()
+	list := c.ignoreList
+	c.mu.Unlock()
+	if len(list) == 0 {
 		return false
 	}
 	nick := prefix
 	if i := strings.IndexByte(prefix, '!'); i != -1 {
 		nick = prefix[:i]
 	}
-	for _, ig := range c.ignoreList {
+	for _, ig := range list {
 		if ig == "" {
 			continue
 		}
 		if !strings.ContainsAny(ig, "*?") {
 			// tiesioginis nick arba atitinkama eilutė
-			if nickEqual(ig, nick) {
+			if c.nickEqual(ig, nick) {
 				return true
 			}
 			continue
@@ -338,8 +517,16 @@ func wildEq(p, s string) bool {
 func (c *Client) addMsg(chanName string, m Message) {
 	c.mu.Lock()
 	ch := c.ensureCh(chanName)
+	if ch == nil {
+		// Kanalas be pavadinimo — nekuriam (serverio klastota komanda)
+		c.mu.Unlock()
+		return
+	}
+	// Naudojame SANITIZUOTĄ pavadinimą — originalį gali atsiųsti priešiškas
+	// serveris (ESC simboliai → terminalo injekcija, kelias už logDir ribų).
+	chanName = ch.name
 	ch.addMsg(m)
-	isActive := c.channels[c.activeIdx] == ch
+	isActive := c.activeChan() == ch
 	if !isActive {
 		ch.unread++
 		if m.highlight {
@@ -364,7 +551,7 @@ func (c *Client) addMsg(chanName string, m Message) {
 		c.mu.Unlock()
 		if canNotify {
 			title := chanName
-			if !isChannel(chanName) {
+			if !c.isChannel(chanName) {
 				title = "PM " + chanName
 			}
 			body := stripIRCFormat(m.text)
@@ -395,8 +582,10 @@ func (c *Client) queueRedraw() {
 func (c *Client) switchCh(idx int) {
 	c.mu.Lock()
 	if idx >= 0 && idx < len(c.channels) {
-		// Išsaugoti dabartinę scroll poziciją
-		c.channels[c.activeIdx].scrollOff = c.scrollOff
+		// Išsaugoti dabartinę scroll poziciją (jei aktyvus kanalas egzistuoja)
+		if cur := c.activeChan(); cur != nil {
+			cur.scrollOff = c.scrollOff
+		}
 		c.activeIdx = idx
 		// Atstatyti išsaugotą poziciją
 		c.scrollOff = c.channels[idx].scrollOff
@@ -463,12 +652,38 @@ func (c *Client) logMessage(logDir, server, chanName string, m Message) {
 	default:
 		line = fmt.Sprintf("[%s] %s\n", ts, plain)
 	}
+	// Slaptažodžiai (NickServ IDENTIFY/REGISTER/SET PASSWORD) niekada ne
+	// rašomi į žurnalą — jame liktų plaintext slaptažodis.
+	if isSensitiveHistory(plain) {
+		line = fmt.Sprintf("[%s] <%s> [slaptažodis paslėptas]\n", ts, nick)
+	}
 	_, _ = f.WriteString(line)
 }
 
+// sanitizePath padaro serverio/kanalo pavadinimą saugiu katalogo vardu.
+//
+// Svarbu: ne tik pakeičia „/“ į „_“, bet ir blokuoja „..“ —
+// filepath.Join(logDir, "..") nukelia į tėvinį katalogą, t.y. logai
+// būtų rašomi UŽ nurodyto žurnalo katalogo ribų (serverio vardas
+// naudojamas kaip katalogo vardas, o serverį renka /connect komanda).
 func sanitizePath(s string) string {
-	r := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_")
-	return r.Replace(s)
+	// Tuščias vardas lieka tuščias — clearLogs("") juo žymi „trinti visus“.
+	if s == "" {
+		return ""
+	}
+	r := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "*", "_", "?", "_", "\"", "_")
+	s = r.Replace(s)
+	// „..“ (ir „...“ ir t. t.) neleidžiame — jie reiškia katalogų kelią.
+	// Po pakeitimo liko tik „..“ (be separatorių) — pakeičiame į „_“.
+	for strings.Contains(s, "..") {
+		s = strings.ReplaceAll(s, "..", "_")
+	}
+	// Taip pat apsaugome nuo pavadinimų, kuriuose yra tik taškai arba jie
+	// tušti — tokie keliai nukelia aukštyn.
+	if strings.Trim(s, ".") == "" {
+		return "_"
+	}
+	return s
 }
 
 func (c *Client) closeLogs() {
@@ -531,9 +746,27 @@ func (c *Client) clearLogs(chanName string) int {
 // ircLineSanitizer pašalina CR/LF iš siunčiamų eilučių (protokolo injekcija)
 var ircLineSanitizer = strings.NewReplacer("\r", "", "\n", "")
 
+// truncateIRC apriboja eilutę iki 512 baitų (RFC 2812: eilutė = komanda +
+// parametrai + CRLF). Ilgesnės eilutės nutrumpinamos — kitaip serveris
+// nutraukia ryšį. Bandoma nukirsti UTF-8 simbolio viduryje — neleidžiama.
+func truncateIRC(line string) string {
+	// CRLF užimą 2 baitus
+	const limit = maxLineBytes - 2
+	if len(line) <= limit {
+		return line
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(line[cut]) {
+		cut--
+	}
+	return line[:cut]
+}
+
 func (c *Client) send(line string) {
 	// Apsaugoti nuo IRC protokolo injekcijos per \r\n
 	line = ircLineSanitizer.Replace(line)
+	// Neviršyti 512 baitų limito (serveris nutraukia ryšį)
+	line = truncateIRC(line)
 	// writeCh keičiamas doConnect'e — skaityti tik po rakinimu
 	c.mu.Lock()
 	writeCh := c.writeCh
@@ -768,13 +1001,7 @@ func (c *Client) doConnect(gen int) {
 	c.send(fmt.Sprintf("USER %s 0 * :%s", nick, realName))
 
 	reader := bufio.NewReader(conn)
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			break
-		}
-		c.parseIRC(strings.TrimRight(line, "\r\n"))
-	}
+	c.readLoop(reader)
 
 	close(pingStop)
 	close(writeStop)
@@ -784,6 +1011,30 @@ func (c *Client) doConnect(gen int) {
 	c.mu.Unlock()
 	c.errMsg("Ryšys nutrūko")
 	c.queueRedraw()
+}
+
+// readLoop skaito serverio eilutes ir perduoda jas į parseIRC.
+//
+// Eilutės ribojamos: jei serveris siunčia milijonų baitų eilutę be '\n',
+// ReadSlice grąžina bufio.ErrBufferFull — tuomet eilutė apleidžiama iki
+// '\n', o atmintis nesusikaupia (priešingai nei ReadString be ribos, kur
+// priešiškas serveris galėtų kaupti megabaitus).
+func (c *Client) readLoop(reader *bufio.Reader) {
+	for {
+		line, err := reader.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			// Per didelė eilutė — apleidžiame iki '\n'
+			for err == bufio.ErrBufferFull {
+				_, err = reader.ReadSlice('\n')
+			}
+			c.errMsg("ĮSPĖJIMAS: serverio eilutė per ilga — atmesta")
+			continue
+		}
+		if err != nil {
+			return
+		}
+		c.parseIRC(strings.TrimRight(string(line), "\r\n"))
+	}
 }
 
 func (c *Client) parseIRC(line string) {
@@ -925,12 +1176,17 @@ func (c *Client) parseIRC(line string) {
 	case "JOIN":
 		ch := p(0)
 		c.mu.Lock()
-		isMe := nickEqual(fromNick, c.nick)
+		isMe := c.nickEqual(fromNick, c.nick)
 		channel := c.ensureCh(ch)
+		if channel == nil {
+			// Kanalas be pavadinimo — ignoruojame (serverio klastota komanda)
+			c.mu.Unlock()
+			return
+		}
 		channel.addNick(fromNick)
 		if isMe {
-			for i, channel := range c.channels {
-				if strings.EqualFold(channel.name, ch) {
+			for i, cn := range c.channels {
+				if cn == channel {
 					c.activeIdx = i
 					break
 				}
@@ -942,24 +1198,32 @@ func (c *Client) parseIRC(line string) {
 	case "PART":
 		ch := p(0)
 		msg := p(1)
+		// Serverio komanda be kanalo parametro neturi teisės kurti kanalo.
+		if ch == "" {
+			return
+		}
 		c.mu.Lock()
-		if channel := c.findCh(ch); channel != nil {
+		channel := c.findCh(ch)
+		if channel != nil {
 			channel.removeNick(fromNick)
 		}
-		isMe := nickEqual(fromNick, c.nick)
+		isMe := c.nickEqual(fromNick, c.nick)
 		if isMe {
-			for i, channel := range c.channels {
-				if strings.EqualFold(channel.name, ch) {
-					c.channels = append(c.channels[:i], c.channels[i+1:]...)
-					if c.activeIdx >= len(c.channels) {
-						c.activeIdx = len(c.channels) - 1
+			// *server* yra vidinis kanalas — serveris negali jo pašalinti,
+			// nes tada liktų tuščias kanalų sąrašas ir activeIdx = -1.
+			if !strings.EqualFold(ch, "*server*") {
+				for i, cn := range c.channels {
+					if cn == channel {
+						c.removeCh(i)
+						break
 					}
-					break
 				}
 			}
 		}
 		c.mu.Unlock()
-		if !isMe {
+		if !isMe && channel != nil {
+			// Žinutė rodoma tik jei kanalas jau buvo mūsų sąraše — kitaip
+			// serveris galėtų prikurpti šoninį kanalą per atsitiktinį PART.
 			c.addMsg(ch, Message{ts: now, nick: fromNick, text: msg, msgType: MsgPart})
 		}
 
@@ -970,7 +1234,7 @@ func (c *Client) parseIRC(line string) {
 		var affected []*Channel
 		for _, ch := range c.channels {
 			for _, n := range ch.nicks {
-				if nickEqual(stripMode(n), fromNick) {
+				if c.nickEqual(stripMode(n, ch.prefixSigns()), fromNick) {
 					affected = append(affected, ch)
 					break
 				}
@@ -994,7 +1258,7 @@ func (c *Client) parseIRC(line string) {
 			channel.removeNick(kicked)
 		}
 		c.mu.Unlock()
-		if nickEqual(kicked, me) {
+		if c.nickEqual(kicked, me) {
 			c.errMsg(fmt.Sprintf("Buvai išmestas iš %s (%s)", ch, reason))
 			// Pateikti kanalą kaip neaktyvų, bet neuždaryti lango
 		} else {
@@ -1013,7 +1277,7 @@ func (c *Client) parseIRC(line string) {
 	case "NICK":
 		newNick := p(0)
 		c.mu.Lock()
-		if nickEqual(fromNick, c.nick) {
+		if c.nickEqual(fromNick, c.nick) {
 			c.nick = newNick
 		}
 		for _, ch := range c.channels {
@@ -1026,7 +1290,8 @@ func (c *Client) parseIRC(line string) {
 		target := p(0)
 		modeStr := p(1)
 		// Nick mode kanaluose
-		if isChannel(target) {
+		if c.isChannel(target) {
+			_, signs, modes, _ := c.isupSnapshot()
 			c.mu.Lock()
 			ch := c.findCh(target)
 			if ch != nil && len(params) > 2 {
@@ -1036,7 +1301,7 @@ func (c *Client) parseIRC(line string) {
 				// (pvz. MODE #chan +kb nick mask).
 				adding := true
 				modeIdx := 2
-				argLetters := prefixModes + "blkeI"
+				argLetters := modes + "blkeI"
 				for _, mr := range modeStr {
 					switch {
 					case mr == '+':
@@ -1046,12 +1311,12 @@ func (c *Client) parseIRC(line string) {
 					case strings.IndexRune(argLetters, mr) >= 0:
 						if modeIdx < len(params) {
 							// tik nick'ų statuso modas keičia nick'o prefixą
-							if i := strings.IndexRune(prefixModes, mr); i >= 0 && i < len(prefixSigns) {
+							if i := strings.IndexRune(modes, mr); i >= 0 && i < len(signs) {
 								pfx := string('-')
 								if adding {
 									pfx = string('+')
 								}
-								ch.setMode(params[modeIdx], pfx+string(mr))
+								ch.setMode(params[modeIdx], pfx+string(mr), signs, modes)
 							}
 							modeIdx++
 						}
@@ -1094,7 +1359,7 @@ func (c *Client) parseIRC(line string) {
 			if strings.HasPrefix(inner, "ACTION ") {
 				action := inner[7:]
 				dest := target
-				if nickEqual(target, me) {
+				if c.nickEqual(target, me) {
 					dest = fromNick
 				}
 				hl := strings.Contains(strings.ToLower(stripIRCFormat(action)), strings.ToLower(me))
@@ -1107,20 +1372,31 @@ func (c *Client) parseIRC(line string) {
 					c.send(fmt.Sprintf("NOTICE %s :\x01VERSION mircBSD %s (%s/Go)\x01", fromNick, version, osLabel()))
 				}
 			} else if strings.HasPrefix(inner, "PING") {
-				c.send(fmt.Sprintf("NOTICE %s :\x01%s\x01", fromNick, inner))
+				// CTCP PING atspinduliuojamas — bet apribojamas: be ribos
+				// užpuolėjas galėtų atsiųsti 100 KB CTCP PING ir priversti
+				// serverį gauti tiek pat atspindą (atspindėjimo amplifikacija).
+				payload := inner
+				if len(payload) > maxCTCPBytes {
+					payload = payload[:maxCTCPBytes]
+					// neperpjauti UTF-8 simbolio
+					for len(payload) > 0 && !utf8.RuneStart(payload[len(payload)-1]) {
+						payload = payload[:len(payload)-1]
+					}
+				}
+				c.send(fmt.Sprintf("NOTICE %s :\x01%s\x01", fromNick, payload))
 			}
 			return
 		}
 
 		dest := target
 		isPM := false
-		if nickEqual(target, me) {
+		if c.nickEqual(target, me) {
 			dest = fromNick
 			isPM = true
 		}
 		// echo-message: serveris siunčia atgal mūsų pačių žinutes — nerodyti dublikatų
 		c.mu.Lock()
-		isEcho := c.activeCaps["echo-message"] && nickEqual(fromNick, c.nick)
+		isEcho := c.activeCaps["echo-message"] && c.nickEqual(fromNick, c.nick)
 		c.mu.Unlock()
 		if isEcho {
 			return
@@ -1128,7 +1404,9 @@ func (c *Client) parseIRC(line string) {
 		if isPM {
 			c.mu.Lock()
 			ch := c.ensureCh(dest)
-			ch.isPrivate = true
+			if ch != nil {
+				ch.isPrivate = true
+			}
 			c.mu.Unlock()
 		}
 		plainText := stripIRCFormat(text)
@@ -1164,6 +1442,11 @@ func (c *Client) parseIRC(line string) {
 	case "332":
 		ch := p(1)
 		topic := p(2)
+		// Serveris gali siųsti 332 be kanalo parametro — toks kanalas
+		// neegzistuoja, todėl jo nekuriame (ir nepranešame apie kanalą).
+		if ch == "" {
+			return
+		}
 		c.mu.Lock()
 		if channel := c.findCh(ch); channel != nil {
 			channel.topic = topic
@@ -1177,6 +1460,10 @@ func (c *Client) parseIRC(line string) {
 		users := p(3)
 		c.mu.Lock()
 		channel := c.ensureCh(ch)
+		if channel == nil {
+			c.mu.Unlock()
+			return
+		}
 		for _, u := range strings.Fields(users) {
 			channel.addNick(u)
 		}
@@ -1396,14 +1683,16 @@ func (c *Client) parseIRC(line string) {
 				last, seen := c.awayNotified[nickLow]
 				if !seen || now.Sub(last) >= 10*time.Minute {
 					c.awayNotified[nickLow] = now
-					active := c.channels[c.activeIdx]
+					active := c.activeChan()
 					c.mu.Unlock()
-					for _, n := range active.nicks {
-						if nickEqual(stripMode(n), fromNick) {
-							c.addMsg(active.name, Message{ts: now, nick: fromNick,
-								text:    fromNick + " yra away: " + reason,
-								msgType: MsgServer})
-							break
+					if active != nil {
+						for _, n := range active.nicks {
+							if c.nickEqual(stripMode(n, active.prefixSigns()), fromNick) {
+								c.addMsg(active.name, Message{ts: now, nick: fromNick,
+									text:    fromNick + " yra away: " + reason,
+									msgType: MsgServer})
+								break
+							}
 						}
 					}
 				} else {
@@ -1415,11 +1704,11 @@ func (c *Client) parseIRC(line string) {
 				c.mu.Lock()
 				_, wasAway := c.awayNotified[nickLow]
 				delete(c.awayNotified, nickLow)
-				active := c.channels[c.activeIdx]
+				active := c.activeChan()
 				c.mu.Unlock()
-				if wasAway {
+				if wasAway && active != nil {
 					for _, n := range active.nicks {
-						if nickEqual(stripMode(n), fromNick) {
+						if c.nickEqual(stripMode(n, active.prefixSigns()), fromNick) {
 							c.addMsg(active.name, Message{ts: now, nick: fromNick,
 								text:    fromNick + " grįžo iš away",
 								msgType: MsgServer})
@@ -1467,6 +1756,69 @@ func isNickChar(r rune) bool {
 	// RFC nick simboliai: raidės, skaičiai ir specialieji `[]\_^{|}-
 	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') ||
 		strings.ContainsRune("_-[]\\`^{}|", r)
+}
+
+// isValidTarget tikrina komandos gavėją (nick'ą arba kanalą) — jis
+// įrašomas į PRIVMSG/NOTICE komandas. Leistini tik raidės, skaičiai ir
+// pagrindiniai adresės simboliai, kad į komandą nepatektų tarpai,
+// CRLF ar valdymo simboliai (komandų injekcija).
+func isValidTarget(t string) bool {
+	if t == "" || len(t) > 100 {
+		return false
+	}
+	for _, r := range t {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_':
+		case r == '#' || r == '&' || r == '!' || r == '+':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isValidChannel tikrina kanalo pavadinimą: jis įrašomas į JOIN/PART
+// komandas, todėl turi būti ribojamas (be tarpų, be CRLF, be valdymo
+// simbolių) — kitaip galima komandų injekcija.
+func isValidChannel(ch string) bool {
+	if ch == "" || len(ch) > 50 {
+		return false
+	}
+	for _, r := range ch {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isValidServer tikrina serverio pavadinimą: raidės, skaičiai ir
+// pagrindiniai adresės simboliai (.-_). Be to patikrinama, kad pavadinime
+// nėra tarpų, CRLF ar valdymo simbolių — serverio vardas įrašomas į IRC
+// komandas (NICK, USER, JOIN) ir į žurnalų katalogo vardą, todėl turi
+// būti apsaugotas nuo komandų injekcijos.
+func isValidServer(server string) bool {
+	if server == "" || len(server) > 100 {
+		return false
+	}
+	// „..“ (ir jo atmainos) — katalogų traversas žurnalų katalogo
+	// pavadinime; tokio serverio vardo nepriimame.
+	if strings.Contains(server, "..") {
+		return false
+	}
+	for _, r := range server {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // isValidNick tikrina nick pagal IRC taisykles: leistini tik RFC nick simboliai

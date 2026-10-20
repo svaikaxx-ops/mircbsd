@@ -4,6 +4,81 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [0.4.2] – 2026-10-20 – saugumo ir stabilumo pataisymai
+
+Peržiūra aptiko 23 klaidą — dauguma jų galėjo sukelti paniką arba
+kompromituoti terminalą. Visos ištaisytos; saugumo regresijos testai
+įtraukti į CI (`audit_findings_test.go`, build tag `audit`).
+
+### Taisyta (stabilumas)
+
+- **Serverio `PART *server*` nebeišprovokuoja panikos** – kai serveris
+  pranešdavo apie mūsų nick'o išeinimą iš `*server*` lango,
+  `activeIdx` likdavo `-1`, o `draw()`, `addMsg()`, `switchCh()` ir AWAY
+  tvarkymas panikuodavo. Dabar visi indeksai į kanalų sąrašą saugomi
+  per `activeChan()`, o `*server*` langas negali būti pašalintas.
+
+- **Aktyvus kanalas nebeslypčioja** – pašalinus kanalą *prieš* aktyvų,
+  indeksas neperskaičiuojamas, ir vartotojas rašė į kitą kanalą.
+  Dabar `removeCh()` perskaičiuoja `activeIdx` visais atvejais.
+
+- **`/mode` su tik tarpais nebeišprovokuoja panikos** – klaida buvo
+  pasiekiama per konfigūracijos `perform=` parametrą, t.y. be naudotojo
+  įspėjimo.
+
+- **Neribotas eilučių skaitymas nuo serverio** – priešiškas serveris
+  galėjo siųsti megabaitų eilutę be `\n` ir kaupti ją atmintyje. Dabar
+  naudojamas `bufio.ReadSlice` su apribojimu; per ilgos eilutės
+  atmestos su įspėjimu.
+
+- **Duomenų lenktynės (data race)** – `c.connected`, `c.nick` ir
+  `ignoreList` buvo skaitomi be rakino iš kelių gorutinių. Dabar
+  naudojami saugūs prieigos metodai.
+
+- **ISUPPORT nebe globalus** – vieno serverio nustatymai (CHANTYPES,
+  PREFIX, CASEMAPPING) gadino kito serverio nustatymus. Dabar jie
+  saugomi kiekviename kliente atskirai.
+
+- **Kanalų sąrašas ribojamas** – JOIN/PM flood negali sukurti šimtų
+  kanalų (limitas 100).
+
+- **Serverio komanda negali sukurti kanalų** – `332`/`353` be kanalo
+  parametro ir `PART` neįjungtame kanale nebeiš naujų kanalų.
+
+### Taisyta (saugumas)
+
+- **Terminalo injekcija per privataus kanalo pavadinimą** – priešiškas
+  serveris galėjo atsiųsti `PRIVMSG` su ESC simboliais nick'e; pavadinimas
+  buvo braižomas į ekraną nesanitizuotas. Dabar kanalo pavadinimas
+  sanitizuojamas jį sukuriant.
+
+- **Žurnalų katalogų traversas** – serverio pavadinimas „..“ (ar
+  panašus) galėjo parašyti žurnalus už `logDir` ribų. Dabar „..“
+  blokuojamas tiek `sanitizePath()`, tiek patvirtinant serverio vardą.
+
+- **Komandų injekcija** – serverio, kanalo ir gavėjo pavadinimai
+  įrašomi į IRC komandas. Dabar jie tikrinami: be tarpų, be CRLF, be
+  valdymo simbolių.
+
+- **NickServ slaptažodžiai nebesklando į žurnalus** – `IDENTIFY`,
+  `REGISTER`, `CONFIRM` ir `SET PASSWORD` slaptažodžiai žurnale
+  pakeičiami žyma „[slaptažodis paslėptas]“.
+
+- **CTCP PING atspauda ribota** – serveris negali priversti mūsų
+  atspindėti šimtų KB (64 baitų limitas).
+
+- **Visos siunčiamos eilutės ≤ 512 baitų** – ilgos `/notice`, `/topic`
+  ir `/away` komandos nutrumpinamos UTF-8 saugiai (anksčiau serveris
+  nutraukdavo ryšį).
+
+### Taisyta (elgsena)
+
+- `/clearlogs` be argumentų dabar ištrina **visus** dabartinio serverio
+  žurnalus (pagal `/help` tekstą) — anksčiau trynė tik aktyvų kanalą.
+
+- `/close` dabar priima argumentą: `/close <kanalas>` uždaro nurodytą
+  langą (anksčiau argumentas buvo ignoruojamas, užverdavo aktyvų).
+
 ## [0.4.1] – 2026-10-01 – slinkimo (scroll) taisymai
 
 ### Taisyta
