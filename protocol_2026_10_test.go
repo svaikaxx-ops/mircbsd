@@ -73,38 +73,180 @@ func TestModeUsesChanModesForArgumentIndex(t *testing.T) {
 		t.Fatal("BUG: CHANMODES neprivalėtas į ISUPPORT")
 	}
 
-	// Standartinės CHANMODES dalys: pirma (su arg) + antra (su arg).
-	// RFC 2811: "eIbq,k,flj,CFLMPQScgimnprstz" → su argumentu: e,I,b,q,k
-	// (be argumento: f,l,j ir t.t.)
-	letters := chanModesArgLetters(chanModes, modes)
-	for _, want := range []string{"o", "v", "k", "b", "e", "I"} {
-		if !strings.Contains(letters, want) {
-			t.Errorf("BUG: modas %q neįtrauktas į argumentų raides: %q", want, letters)
+	// CHANMODES ČIA YRA 4 DALYS: "eIbq,k,flj,CFLMPQScgimnprstz"
+	//   A = "eIbq"  — visada su argumentu
+	//   B = "k"    — visada su argumentu
+	//   C = "flj"  — su argumentu TIK nustatant (serverio → kliento srautas)
+	//   D = "CFLMPQScgimnprstz" — niekada su argumentu
+	//
+	// ATKREIPKITE Į TAI: ankstesnis šio testo(as) laikė, kad 3-oji dalis
+	// („flj“) neimasi argumento — tai klaidinga pagal ISUPPORT draftą
+	// (3-ioji dalis yra C tipas: „take a parameter only when set“).
+	// Tikslas: operatoriaus prefiksas turi atsiekti TEISINGAM nick'ui.
+	groups := parseChanModes(chanModes)
+	if groups.a != "eIbq" || groups.b != "k" || groups.c != "flj" {
+		t.Errorf("BUG: CHANMODES neparsinta į grupes: A=%q B=%q C=%q D=%q",
+			groups.a, groups.b, groups.c, groups.d)
+	}
+	// A ir B grupės — VISADA imasi parametro (ir „+“, ir „-“).
+	for _, want := range []rune{'e', 'I', 'b', 'q', 'k'} {
+		if !groups.takesParam(want, true, modes) || !groups.takesParam(want, false, modes) {
+			t.Errorf("BUG: modas %q (A/B grupė) turi imti argumentą visada", want)
 		}
 	}
-	// Be argumento modai (iš trečiosios CHANMODES dalies) turi būti IŠSKIRTAS.
-	for _, unwanted := range []string{"f", "l", "j", "C", "n", "m", "z"} {
-		if strings.Contains(letters, unwanted) {
-			t.Errorf("BUG: modas be argumento (%q) įtrauktas į argumentų raides: %q", unwanted, letters)
+	// C grupė — TIK nustatant.
+	for _, want := range []rune{'f', 'l', 'j'} {
+		if !groups.takesParam(want, true, modes) {
+			t.Errorf("BUG: modas %q (C grupė) turi imti argumentą nustatant", want)
+		}
+		if groups.takesParam(want, false, modes) {
+			t.Errorf("BUG: modas %q (C grupė) NEGALI imti argumento pašalinant", want)
+		}
+	}
+	// D grupė — NIEKADA neimasi argumento.
+	for _, unwanted := range []rune{'C', 'F', 'L', 'M', 'P', 'Q', 'S', 'c', 'g', 'i', 'm', 'n', 'p', 'r', 's', 't', 'z'} {
+		if groups.takesParam(unwanted, true, modes) {
+			t.Errorf("BUG: modas be argumento (%q) įtrauktas į argumentų raides", unwanted)
+		}
+	}
+	// PREFIX modai (o, v, h, q, a) — VISADA su nick'u.
+	for _, want := range []rune{'o', 'v', 'h', 'q', 'a'} {
+		if !groups.takesParam(want, true, modes) || !groups.takesParam(want, false, modes) {
+			t.Errorf("BUG: PREFIX modas %q turi imti argumentą visada", want)
 		}
 	}
 	_ = ch
 	_ = signs
 }
 
-// TestChanModesArgLettersFallback — be CHANMODES naudojamas RFC standartas.
-func TestChanModesArgLettersFallback(t *testing.T) {
-	letters := chanModesArgLetters("", "qaohv")
-	// Standartinės CHANMODES: "eIbq,k,flj,..." → e,I,b,q,k imasi argumentą.
-	for _, want := range []string{"e", "I", "b", "q", "k", "q", "a", "o", "h", "v"} {
-		if !strings.Contains(letters, want) {
-			t.Errorf("BUG: modas %q neįtrauktas į %q", want, letters)
+// TestParseChanModesGroups — CHANMODES (005) skaidoma į 4 grupes
+// (RFC 2811; ISUPPORT draftas): A (visada su param.), B (visada su param.),
+// C (tik nustatant), D (niekada).
+//
+// Realybų serverių reikšmės TAIP PAT yra 4-dalės — „b,k,l,imnpst“ (UnrealIRCd
+// 4 dalys), „beI,k,l,imnpstaqr“ (IRCNet), „eIbq,k,flj,CFLMPQScgimnprstz“
+// (RFC 2811). Ankstesnis spėjimas, kad realūs serveriai siunčia 3 dalis,
+// buvo NEsamis — iš tikrųjų 4.
+func TestParseChanModesGroups(t *testing.T) {
+	// UnrealIRCd: A=b, B=k, C=l, D=imnpst
+	g := parseChanModes("b,k,l,imnpst")
+	if g.a != "b" || g.b != "k" || g.c != "l" || g.d != "imnpst" {
+		t.Errorf("BUG: UnrealIRCd CHANMODES neparsinta: A=%q B=%q C=%q D=%q", g.a, g.b, g.c, g.d)
+	}
+	// RFC 2811 standartas
+	g = parseChanModes("eIbq,k,flj,CFLMPQScgimnprstz")
+	if g.a != "eIbq" || g.b != "k" || g.c != "flj" || g.d != "CFLMPQScgimnprstz" {
+		t.Errorf("BUG: RFC2811 CHANMODES neparsinta: A=%q B=%q C=%q D=%q", g.a, g.b, g.c, g.d)
+	}
+	// Tuščia CHANMODES → RFC standartas (fallback).
+	g = parseChanModes("")
+	if g.a != "eIbq" || g.b != "k" {
+		t.Errorf("BUG: tuščios CHANMODES fallback neteisingas: A=%q B=%q", g.a, g.b)
+	}
+}
+
+// TestChanModeTakesParam — kurios raidės imasi parametrą.
+//
+// „Blogas atmetamas“: D grupės režimai (ir visada nepriklausančios
+// raidės) NIEKADA neimasi parametro; A ir B visada imasi.
+// „Teisingas priimamas“: C grupė imasi TIK nustatant („+“), ne pašalinant („-“).
+func TestChanModeTakesParam(t *testing.T) {
+	g := parseChanModes("b,k,l,imnpst")
+	prefix := "qaohv"
+
+	// A grupė (b) — visada su parametru, tiek „+“, tiek „-“.
+	if !g.takesParam('b', true, prefix) || !g.takesParam('b', false, prefix) {
+		t.Error("BUG: A grupės režimas „b“ turi imti parametrą visada")
+	}
+	// B grupė (k) — visada su parametru.
+	if !g.takesParam('k', true, prefix) || !g.takesParam('k', false, prefix) {
+		t.Error("BUG: B grupės režimas „k“ turi imti parametrą visada")
+	}
+	// C grupė (l) — TIK nustatant.
+	if !g.takesParam('l', true, prefix) {
+		t.Error("BUG: C grupės režimas „l“ turi imti parametrą nustatant")
+	}
+	if g.takesParam('l', false, prefix) {
+		t.Error("BUG: C grupės režimas „l“ NEGALI imti parametro pašalinant")
+	}
+	// D grupė (i,m,n,p,s,t) — NIEKADA.
+	for _, m := range []rune{'i', 'm', 'n', 'p', 's', 't'} {
+		if g.takesParam(m, true, prefix) || g.takesParam(m, false, prefix) {
+			t.Errorf("BUG: D grupės režimas %q NEGALI imti parametro", m)
 		}
 	}
-	// Trečiosios dalies modai (be argumento) — neįtraukiami.
-	for _, unwanted := range []string{"C", "F", "L", "M", "P", "Q", "S", "c", "g", "i", "m", "n", "p", "r", "s", "t", "z"} {
-		if strings.Contains(letters, unwanted) {
-			t.Errorf("BUG: modas be argumento %q įtrauktas į %q", unwanted, letters)
+	// PREFIX modai (q,a,o,h,v) — VISADA su nick'u.
+	for _, m := range []rune{'q', 'a', 'o', 'h', 'v'} {
+		if !g.takesParam(m, true, prefix) || !g.takesParam(m, false, prefix) {
+			t.Errorf("BUG: PREFIX režimas %q turi imti parametrą visada", m)
+		}
+	}
+	// Svetimos raidės — ne.
+	if g.takesParam('Z', true, prefix) {
+		t.Error("BUG: nežinoma raidė „Z“ neturi imti parametro")
+	}
+}
+
+// TestChanModeTakesParamIRCNet — IRCNet CHANMODES (4 dalys).
+func TestChanModeTakesParamIRCNet(t *testing.T) {
+	g := parseChanModes("beI,k,l,imnpstaqr")
+	prefix := "qaohv"
+	for _, m := range []rune{'b', 'e', 'I'} {
+		if !g.takesParam(m, true, prefix) {
+			t.Errorf("BUG: IRCNet A grupės režimas %q turi imti parametrą", m)
+		}
+	}
+	if !g.takesParam('k', true, prefix) {
+		t.Error("BUG: IRCNet B grupės režimas „k“ turi imti parametrą")
+	}
+	if !g.takesParam('l', true, prefix) || g.takesParam('l', false, prefix) {
+		t.Error("BUG: IRCNet C grupės režimas „l“ — tik nustatant")
+	}
+	// D grupė — NIEKADA. „a“ ir „q“ ČIA NEĮSKAIČIUOJAMI: IRCNet atsiunčia
+	// juos ir D grupėje, ir PREFIX (qaohv). PREFIX tikrinamas PIRMAS, todėl
+	// jie imasi parametrą kaip nick'ų statuso modai.
+	for _, m := range []rune{'i', 'm', 'n', 'p', 's', 't', 'r'} {
+		if g.takesParam(m, true, prefix) {
+			t.Errorf("BUG: IRCNet D grupės režimas %q NEGALI imti parametro", m)
+		}
+	}
+	// Dubliuoti PREFIX modai (a, q) — visada su nick'u.
+	for _, m := range []rune{'a', 'q'} {
+		if !g.takesParam(m, true, prefix) {
+			t.Errorf("BUG: IRCNet PREFIX režimas %q turi imti parametrą", m)
+		}
+	}
+}
+
+// TestChanModeTakesParamFallback — be CHANMODES naudojamas RFC standartas.
+func TestChanModeTakesParamFallback(t *testing.T) {
+	g := parseChanModes("")
+	prefix := "qaohv"
+	// RFC 2811: A="eIbq", B="k" → visada su parametru.
+	for _, m := range []rune{'e', 'I', 'b', 'q', 'k'} {
+		if !g.takesParam(m, true, prefix) {
+			t.Errorf("BUG: RFC standarto režimas %q turi imti parametrą", m)
+		}
+	}
+	// C="flj" → tik nustatant.
+	for _, m := range []rune{'f', 'l', 'j'} {
+		if !g.takesParam(m, true, prefix) {
+			t.Errorf("BUG: RFC standarto C grupės režimas %q turi imti parametrą nustatant", m)
+		}
+		if g.takesParam(m, false, prefix) {
+			t.Errorf("BUG: RFC standarto C grupės režimas %q NEGALI imti parametro pašalinant", m)
+		}
+	}
+	// D grupė — niekada.
+	for _, m := range []rune{'C', 'F', 'L', 'M', 'P', 'Q', 'S', 'c', 'g', 'i', 'm', 'n', 'p', 'r', 's', 't', 'z'} {
+		if g.takesParam(m, true, prefix) {
+			t.Errorf("BUG: RFC standarto D grupės režimas %q NEGALI imti parametro", m)
+		}
+	}
+	// PREFIX modai — visada.
+	for _, m := range []rune{'q', 'a', 'o', 'h', 'v'} {
+		if !g.takesParam(m, true, prefix) {
+			t.Errorf("BUG: PREFIX režimas %q turi imti parametrą", m)
 		}
 	}
 }

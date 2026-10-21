@@ -1430,7 +1430,13 @@ func (c *Client) draw() {
 	if away != "" {
 		prefixLen += 7
 	}
-	dispRunes := []rune(string(inputRunes))
+	// SANITIZUOJAME ĮVESTIES EILUTĘ — tai vienintelė vieta, kur nesanitizuotas
+	// tekstas pasiekia terminalą. Serverio duomenys (nick'o prefiksas, kuris
+	// atėjo per JOIN/NAMES) gali turėti ESC/OSC seką: be šio filtro
+	// „OSC 52“ (rašymas į iškarpinę) ar „OSC 0“ (keisti lango pavadinimą)
+	// pasiektų terminalą be vartotojo žinios.
+	safeInput := sanitizeText(string(inputRunes))
+	dispRunes := []rune(safeInput)
 	maxInput := w - prefixLen - 1
 	dispStart := 0
 	if len(dispRunes) > maxInput {
@@ -1438,7 +1444,15 @@ func (c *Client) draw() {
 	}
 	out.WriteString(string(dispRunes[dispStart:]))
 
-	cursorCol := prefixLen + 1 + (inputPos - dispStart)
+	// Kursorio pozicija — per SANITIZUOTĄ tekstą (sanitizavimas pašalina
+	// simbolius, todėl raw indeksas nebetinka). Skaičiuojame, kiek simbolių
+	// liko iki inputPos.
+	prefixRunes := inputRunes
+	if inputPos < len(prefixRunes) {
+		prefixRunes = prefixRunes[:inputPos]
+	}
+	curPos := len([]rune(sanitizeText(string(prefixRunes))))
+	cursorCol := prefixLen + 1 + (curPos - dispStart)
 	if cursorCol < 1 {
 		cursorCol = 1
 	}

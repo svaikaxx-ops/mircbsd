@@ -129,31 +129,73 @@ func atoiDefault(s string, def int) int {
 // RFC 2811: "eIbq,k,flj,CFLMPQScgimnprstz".
 const defaultChanModes = "eIbq,k,flj,CFLMPQScgimnprstz"
 
-// chanModesArgLetters grąžina modas, kurios IMASI ARGUMENTĄ.
+// chanModeGroups — CHANMODES (ISUPPORT 005) suskaidytos į 4 grupes.
 //
-// CHANMODES formatas: <su argumentu>,<su argumentu>,<be argumento>.
-// Grąžinama visų trijų dalių raidžių junginys — todėl indeksai nesulaužo
-// nežinant tikslaus serverio CHANMODES.
+// Formatas: „CHANMODES=A,B,C,D“ (RFC 2811; ISUPPORT draftas
+// draft-brocklesby-irc-isupport-03). REALŲ serverių reikšmės taip pat
+// 4-dalės: UnrealIRCd „eIbq,k,flj,CFLMPQScgimnprstz“, IRCNet
+// „beI,k,l,imnpstaqr“, Hybrid „beI,k,l,imnpsta“.
 //
-// Fallback: jei serveris CHANMODES nepaskyrė, naudojamas standartinis
-// RFC 2811 rinkinys.
-func chanModesArgLetters(chanModes, prefixModes string) string {
+//	A — režimai, pridedantys arba pašalinantys adresą iš/iš sąrašo;
+//	    VISADA su parametru, kai siunčia serveris klientui;
+//	B — režimai, keičiantys kanalo nustatymą; VISADA su parametru;
+//	C — režimai, keičiantys kanalo nustatymą, bet TIK nustatant
+//	    (pašalinant parametras praleidžiamas);
+//	D — režimai, keičiantys kanalo nustatymą; NIEKADA su parametru.
+//
+// KODĖL GRUPĖS ORI REIKIA VISOS: C grupės elgsena PRIKLAUSO nuo ženklo
+// („+“ = nustatoma → su parametru; „-“ = pašalinama → be parametro).
+// Vienas statinis raidžių sąrašas šito negali atspindėti — todėl
+// atsakomybė perkeliama į takesParam().
+type chanModeGroups struct {
+	a, b, c, d string
+}
+
+// parseChanModes skaidra CHANMODES į 4 grupes.
+//
+// Jei serveris atsiuntė MAŽIAU nei 4 dalis (seni serveriai), trūkstamos
+// grupės laikomos tuščiomis — t. y. vertinama pagal „trumpesnę“ formą.
+// Kai CHANMODES visai nėra — naudojamas RFC 2811 standartas.
+func parseChanModes(chanModes string) chanModeGroups {
 	if chanModes == "" {
 		chanModes = defaultChanModes
 	}
 	parts := strings.Split(chanModes, ",")
-	var sb strings.Builder
-	// Pirma dalis — visada su argumentu. Antra — su argumentu.
-	// Trečia — be argumento (jos NEĄTRAUKIAME).
+	var g chanModeGroups
+	dst := []*string{&g.a, &g.b, &g.c, &g.d}
 	for i, p := range parts {
-		if i >= 2 {
+		if i >= len(dst) {
 			break
 		}
-		sb.WriteString(p)
+		*dst[i] = p
 	}
-	// Nick'ų statuso modos (PREFIX) taip pat imasi argumentą (nick'ą).
-	sb.WriteString(prefixModes)
-	return sb.String()
+	return g
+}
+
+// takesParam ardo, ar mode raide (pvz. „o“) šiame kontekste ima parametrą.
+//
+//	prefixModes — PREFIX modų raidės (nick'ų statusas). VISADA imasi
+//	              parametrą (nick'ą).
+//	adding      — ar režimas NUSTATOMAS („+“). C grupės režimai imasi
+//	              parametrą tik nustatant.
+//
+// KAD REIKŠMĖS SKAIČIUOTOS: serverio → kliento srautas (kurį tvarkome)
+// „+l 50“ — C grupės režimas SU parametru; „-l“ — BE parametro.
+func (g chanModeGroups) takesParam(letter rune, adding bool, prefixModes string) bool {
+	// Nick'ų statuso modas (o, v, h, q, a) — VISADA su nick'u.
+	if strings.ContainsRune(prefixModes, letter) {
+		return true
+	}
+	// A ir B grupės — visada su parametru.
+	if strings.ContainsRune(g.a, letter) || strings.ContainsRune(g.b, letter) {
+		return true
+	}
+	// C grupė — tik nustatant.
+	if strings.ContainsRune(g.c, letter) {
+		return adding
+	}
+	// D grupė — niekada.
+	return false
 }
 
 // handleCapNew apdoroja serverio CAP NEW pasiulymą.
@@ -1548,7 +1590,14 @@ func (c *Client) doConnect(gen int) {
 	c.send("NICK " + nick)
 	c.send(fmt.Sprintf("USER %s 0 * :%s", nick, realName))
 
-	reader := bufio.NewReader(conn)
+	// 512 baitų bufferis — IRC eilutės riba (RFC 2812: 512 baitai, įskaitant
+	// CRLF). Numatytoji bufio.NewReader() naudoja 4096 baitus, todėl
+	// priešiškas serveris galėtų siųsti 3 KB eilutę — kurią readLoop
+	// apleidžia tik jei viršytų BUFFERĮ, o ne protokolo ribą.
+	//
+	// Su 512 baitų bufferiu kiekviena per didelė eilutė sukelia
+	// ErrBufferFull → eilutė apleidžiama ir įspėjama vartotojui.
+	reader := bufio.NewReaderSize(conn, maxLineBytes)
 	c.readLoop(reader)
 
 	close(pingStop)
@@ -1741,18 +1790,19 @@ func (c *Client) parseIRC(line string) {
 		}
 		c.mu.Lock()
 		pass := c.nickservPass
-		saslUsed := c.capSASL && c.saslOk
 		autoJoin := make([]string, len(c.autoJoin))
 		copy(autoJoin, c.autoJoin)
 		perform := make([]string, len(c.perform))
 		copy(perform, c.perform)
 		c.mu.Unlock()
-		// Jei SASL nederėtas — naudojam SASL slaptažodį per NickServ (tas pats įgaliojimas)
-		if pass == "" && !saslUsed {
-			c.mu.Lock()
-			pass = c.saslPass
-			c.mu.Unlock()
-		}
+		// NickServ IDENTIFY — TIK su explicitia NickServ slaptažodžiu.
+		//
+		// SAUGUMAS: anksčiau, kai slaptažodžio nebuvo, o SASL nepavyko arba
+		// serveris nepasiūlė `sasl` cap, būdavo siunčiamas c.saslPass per
+		// NickServ. Bet sasl= yra skirtas BUNCER/BRIDGE autentifikacijai —
+		// siųsdamas jį NickServ (kitas servisas) mes LEIŽDOME slaptažodį
+		// nutekti trečiajam serveriui, automatiškai, kiekvienam
+		// prisijungimui. Slaptažodžiai turi likti TIK tam, kam skirti.
 		if pass != "" {
 			c.send("PRIVMSG NickServ :IDENTIFY " + pass)
 			c.serverMsg("NickServ: siunčiamas IDENTIFY...")
@@ -1945,7 +1995,10 @@ func (c *Client) parseIRC(line string) {
 		modeStr := p(1)
 		// Nick mode kanaluose
 		if c.isChannel(target) {
-			_, signs, modes, _, _ := c.isupSnapshot()
+			// isupSnapshot grąžina: chantypes, prefixSigns, prefixModes,
+			// casemapping, chanModes. CHANMODES yra PENKTAS — o ne
+			// ketvirtas (ketvirtas yra casemapping).
+			_, signs, modes, _, chanModes := c.isupSnapshot()
 			c.mu.Lock()
 			ch := c.findCh(target)
 			if ch != nil && len(params) > 2 {
@@ -1953,16 +2006,24 @@ func (c *Client) parseIRC(line string) {
 				// VISUS mode, kurie imasi argumento (o/v/h/q/a nickams; b, k,
 				// l, e, I... irgi turi parametrą) — kitaip indeksas „nuklysta“
 				// (pvz. MODE #chan +kb nick mask).
+				//
+				// SĄRAŠAS IMASI IŠ SERVERIO CHANMODES (005) — ne kietai
+				// kodintas („blkeI“). Ankstesnė kietai kodinta eilutė
+				// netiko serveriams su kitais mode'ais (InspIRCd C/j/L/Q,
+				// Charybdis P, Unreal z) — kiekvienas toks mode „nuklydo“
+				// VISUS indeksus po savimi, todėl operatoriaus prefiksas
+				// atiteko NETEISINGAM argumentui (pvz. „MODE #chan +jo 30
+				// bob“ → nick'ams „[@30 bob]“).
 				adding := true
 				modeIdx := 2
-				argLetters := modes + "blkeI"
+				groups := parseChanModes(chanModes)
 				for _, mr := range modeStr {
 					switch {
 					case mr == '+':
 						adding = true
 					case mr == '-':
 						adding = false
-					case strings.IndexRune(argLetters, mr) >= 0:
+					case groups.takesParam(mr, adding, modes):
 						if modeIdx < len(params) {
 							// tik nick'ų statuso modas keičia nick'o prefixą
 							if i := strings.IndexRune(modes, mr); i >= 0 && i < len(signs) {

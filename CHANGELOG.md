@@ -4,6 +4,162 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [0.4.4] – 2026-10-21 – lygiagretumo, ribų ir komandų tikslo pataisymai
+
+Tretioji peržiūra (po 23 ir 24 radinių) aptiko dar 18 radinių — daugiausia
+**lygiagretumo** trūkumai, **ribų** trūkumai ir **komandų tikslo
+klastojimas**. Visi ištaisyti, kiekvienas — su regresijos testu („blogas
+atmetamas“ **ir** „teisingas priimamas“).
+
+### Taisyta (lygiagretumas — kritiniai)
+
+- **Aktyvaus kanalo laukai skaitomi tik su `c.mu`** – `activeChan()` ir
+  `activeName()` anksčiau skaito bendrą būseną **be rakino**: 12 vietų
+  `input.go` + 2 `irc.go`. Tai duomenų lenktynė (patikrinta `go test -race`).
+  Dabar yra trys variantai: `activeChanLocked()` (kai `c.mu` jau užrakintas),
+  `activeChanSafe()` (užrakina pats save) ir `activeName()`.
+
+- **`draw()` nebeskaito kanalo laukų po `c.mu.Unlock()`** – `ch.highlight`,
+  `ch.unread`, `ch.isPrivate` buvo skaitomi be rakino, kai rašytojas
+  (`irc.go`) tuo patu metu juos keitė. Dabar laukų reikšmės nukopijuojamos
+  po rakinu į atskirą struktūrą.
+
+- **`/names` nebesuna lenktynės su `AWAY`** – `active.nicks = nil` lenktyniavo
+  su `AWAY` apdorojimu, kuris skaitė `active.nicks` po `Unlock`.
+
+- **`c.keysDebug` skaitomas su `c.mu`** – `/keys` komanda jį keitė iš
+  `parseIRC` gorutinos, o klaviatūros gija skaitė be rakino.
+
+### Taisyta (ribos)
+
+- **Kanalų biudžetai atskirti** – `maxChannels` (100 realių kanalų) ir
+  `maxPrivateChannels` (200 privačių pokalbių) anksčiau buvo **vienas**:
+  100 privačių pokalbių (PM flood) išnaudodavo visą biudžetą, ir po to
+  **realus kanalas nebebūdavo sukuriamas** — jo žinutės tyliai išnykdavo
+  (vartotojas manydavo, kad kanale nieko nėra). Dabar PM flood eikdoja tik
+  privačių pokalbių biudžetą, o riba pasiekus **vartotojas įspėjamas**.
+
+- **Nick’ų sąrašas ribojamas** (`maxNicksPerChannel` = 5000) – priešiškas
+  serveris siųsdavo tūkstančius `JOIN` į vieną kanalą; sąrašas augo
+  neribotai.
+
+- **`addNick` nebeskaičiuoja O(n²)** – kiekvienas įterpimas buvo O(n)
+  (per visus elementus su `stripMode` + `nickEqual`), todėl 10 000 nick’ų
+  kanale užtruko **3,5 s** (užblokavus visą klientą). Dabar įterpimas yra
+  O(log n) (dichotominė paieška) + O(1) (hash-rinkinys). **5000 nick’ų:
+  1,06 s → 0,01 s** (100×).
+
+- **`awayNotified` apribojamas** (`maxAwayNotified` = 5000) – be ribos
+  žemėlapis augo neapribotai (priešiškas serveris siunčia `AWAY` nuo
+  milijono nick’ų).
+
+- **Serverio eilutės riba — 512 baitų** – `bufio.NewReader()` numatytuoju
+  4096 baitų bufferiu leido serveriui siųsti 3 KB eilutę (ji nebuvo
+  atmesta). Dabar `bufio.NewReaderSize(conn, 512)`.
+
+### Taisyta (komandų tikslo klastojimas ir įvedimo apsauga)
+
+- **Kanalai su tarpais atmesti** – serverio atsiųstas kanalas „#pub #priv“
+  komandose būtų interpretuojamas kaip **papildomas parametras**
+  (`MODE #pub #priv +o` → operatoriaus tikslas kitas kanalas). Tokie
+  kanalai nebesukiami.
+
+- **Validuoti komandų tikslai** – `/invite`, `/op`, `/deop`, `/voice`,
+  `/devoice`, `/kick`, `/mode`, `/whois`, `/w`, `/list`, `/join` (raktas).
+  Nick’ai, kanalai ir režimai negali turėti tarpų (papildomas parametras)
+  ar CRLF.
+
+- **`notify-send` parinkčių injekcija** – pranešimo tekstas (serverio
+  kontroliuojamas) buvo interpretuojamas kaip parinktis (`--urgency=critical`).
+  Dabar įterpiamas `--` skyriukas.
+
+- **Žurnalo slaptažodžių nutekimas** – tikrinama **visos komandos** eilutė
+  (anksčiau – tik kūno dalis), todėl `register`, `set p`, `set password`,
+  `confirm`, `auth`, `PASS`, `OPER` (ir `/raw`/`/` formos) neateina į
+  žurnalą. `/oper` forma anksčiau nebuvo aptinkama.
+
+- **Gyvas terminalo sinkas per Tab-completion** – serverio `JOIN` su
+  ESC-seką turinčiu nick’u galėjo pasiekti terminalą kaip **OSC 52**
+  (rašymas į iškarpinę). Dabar kandidatai sanitizuojami, o braižoma
+  eilutė valoma prieš išvestį į ekraną.
+
+- **`MODE` argumentų indeksai pagal tikrąją `CHANMODES` specifikaciją** –
+  `CHANMODES` suskirstytos į **4 grupes** (RFC 2811; ISUPPORT draftas):
+  A (visada su parametru), B (visada), C (**tik nustatant**), D (niekada).
+  Ankstesnė interpretacija (ir kietai kodintas `blkeI`) nulėkdavo
+  indeksus – `MODE #chan +jo 30 bob` → `[@30 bob]` (prefiksas atiteko
+  **argumentui**, ne nick’ui). Dabar → `[@bob 30]`.
+
+- **`/clearlogs` veikia ir kanalui, kurio nėra šiame seanse** – jo
+  žurnalai vis tiek gali būti diske; anksčiau komanda būdavo atmesta su
+  klaida.
+
+- **Žurnalų raktas nuoseklus su disko failo vardu** – `c.logFiles` raktas
+  buvo `server/KANALAS/data` su **originaliu** kanalo pavadinimu, o failas
+  diske — su **sanitizuotu**. Todėl `/clearlogs` (kuris ieškojo pagal
+  sanitizuotą prefiksą) **nerado** atviro handle’o: failas likdavo
+  neuždarytas ir toliau rašė į ištrintą failą. Dabar raktas, disko vardas
+  ir `clearLogs()` prefiksas naudoja tą patį sanitizuotą pavadinimą.
+
+- **`/clearlogs` neištrindavo kito kanalo žurnalo** – failų vardai
+  `<KANALAS>-YYYY-MM-DD.log` buvo filtruojami pagal prefiksą
+  `<KANALAS>-2` (tikintis, kad data visada prasideda „2“). Dėl to
+  `/clearlogs #k` **ištrindavo kito kanalo `#k-2` žurnalą**, o senesnių
+  metų (`#k-2025-03-15.log`) žurnalai **likdavo neištrinti**. Dabar
+  tikrinama tiksli struktūra (tikslus kanalas + reali `YYYY-MM-DD` data).
+
+- **SASL slaptažodis nebetaipa į NickServ** – `sasl=` skirtas
+  bouncer/bridge autentifikacijai; anksčiau, kai SASL nepavykdavo arba
+  serveris nepasiūlė `sasl` cap, jis būdavo siunčiamas per NickServ
+  plaintext – slaptažodis nutekdavo trečiajam serveriui.
+
+### Papildomai ištaisyta (savivertės diff'o patikra)
+
+Agentas peržiūrėjo visą diff'ą ir rado dar **6** problemų — iš jų 5
+patvirtintos paleidžiant kodą, 1 pripažinta sąmoningu sprendimu:
+
+- **Žurnalas slėpė ĮPRASTĄ pokalbį** (duomenų praradimas) – slaptažodžio
+  aptikimas buvo taikomas VISOMS žinutėms, o „pirmas žodis“ tikrinimas
+  („register …“, „pass …“, „auth …“) slėpdė viską, kas prasideda šiais
+  žodžiais – „register your vote today“ ar „pass the salt please“ → žurnalas
+  tyliai prarado realų pokalbių tekstą. Dabar žurnalui naudojamas atskiras
+  `isSensitiveLogLine` (tik komandų kontekstas), o įvedimo istorijai –
+  pli `isSensitiveHistory`.
+
+- **Papildomas tarpas apeikdavo slaptažodžio aptikimą** – „/raw  PASS x“
+  (du tarpai) nebuvo aptinkama → slaptažodis lėkė į istoriją ir žurnalą
+  plaintext. Dabar tarpai normalizuojami prieš tikrinimą.
+
+- **Ignoruojamas serverio casemapping** – `normNick` visada naudojo RFC 1459
+  lyginimą. Ant serverio su `CASEMAPPING=ascii` nick'ai „[a]“ ir „{a}“ yra
+  **skirtingi** – „{a}“ būdavo atmestas kaip dublikatas, o vėlesnis QUIT
+  ištrindavo ne tą nick'ą. Dabar `normNick` paiso casemapping'ą (ir
+  atitinka `nickEqual()` abiem atvejais).
+
+- **Serverio kaukė „*server*“ buvo atmesta** – `isValidMaskName` neleido
+  „*“, todėl `/mode *server*` ir `/w *server*` (toks pats tikslas, kurį
+  dokumentuoja pati validatoriaus funkcija) neveikė.
+
+- **Kanalų raktai su specialiais simboliais buvo atmesti** – siauras
+  leistinų simbolių sąrašas atmetė „s3cret!“, „k#1“, „p@ss“ → vartotojas
+  negalėjo prisijungti į tokį kanalą. Dabar atmetami tik tarpai ir
+  kontroliniai simboliai (tiek tikras pavojus).
+
+- **MODE/WHO tikslas neleido nick'o simbolių** – `isValidModeTarget` atmetė
+  „nick[1]“, nors `isValidNick` jį leidžia → `/mode nick[1] +o` buvo
+  neįmanomas.
+
+- **`awayNotified` pruininimas buvo per lėtas** – riba tikrinama kiekvieną
+  kartą, o viršijus ribą atliekamas O(n log n) rūšiavimas. 5000 AWAY
+  pranešimų = **1,49 s**. Dabar rūšiuojama tik kai riba viršijoma **ženkliai**
+  (> riba + 25 %) → **2,87 ms** (520× greičiau), o žemėlapis lieka ribojamas.
+
+- **Kanalų ribos įspėjimas buvo priskiriamas netinkamam kanalui** –
+  `chanLimitHit` buvo globalus „lipni“ žymeklis: riba pasiekus viename
+  kanale, įspėjimą gaudavo visos vėlesnės atmestos žinutės. Dabar
+  saugomas **atsisakyto kanalo vardas**, o JOIN keliu įspėjimas rodomas
+  iš karto (anksčiau JOIN apie ribą ne informavo visai).
+
 ## [0.4.3] – 2026-10-20 – protokolo, renderio ir našumo pataisymai
 
 Antroji peržiūra (po 23 saugumo radinių) aptiko dar 24 radinius —

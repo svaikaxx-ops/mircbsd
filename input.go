@@ -692,13 +692,18 @@ func (c *Client) doTab() {
 	} else {
 		seen := map[string]bool{}
 		for _, n := range nicks {
-			bare := stripMode(n, prefixSigns)
+			// SANITIZUOJAME: nick'as atėjo iš serverio (JOIN/NAMES) ir gali
+			// turėti ESC/OSC seką. Be to jis įrašiamas į c.input, kuris
+			// (be sanitizavimo) pasiekia terminalą — per Tab-completion būtų
+			// gyvas OSC 52 (rašymas į iškarpinę) sinkas.
+			bare := sanitizeText(stripMode(n, prefixSigns))
 			if !seen[bare] && strings.HasPrefix(strings.ToLower(bare), wordLow) {
 				seen[bare] = true
 				candidates = append(candidates, bare)
 			}
 		}
 		for _, m := range msgNicks {
+			m = sanitizeText(m)
 			if !seen[m] {
 				seen[m] = true
 				if strings.HasPrefix(strings.ToLower(m), wordLow) {
