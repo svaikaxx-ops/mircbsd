@@ -212,6 +212,34 @@ func lowerIRC(r rune) rune {
 	return r
 }
 
+// asciiFold — ASCII-only casefold.
+//
+// Naudojamas, kai serveris paskelbia CASEMAPPING=ascii: lyginami TIK
+// ASCII raidės (A–Z → a–z), ne-ASCII (lietuviškos) lieka TOKIOS, kokios
+// yra. Tai tiksliai atitinka nickEqual() elgseną „ascii“ atveju.
+//
+// strings.ToLower čia NEDAROMAME — jis lygina ir ne-ASCII raides
+// („Žilvinas“ → „žilvinas“), o ASCII serveriui jos yra SKIRTINGOS.
+func asciiFold(s string) string {
+	hasUpper := false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'A' && s[i] <= 'Z' {
+			hasUpper = true
+			break
+		}
+	}
+	if !hasUpper {
+		return s
+	}
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
 // nickEqual palygina nick'us pagal serverio casemapping
 // (RFC: nick'yra didžiųjų/mažųjų raidžių nejausmi, bet [] != {} pagal ASCII).
 func (c *Client) nickEqual(a, b string) bool {
@@ -513,9 +541,37 @@ func (c *Client) ensureCh(name string) *Channel {
 	return ch
 }
 
-// activeChan grąžina aktyvų kanalą, visada ne-nil. activeIdx gali būti -1
-// (serverio PART *server* pašalino *server* kanalą), todėl indeksas
-// tikrinamas PRIEŠ naudojant — kitaip draw()/addMsg() panikuoja.
+// countChannelsLocked skaičiuoja realius kanalus ir privačius pokalbius.
+//
+// TIK SU c.mu užrakintu. Privatiems pokalbiams nepriskaitome vidinio
+// „*server*“ lango — jis visada egzistuoja ir nėra vartotojo pokalbis.
+func (c *Client) countChannelsLocked() (real, private int) {
+	ct, _, _, _, _ := c.isupSnapshot()
+	for _, ch := range c.channels {
+		if ch.name == "*server*" {
+			continue
+		}
+		if strings.ContainsRune(ct, rune(ch.name[0])) {
+			real++
+		} else {
+			private++
+		}
+	}
+	return real, private
+}
+
+// activeChan grąžina aktyvų kanalą (arba nil, jei aktyvaus kanalo nėra).
+//
+// SAUGUMAS: ši funkcija TIKRINA c.activeIdx ir c.channels BE c.mu rakino —
+// tai duomenų lenktynė (parseIRC gorutina keičia c.channels per JOIN/PART,
+// o UI/klaviatūros gorutina skaito c.activeIdx).
+//
+// Todėl atskirai yra DU saugios versijos:
+//   - activeChanLocked() — TIK kai jau laikomas c.mu (NE BLOKUOKITE —
+//     c.mu yra neperkeliama, o ne RWMutex).
+//   - activeChanSafe()  — kai rakinio laikyti negalima (nuolat naudojamas).
+//
+// NAUDOKITE activeChanSafe() visur, kur rakinio negalima turėti.
 func (c *Client) activeChan() *Channel {
 	if c.activeIdx < 0 || c.activeIdx >= len(c.channels) {
 		return nil
@@ -523,9 +579,38 @@ func (c *Client) activeChan() *Channel {
 	return c.channels[c.activeIdx]
 }
 
+// activeChanLocked grąžina aktyvų kanalą TIK kai jau laikomas c.mu.
+//
+// ĮSPĖJIMAS: negalima šioje funkcijoje užrakinti c.mu — visi „Locked“
+// variantai naudojami iš vietų, kur c.mu jau užrakintas (užrakintų c.mu
+// kai kuriuose keliuose (pvz. addMsg) — dar kartą užrakinti = deadlock).
+func (c *Client) activeChanLocked() *Channel {
+	if c.activeIdx < 0 || c.activeIdx >= len(c.channels) {
+		return nil
+	}
+	return c.channels[c.activeIdx]
+}
+
+// activeChanSafe grąžina aktyvų kanalo NUORODĄ su užrakintu c.mu.
+//
+// Grąžinamas pats *Channel objektas (ne kopija) — todėl jo laukus (nicks,
+// unread, topic) vis dar reikia skaityti tik su užrakintu c.mu arba nukopijuoti
+// (žr. activeSnapshot). Tačiau PATS kanalas (ir jo pavadinimas) jau
+// nekyla — removeCh negali jo pašalinti iš c.channels, nes c.channels
+// elementas perrašomas tik su c.mu.
+func (c *Client) activeChanSafe() *Channel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.activeChanLocked()
+}
+
 // activeName grąžina aktyvaus kanalo pavadinimą (arba "" jei nėra).
+//
+// SAUGUMAS: imamas su c.mu — žr. activeChanSafe.
 func (c *Client) activeName() string {
-	if ch := c.activeChan(); ch != nil {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ch := c.activeChanLocked(); ch != nil {
 		return ch.name
 	}
 	return ""
@@ -781,7 +866,8 @@ func (c *Client) switchCh(idx int) {
 	c.mu.Lock()
 	if idx >= 0 && idx < len(c.channels) {
 		// Išsaugoti dabartinę scroll poziciją (jei aktyvus kanalas egzistuoja)
-		if cur := c.activeChan(); cur != nil {
+		// c.mu jau užrakintas — Locked variantas.
+		if cur := c.activeChanLocked(); cur != nil {
 			cur.scrollOff = c.scrollOff
 		}
 		c.activeIdx = idx
@@ -1332,6 +1418,56 @@ func (c *Client) readLoop(reader *bufio.Reader) {
 			return
 		}
 		c.parseIRC(strings.TrimRight(string(line), "\r\n"))
+	}
+}
+
+// maxAwayNotified – didžiausias awayNotified žemėlapio dydis.
+//
+// Žemėlapis saugo nick'ų, kuriems jau pranešta „yra away“ (throttle 10 min.
+// langyje). Priešiškas serveris gali siųsti AWAY nuo šimtų tūkstančių
+// skirtingų nick'ų — be ribos atmintis augtu neapribotai.
+const maxAwayNotified = 5000
+
+// pruneAwayNotifiedLocked apriboja awayNotified žemėlapio dydį.
+//
+// TIK SU c.mu užrakintu. Ištrinami įrašai, kurie jau „nebevėkia“
+// (senesni nei throttle langas) — o jei to nepakanka, trininami seniausi.
+//
+// Ištrynimo eilė deterministinė: renkame seniausius laikus ir triname
+// iki ribos.
+func (c *Client) pruneAwayNotifiedLocked(now time.Time) {
+	// Riba tikrinama SU ATVERTU TARPELIU — jei viršijimas mažas, nesi-
+	// reikia nei rūšiuoti, nei ieškoti seniausių. Be to AWAY srautas
+	// (priešiškas serveris siunčia AWAY nuo tūkstančių nick'ų) trig-
+	// gintų pruininimą KIEKVIENĄ kartą — o kiekvienas pruininimas yra
+	// O(n log n) rūšiavimas.
+	const slack = maxAwayNotified / 4
+	if len(c.awayNotified) <= maxAwayNotified+slack {
+		return
+	}
+	// 1) Pirma — išvalome įrašus, kuriems throttle jau baigėsi (jie
+	//    nebebus naudojami).
+	for k, t := range c.awayNotified {
+		if now.Sub(t) >= 10*time.Minute {
+			delete(c.awayNotified, k)
+		}
+	}
+	if len(c.awayNotified) <= maxAwayNotified {
+		return
+	}
+	// 2) Vis dar per didelis — triname seniausius.
+	type entry struct {
+		key string
+		ts  time.Time
+	}
+	entries := make([]entry, 0, len(c.awayNotified))
+	for k, t := range c.awayNotified {
+		entries = append(entries, entry{k, t})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ts.Before(entries[j].ts) })
+	excess := len(entries) - maxAwayNotified
+	for i := 0; i < excess; i++ {
+		delete(c.awayNotified, entries[i].key)
 	}
 }
 
@@ -2114,12 +2250,27 @@ func (c *Client) parseIRC(line string) {
 				last, seen := c.awayNotified[nickLow]
 				if !seen || now.Sub(last) >= 10*time.Minute {
 					c.awayNotified[nickLow] = now
-					active := c.activeChan()
+					// Riba: be šio žemėlapis augtu be galios (priešiškas
+					// serveris siunčia AWAY nuo milijono nick'ų).
+					c.pruneAwayNotifiedLocked(now)
+					// Nukopijuojame AKTYVAUS KANALO nick'us SU RAKINU — ne
+					// po Unlock. Prieš tai `active.nicks` buvo skaitoma be
+					// rakino, o parseIRC gorutina tuo pačiu keitė
+					// ch.nicks (sort.Slice in-place) — duomenų lenktynė.
+					active := c.activeChanLocked()
+					var activeName string
+					var nicks []string
+					var signs string
+					if active != nil {
+						activeName = active.name
+						nicks = append(nicks, active.nicks...)
+						signs = active.prefixSigns()
+					}
 					c.mu.Unlock()
 					if active != nil {
-						for _, n := range active.nicks {
-							if nickEqual(stripMode(n, active.prefixSigns()), fromNick, cm) {
-								c.addMsg(active.name, Message{ts: now, nick: fromNick,
+						for _, n := range nicks {
+							if nickEqual(stripMode(n, signs), fromNick, cm) {
+								c.addMsg(activeName, Message{ts: now, nick: fromNick,
 									text:    fromNick + " yra away: " + reason,
 									msgType: MsgServer})
 								break
@@ -2135,12 +2286,23 @@ func (c *Client) parseIRC(line string) {
 				c.mu.Lock()
 				_, wasAway := c.awayNotified[nickLow]
 				delete(c.awayNotified, nickLow)
-				active := c.activeChan()
+				// Nukopijuojame nick'us SU RAKINU (žr. AWAY-away atvejo
+				// komentarą) — pašalina lenktynę su /names (active.nicks = nil)
+				// ir su sort.Slice.
+				active := c.activeChanLocked()
+				var activeName string
+				var nicks []string
+				var signs string
+				if active != nil {
+					activeName = active.name
+					nicks = append(nicks, active.nicks...)
+					signs = active.prefixSigns()
+				}
 				c.mu.Unlock()
 				if wasAway && active != nil {
-					for _, n := range active.nicks {
-						if nickEqual(stripMode(n, active.prefixSigns()), fromNick, cm) {
-							c.addMsg(active.name, Message{ts: now, nick: fromNick,
+					for _, n := range nicks {
+						if nickEqual(stripMode(n, signs), fromNick, cm) {
+							c.addMsg(activeName, Message{ts: now, nick: fromNick,
 								text:    fromNick + " grįžo iš away",
 								msgType: MsgServer})
 							break

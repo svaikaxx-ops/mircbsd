@@ -28,7 +28,13 @@ func (c *Client) readKeys() {
 }
 
 func (c *Client) handleKey(b []byte) {
-	if c.keysDebug {
+	// c.keysDebug skaitoma SU RAKINU — /keys komanda ją rašo parseIRC
+	// gorutinoje (handleCmd → input.go), o handleKey veikia klaviatūros
+	// gorutinoje. Be rakino — duomenų lenktynė.
+	c.mu.Lock()
+	keysDebug := c.keysDebug
+	c.mu.Unlock()
+	if keysDebug {
 		parts := make([]string, len(b))
 		for i, x := range b {
 			if x >= 32 && x < 127 {
@@ -68,9 +74,14 @@ func (c *Client) handleKey(b []byte) {
 				c.mu.Lock()
 				lines := c.pasteBuf
 				c.pasteBuf = nil
-				active := c.activeChan()
+				// c.mu jau užrakintas — Locked variantas.
+				active := c.activeChanLocked()
+				activeName := ""
+				if active != nil {
+					activeName = active.name
+				}
 				c.mu.Unlock()
-				if c.isConnected() && active != nil && active.name != "*server*" {
+				if c.isConnected() && activeName != "" && activeName != "*server*" {
 					for _, l := range lines {
 						if l == "" {
 							continue
@@ -468,7 +479,8 @@ func (c *Client) handleSearchKey(b []byte) {
 		case '\r', '\n': // Enter - atlikti paiešką
 			c.mu.Lock()
 			q := c.searchQuery
-			active := c.activeChan()
+			// c.mu jau užrakintas — Locked variantas.
+			active := c.activeChanLocked()
 			c.mu.Unlock()
 			if q != "" && active != nil {
 				c.doSearch(active, q)
@@ -614,7 +626,8 @@ var allCommands = []string{
 func (c *Client) doTab() {
 	c.mu.Lock()
 	inputStr := string(c.input[:c.inputPos])
-	active := c.activeChan()
+	// c.mu jau užrakintas — Locked variantas.
+	active := c.activeChanLocked()
 	// Nukopijuojame nick'ų ir žinučių sąrašus — parseIRC gorutina tuo tarpu
 	// gali juos modifikuoti (sort.Nicks keičia vietomis), o be kopijos būtų
 	// duomenų lenktynė (race).
@@ -843,9 +856,13 @@ func (c *Client) handleInput(text string) {
 		return
 	}
 	c.mu.Lock()
-	active := c.activeChan()
+	active := c.activeChanLocked()
+	activeName := ""
+	if active != nil {
+		activeName = active.name
+	}
 	c.mu.Unlock()
-	if active == nil || active.name == "*server*" {
+	if activeName == "" || activeName == "*server*" {
 		c.serverMsg("Rašyk /join #kanalas kad prisijungtum")
 		return
 	}
@@ -1185,7 +1202,8 @@ func (c *Client) handleCmd(cmd, args string) {
 
 	case "clear":
 		c.mu.Lock()
-		activeCh := c.activeChan()
+		// c.mu jau užrakintas — Locked variantas.
+		activeCh := c.activeChanLocked()
 		if activeCh == nil {
 			c.mu.Unlock()
 			return
@@ -1233,7 +1251,8 @@ func (c *Client) handleCmd(cmd, args string) {
 
 	case "names":
 		c.mu.Lock()
-		active := c.activeChan()
+		// c.mu jau užrakintas — Locked variantas.
+		active := c.activeChanLocked()
 		chName := ""
 		if active != nil {
 			chName = active.name
@@ -1318,7 +1337,8 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.mu.Unlock()
 		} else {
 			c.mu.Lock()
-			active := c.activeChan()
+			// c.mu jau užrakintas — Locked variantas.
+			active := c.activeChanLocked()
 			c.mu.Unlock()
 			if active != nil {
 				c.doSearch(active, args)

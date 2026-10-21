@@ -934,7 +934,8 @@ func (c *Client) draw() {
 		c.mu.Unlock()
 		return
 	}
-	active := c.activeChan()
+	// c.mu jau užrakintas — Locked variantas.
+	active := c.activeChanLocked()
 	if active == nil {
 		// Aktyvaus kanalo nėra (activeIdx negaliojantis) — nebraižyk
 		c.mu.Unlock()
@@ -946,6 +947,29 @@ func (c *Client) draw() {
 	nicks := make([]string, len(active.nicks))
 	copy(nicks, active.nicks)
 	topic := active.topic
+	activeName := active.name
+	// SIDEBAR'O KANALŲ LAUKAI — nukopijuojame SU RAKINU.
+	//
+	// Anksčiau ch.unread / ch.highlight / ch.isPrivate buvo skaitomi PO
+	// c.mu.Unlock() (ši eilutė piešė visus kanalus) — parseIRC gorutina tuo
+	// pačiu juos keitė (addMsg → unread++, irc.go:726). Duomenų lenktynė.
+	//
+	// Atkreipkite: addMsg didina unread TIK kai kanalas NĖRA aktyvus — todėl
+	// lenktynė nematyti, kai piešiamas aktyvus kanalas. Švarus
+	// `go test -race` baseline'as to neįrodė.
+	type chanState struct {
+		unread    int
+		highlight int
+		isPrivate bool
+	}
+	states := make([]chanState, len(channels))
+	for i, ch := range channels {
+		states[i] = chanState{
+			unread:    ch.unread,
+			highlight: ch.highlight,
+			isPrivate: ch.isPrivate,
+		}
+	}
 	inputRunes := make([]rune, len(c.input))
 	copy(inputRunes, c.input)
 	inputPos := c.inputPos
@@ -961,7 +985,7 @@ func (c *Client) draw() {
 	searchQuery := c.searchQuery
 	c.mu.Unlock()
 
-	showNicks := c.isChannel(active.name)
+	showNicks := c.isChannel(activeName)
 	out := &strings.Builder{}
 	out.WriteString(ansiHideCur)
 
@@ -985,7 +1009,7 @@ func (c *Client) draw() {
 		reconnMark = " [RECONNECTING...]"
 	}
 	statusLeft := fmt.Sprintf(" mircBSD %s| %s%s%s @ %s | %s ",
-		tlsMark, myNick, awayMark, reconnMark, server, active.name)
+		tlsMark, myNick, awayMark, reconnMark, server, activeName)
 	if !connected && server == "" {
 		statusLeft = " mircBSD | [NEPRISIJUNGTA] "
 	}
@@ -1055,19 +1079,20 @@ func (c *Client) draw() {
 		if chanIdx < len(channels) {
 			ch := channels[chanIdx]
 			name := ch.name
+			st := states[chanIdx]
 			if chanIdx == activeIdx {
 				out.WriteString(ansiBgBlue + ansiBold + ansiWhite)
-			} else if ch.highlight > 0 {
+			} else if st.highlight > 0 {
 				out.WriteString(ansiRed + ansiBold)
-			} else if ch.unread > 0 {
+			} else if st.unread > 0 {
 				out.WriteString(ansiYellow + ansiBold)
-			} else if ch.isPrivate {
+			} else if st.isPrivate {
 				out.WriteString(ansiMagenta)
 			} else {
 				out.WriteString(ansiDarkGray)
 			}
 			displayName := sanitizeText(name)
-			if ch.isPrivate {
+			if st.isPrivate {
 				// Privatūs kanalai pažymėti „>“ — pavadinimas taip pat
 				// turi būti sanitizuotas (priešiškas serveris gali atsiųsti
 				// PRIVMSG su ESC simboliais nick'e).
@@ -1080,15 +1105,15 @@ func (c *Client) draw() {
 			maxNameW := chanListWidth - 2 - len(fkeyPrefix)
 			displayName = truncateWidth(displayName, maxNameW)
 			label := " " + fkeyPrefix + fitWidth(displayName, maxNameW)
-			if ch.unread > 0 && chanIdx != activeIdx {
+			if st.unread > 0 && chanIdx != activeIdx {
 				unreadW := maxNameW - 3
 				if unreadW < 1 {
 					unreadW = 1
 				}
-				if ch.highlight > 0 {
-					label = fmt.Sprintf(" %s%-*s!%d", fkeyPrefix, unreadW, displayName, ch.highlight)
+				if st.highlight > 0 {
+					label = fmt.Sprintf(" %s%-*s!%d", fkeyPrefix, unreadW, displayName, st.highlight)
 				} else {
-					label = fmt.Sprintf(" %s%-*s%d", fkeyPrefix, unreadW, displayName, ch.unread)
+					label = fmt.Sprintf(" %s%-*s%d", fkeyPrefix, unreadW, displayName, st.unread)
 				}
 			}
 			out.WriteString(label + ansiReset)
