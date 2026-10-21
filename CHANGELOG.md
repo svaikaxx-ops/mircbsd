@@ -11,20 +11,14 @@ Visi ištaisyti, kiekvienas — su regresijos testu (`perziura_2026_10_21c_test.
 
 ### Taisyta (klavišai)
 
-- **Ctrl+Home/End alias'ai ir atsarginiai klavišai** – jei terminalas
-  siunčia kitokias sekas (arba nesenderia modifikatoriaus):
-  - priimamos formos: `\x1b[1;5H/F` (xterm), `\x1b[1;6H/F` (Ctrl+Shift),
-    `\x1b[5H/F` (trumpoji);
-  - **Ctrl+PgUp/PgDn** — tą patį (slinktis viršus/apačia);
-  - **paprastas Home/End su tuščia įvestimi** — tą patį (visiems
-    terminalams beveik visada veikia);
-- **Valdymo sekų buferiavimas** – `readKeys()` dabar suburia sekas, kurias
+- **`Ctrl+Home`/`Ctrl+End` PAŠALINTA** — kanalų sąrašo valdymo klavišai
+  nereikalingi: sąrašas VISADA automatiškai suseka paskui aktyvų kanalą
+  (`switchCh`), o visos klavišai (`Ctrl+↑↓` nick'ams, `Ctrl+PgUp/Dn`
+  žinutėms) lieka. Rankinis sąrašo peržiūrėjimas — pelės spustelėjimais
+  (ir ▲▼ rodikliai). Home/End dabar VISADA judina įvesties žymeklį.
+- **Valdymo sekų buferiavimas** – `readKeys()` suburia sekas, kurias
   terminalas persiunčia per kelis skaitymus (anksčiau pirmas gabalas —
-  „ESC[“ — būtų prarastas; atskiras Esc visada veikia iškart);
-- **`/help`** – aprašyti nauji atsarginiai klavišai. Diagnostikai: **/keys**
-  parodo, kokią baitų seką terminalas realiai siunčia — jei Ctrl+Home/End
-  vis dar nefunkciančios, nuspausk jas su `/keys` įjungta ir pasižiūrėk,
-  kas atėjo (ar nieko neatėjo → terminalas savavalis: naudok Ctl+PgUp/Dn).
+  „ESC[“ — būtų prarastas; atskiras Esc visada veikia iškart).
 
 ### Taisyta (kritiniai)
 

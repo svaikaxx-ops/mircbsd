@@ -111,8 +111,7 @@ mircbsd irc.data.lt 6667 manick
 | `Ctrl+←` / `Ctrl+→` | Žodžio navigacija |
 | `Ctrl+W` | Ištrinti žodį prieš kursorių |
 | `Ctrl+↑` / `Ctrl+↓` | Slinkti nick sąrašu |
-| `Ctrl+Home` / `Ctrl+End` | Kanalų sąrašo slinktis į viršų / apačią |
-| **Pelė** | Ratukas: sulinkti; paspaudimas kanalo juostoje: pakeisti |
+| **Pelė** | Ratukas: sulinkti; paspaudimas kanalo juostoje: pakeisti (sąrašas suseka paskui aktyvų kanalą) |
 
 ## Failų vietos
 

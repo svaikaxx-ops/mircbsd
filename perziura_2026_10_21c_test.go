@@ -91,8 +91,10 @@ func TestReadLoopDropsVeryLongLines(t *testing.T) {
 	}
 }
 
-// R2 — Ctrl+End offsetas SUGRUBINAMAS pagrįstai draw() matomų eilučių skaičiumi.
-func TestChanScrollOffClampedOnCtrlEnd(t *testing.T) {
+// R2 — chanScrollOffsetas SUGRUBINAMAS pagrįstai draw() matomų eilučių
+// skaičiumi (clampChanScrollLocked — visi naudotojai pasiekiami per
+// switchCh/handleMouse).
+func TestChanScrollOffClamped(t *testing.T) {
 	c := newTestClient()
 	for i := 0; i < 30; i++ {
 		c.channels = append(c.channels, newChannel(fmt.Sprintf("#kanalas%d", i), 10))
@@ -100,16 +102,16 @@ func TestChanScrollOffClampedOnCtrlEnd(t *testing.T) {
 	c.activeIdx = 0
 	c.height = 20
 
-	c.handleKey([]byte("\x1b[1;5F")) // Ctrl+End
-
+	// Nesugrubintas offsetas (pvz. po terminalo perdarymo) — sugrubinimas:
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.chanScrollOff = len(c.channels)
+	c.clampChanScrollLocked()
 	maxScroll := len(c.channels) - c.visibleChannelRowsLocked()
 	if maxScroll < 0 {
 		t.Fatal("testo sąranka: kanalų turi būti daugiau nei eilučių")
 	}
 	if c.chanScrollOff != maxScroll {
-		t.Errorf("BUG: po Ctrl+End chanScrollOff = %d, norėtų %d — kitaip handleMouse spustelėjimas perskaičiuoja ne tą indeksą", c.chanScrollOff, maxScroll)
+		t.Errorf("BUG: po sugrubinimo chanScrollOff = %d, norėtų %d — kitaip handleMouse spustelėjimas perskaičiuoja ne tą indeksą", c.chanScrollOff, maxScroll)
 	}
 	for i := range c.channels {
 		// KIEKVIENAS matomas spustelėjimas turi atitikti MATOMĄ kanalą:
@@ -135,7 +137,8 @@ func TestMouseClickSelectsVisibleChannel(t *testing.T) {
 	c.msgAreaTop = 5
 	c.useTLS = false
 
-	c.handleKey([]byte("\x1b[1;5F")) // Ctrl+End
+	// Slinktis iki apačios — per automatinį susekimą (switchCh į paskutinį).
+	c.switchCh(len(c.channels) - 1)
 
 	c.mu.Lock()
 	rows := c.visibleChannelRowsLocked()
@@ -364,13 +367,13 @@ func TestVisibleChannelRowsRespectsBars(t *testing.T) {
 	c.mu.Lock()
 	c.chanScrollOff = 0
 	c.mu.Unlock()
-	c.handleKey([]byte("\x1b[F"))
+	c.switchCh(len(c.channels) - 1) // paskutinis kanalas — sąrašas suka paskui
 	c.mu.Lock()
 	off := c.chanScrollOff
 	rows := c.visibleChannelRowsLocked()
 	c.mu.Unlock()
 	if off > len(c.channels)-rows {
-		t.Errorf("BUG: slinktis po Ctrl+End = %d, bet paskutinis kanalas matomas tik kai off ≤ %d", off, len(c.channels)-rows)
+		t.Errorf("BUG: slinktis po perjungimo = %d, bet paskutinis kanalas matomas tik kai off ≤ %d", off, len(c.channels)-rows)
 	}
 	if len(c.channels)-1 < off+rows && off != len(c.channels)-rows {
 		t.Errorf("BUG: paskutinis kanalas ne matomoje lange (off=%d, rows=%d)", off, rows)

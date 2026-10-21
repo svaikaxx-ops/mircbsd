@@ -187,11 +187,13 @@ func (c *Client) handleKey(b []byte) {
 		return
 	}
 
-	// Ctrl (+Shift) rodyklės/Home/End
+	// Ctrl (+Shift) rodyklės — nick scroll (↑↓), žodžių navigacija (←→).
 	//
-	// Pagrindinė forma: \x1b[1;5X (modifikatorius 5 = Ctrl); kai kurie
-	// terminalai siunčia \x1b[1;6X (Ctrl+Shift — elgiamės kaip Ctrl).
-	if len(b) >= 6 && b[0] == 0x1b && b[1] == '[' && b[2] == '1' && b[3] == ';' && (b[4] == '5' || b[4] == '6') {
+	// PASTABA: anksčiau čia buvo ir Ctrl+Home/End (kanalų sąrašo slinktis)
+	// — PANAUKTA (v0.4.5): būsenos juostoje ir taip pakanka kanalų
+	// valdymo. Sąrašas VISADA automatiškai suseka paskui aktyvų kanalą
+	// (žr. switchCh), o rankinis slinkimas — pelės spustelėjimais.
+	if len(b) >= 6 && b[0] == 0x1b && b[1] == '[' && b[2] == '1' && b[3] == ';' && b[4] == '5' {
 		switch b[5] {
 		case 'A': // Ctrl+Up — nick scroll aukštyn
 			c.mu.Lock()
@@ -203,20 +205,6 @@ func (c *Client) handleKey(b []byte) {
 		case 'B': // Ctrl+Down — nick scroll žemyn
 			c.mu.Lock()
 			c.nickScrollOff++
-			c.mu.Unlock()
-			c.queueRedraw()
-		case 'H': // Ctrl+Home — kanalų sąrašo slinktis į viršų
-			c.mu.Lock()
-			c.chanScrollOff = 0
-			c.mu.Unlock()
-			c.queueRedraw()
-		case 'F': // Ctrl+End — kanalų sąrašo slinktis į apačią
-			c.mu.Lock()
-			// Offsetas turi būti leistinose ribose (žr. clampChanScrollLocked):
-			// kitaip handleMouse spustelėjimas perskaičiuoja NETEISINGĄ indeksą
-			// ir pasirenka ne tą kanalą (arba nieko).
-			c.chanScrollOff = len(c.channels)
-			c.clampChanScrollLocked()
 			c.mu.Unlock()
 			c.queueRedraw()
 		case 'C': // Ctrl+Right — žodis pirmyn
@@ -246,23 +234,6 @@ func (c *Client) handleKey(b []byte) {
 			c.tabCandidates = nil
 			c.queueRedraw()
 		}
-		return
-	}
-
-	// Kai kurių terminalų trumpoji Ctrl+Home/End forma: \x1b[5H / \x1b[5F
-	// (be papildomo „1;“ parametrų bloko).
-	if len(b) == 4 && b[0] == 0x1b && b[1] == '[' && (b[2] == '5' || b[2] == '6') && (b[3] == 'H' || b[3] == 'F') {
-		if b[3] == 'H' {
-			c.mu.Lock()
-			c.chanScrollOff = 0
-			c.mu.Unlock()
-		} else {
-			c.mu.Lock()
-			c.chanScrollOff = len(c.channels)
-			c.clampChanScrollLocked()
-			c.mu.Unlock()
-		}
-		c.queueRedraw()
 		return
 	}
 
@@ -308,15 +279,6 @@ func (c *Client) handleKey(b []byte) {
 			return
 		case '5':
 			c.mu.Lock()
-			// Ctrl+PgUp (\x1b[5;5~), +Shift (\x1b[5;6~) — kanalų sąrašo
-			// slinktis į VIRŠŪNĘ. Kai kuriuose terminaluose Ctrl+PgUp
-			// yra patikimesnis už Ctrl+Home (jį terminalas nesuvalgo).
-			if len(b) >= 5 && b[3] == ';' && (b[4] == '5' || b[4] == '6') {
-				c.chanScrollOff = 0
-				c.mu.Unlock()
-				c.queueRedraw()
-				return
-			}
 			c.scrollOff += c.height - 4
 			c.chaseUntil = time.Time{} // slinkimas aukštyn — vėl užšaldom vaizdą
 			c.mu.Unlock()
@@ -324,11 +286,7 @@ func (c *Client) handleKey(b []byte) {
 			return
 		case '6':
 			c.mu.Lock()
-			if len(b) >= 5 && b[3] == ';' && (b[4] == '5' || b[4] == '6') {
-				// Ctrl+PgDn (\x1b[6;5~) — kanalų sąrašo slinktis iki APAČIOS.
-				c.chanScrollOff = len(c.channels)
-				c.clampChanScrollLocked()
-			} else if len(b) >= 4 && b[3] == ';' {
+			if len(b) >= 4 && b[3] == ';' {
 				// Shift+PgDn — grįžti apačion
 				c.scrollOff = 0
 				c.chaseUntil = time.Time{}
@@ -363,29 +321,15 @@ func (c *Client) handleKey(b []byte) {
 			c.queueRedraw()
 			return
 		case 'H':
-			// SU TUŠČIA įvestimi — atsarginis kanalų slinktis į pradžią
-			// (kai kuriuose terminaluose Ctrl+Home nesenderia apskritai);
-			// su tekstuvėmis — žymeklis į įvesties pradžią.
 			c.mu.Lock()
-			if len(c.input) == 0 {
-				c.chanScrollOff = 0
-			} else {
-				c.inputPos = 0
-			}
+			c.inputPos = 0
 			c.mu.Unlock()
 			c.tabCandidates = nil
 			c.queueRedraw()
 			return
 		case 'F':
-			// SU TUŠČIA įvestimi — atsarginis kanalų slinktis į apačią;
-			// su tekstuvėmis — žymeklis į įvesties pabaigą.
 			c.mu.Lock()
-			if len(c.input) == 0 {
-				c.chanScrollOff = len(c.channels)
-				c.clampChanScrollLocked()
-			} else {
-				c.inputPos = len(c.input)
-			}
+			c.inputPos = len(c.input)
 			c.mu.Unlock()
 			c.tabCandidates = nil
 			c.queueRedraw()
@@ -2023,10 +1967,6 @@ func (c *Client) handleCmd(cmd, args string) {
 			"Ctrl+←/→        žodžio navigacija",
 			"F1-F12 / Alt+1-9  kanalas pagal numerį",
 			"Tab             autocomplete   Ctrl+↑↓  nick scroll",
-			"Ctrl+Home/End   kanalų sąrašo slinktis",
-			"Ctrl+PgUp/PgDn  tą patį (be kita terminalų formų)",
-			"Home/End (tuščia įvestis) — taip pat kanalų sąrašo slinktis",
-			"/keys           klavišų diagnostika (koks baitus siunčia terminalas)",
 			"───────────────────────────────────────────────────",
 			"/ignore dabar palaiko maskes: nick!user@host, *!user@*, *",
 		}
