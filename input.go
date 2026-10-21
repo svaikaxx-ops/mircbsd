@@ -1343,6 +1343,10 @@ func (c *Client) handleCmd(cmd, args string) {
 		do := c.connected && c.isChannel(chName)
 		if do {
 			active.nicks = nil
+			// Žemėlapis turi būti išvalomas TOGIU PAT — priešingu atveju
+			// liko seni indeksai ir addNick/removeNick nebesutaptų su
+			// tikrais nick'ais.
+			active.nickSet = nil
 		}
 		c.mu.Unlock()
 		if do {

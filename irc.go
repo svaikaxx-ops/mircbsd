@@ -333,6 +333,10 @@ type Client struct {
 	highlightWords []string // papildomi highlight žodžiai
 
 	// Away throttle: nick -> paskutinio pranešimo laikas
+	//
+	// RIBOTA: priešiškas serveris gali siųsti AWAY nuo milijono skirtingų
+	// nick'ų — be ribos žemėlapis augtu be galios. Privaloma riba: kai
+	// viršijama, seniausi įrašai ištrinami (žr. pruneAwayNotified).
 	awayNotified map[string]time.Time
 
 	// WHO/WHOIS atsakymų adresatas. Numerikai (352/315, 311–318) atėksta
@@ -365,7 +369,17 @@ type Client struct {
 	channels    []*Channel
 	activeIdx   int
 	maxMessages int
-	lastDrawn   *Channel // kuriuo kanalu paskutinį kartą braižyta (istorijos užšaldymui)
+
+	// chanLimitHit — kanalo pavadinimas, kurio ŽINUTĖ atmesta dėl kanalų
+	// ribos. Naudojama, kad vartotojas gautų ŽINIĄ, kad pranešimas nebuvo
+	// pristatytas — anksčiau žinutės tyliai išnykdavo.
+	//
+	// LAIKYTI pavadinimą (o ne bool) — kad įspėjimas būtų PRISKIRTAS
+	// TEISINGAM kanalui. Anksčiau buvo globalus „lipni“ žymeklis: riba
+	// pasiekus viename kanale, įspėjimą gaudavo VISI VELIAU atmettos
+	// žinutės (net kito kanalo).
+	chanLimitHit string
+	lastDrawn    *Channel // kuriuo kanalu paskutinį kartą braižyta (istorijos užšaldymui)
 
 	writeCh chan string
 	redraw  chan struct{}
@@ -494,10 +508,65 @@ func (c *Client) findCh(name string) *Channel {
 	return nil
 }
 
-// maxChannels – didžiausias kanalų (langų) skaičius viename seanse.
-// Be ribos priešiškas serveris galėtų siųsti JOIN/PM flood — klientas
-// kurstų šimtus kanalų (atmintis + sidebar).
+// sanitizeChanName normalizuoja kanalo pavadinimą iš serverio.
+//
+// SANITIZUOJAMA NE TIK TERMINALO VALDYMO SIMBOLIAI, bet ir TARPAS.
+//
+// Kodėl: kanalo pavadinimas įrašomas į IRC komandas (MODE #kanalas +o nick,
+// KICK #kanalas nick, TOPIC #kanalas :tema, /op, /part, /msg). Tarpas IRC
+// komandoje yra PARAMETRŲ SKIRTUKAS — todėl kanalas „#pub #priv“ (atsiųstas
+// priešiško serverio arba per JOIN :#pub #priv) sukeldavo komandų tikslo
+// klastojimą: „MODE #pub #priv +o attacker“ — operatoriaus teisės suteikiamos
+// KITAME kanale.
+//
+// Čia trimamas tik VIDINIS tarpas (apvaliu ir kelių tarpų serija) — viena
+// eilutė, kad kanalo pavadinimas liktų žmoniui atpažįstamas. Bet atsparus
+// komandų tikslo klastojimui to NEDAROM visų tarpų pašalinimo: kanalo
+// pavadinimas turi būti PRIEŠ serverio atsiųstas tikslus pavadinimas
+// (serverio atsiųstas pavadinimas su tarpu neturi teisės tapti komandos
+// tikslu — todėl toks kanalas atmetamas).
+//
+// Grąžina tuščią eilutę, jei pavadinimas netinkamas (tuščias, su tarpais,
+// arba su komandų atskyrimo simboliais).
+func sanitizeChanName(name string) string {
+	// BALTIEJI ir CRLF tikrinami ORIGINALIOJE pavadinime — PRIE
+	// sanitizavimo. Kitaip „#a\nb“ po sanitizeText() taptų „#ab“ ir
+	// praeitų patikrą — o serverio tikslas (koks kanalas iš tikrųjų)
+	// vis tiek būtų kitas.
+	if strings.ContainsAny(name, " \t\r\n\v\f") {
+		return ""
+	}
+	safe := sanitizeText(name)
+	if safe == "" {
+		return ""
+	}
+	// Po sanitizavimo dar kartą — jei sanitizavimas sukūrė tarpą
+	// (nepavyktų, bet saugiai).
+	if strings.ContainsAny(safe, " \t\r\n") {
+		return ""
+	}
+	return safe
+}
+
+// maxChannels – didžiausias REALIŲ kanalų (langų) skaičius viename seanse.
+//
+// Be ribos priešiškas serveris galėtų siųsti JOIN flood — klientas kurstų
+// šimtus kanalų (atmintis + sidebar).
 const maxChannels = 100
+
+// maxPrivateChannels – didžiausias PRIVAČIŲ pokalbių (PM) langų skaičius.
+//
+// ATSKIRAS biudžetas nuo maxChannels.
+//
+// Kodel? Ankstesnė riba (maxChannels) taikoma VISIEMS kanalams, įskaitant
+// PM. Todėl 100 privačių pokalbių (PM flood) IŠNAUDO visą biudžetą, ir po
+// to REALUS kanalas nebebuvo sukuriamas: jo žinutės TYLIAI išnykdavo
+// (addMsg → ensureCh → nil → return). Vartotojas manydavo, kad kanale
+// nieko nėra, nors serveris siuntė pranešimus.
+//
+// Dabar PM flood eikdoja tik privačių pokalbių biudžetą — realūs kanalai
+// visada turi vietos.
+const maxPrivateChannels = 200
 
 // ensureCh sukuria kanalą, jei jo nėra. Tuščių pavadinimų nepriima —
 // serverio komanda be kanalo parametro (pvz. „:srv 332 :topic“) neturi
@@ -507,6 +576,8 @@ const maxChannels = 100
 // serveris gali atsiųsti PRIVMSG su ESC simboliais nick'e — jei tokie
 // simboliai liktų ch.name, jie būtų braižomi į ekraną (terminalo
 // injekcija) ir rašomi į žurnalų failų vardus.
+//
+// TIK SU c.mu užrakintu.
 func (c *Client) ensureCh(name string) *Channel {
 	if name == "" {
 		return nil
@@ -515,19 +586,39 @@ func (c *Client) ensureCh(name string) *Channel {
 	if ch != nil {
 		return ch
 	}
-	// Per didelis kanalų skaičius — atmetame naują kanalą (flood apsauga).
-	// Visada paliekame bent *server* kanalą.
-	if len(c.channels) >= maxChannels {
-		return nil
-	}
 	// Sanitizuojame PRIEŠ sukurdami — kad ch.name (kuris braižomas į ekraną
 	// ir naudojamas žurnalų failų vardams) niekada nebūtų su terminalo
 	// valdymo simboliais ar kelio elementais.
-	safe := sanitizeText(name)
+	//
+	// BE TARPŲ: kanalo pavadinimas įrašomas į IRC komandas kaip TIKSLAS.
+	// Tarpo kanalas („#pub #priv“) komandoje būtų interpretuojamas kaip
+	// papildomas parametras → komandų tikslo klastojimas (MODE #pub #priv
+	// +o attacker). Tokį kanalą atmetame — jo serverio tikslas yra kitas.
+	safe := sanitizeChanName(name)
 	if safe == "" {
-		// Pavadinimas susidėjo tik iš valdymo simbolių — tokio kanalo
-		// nekūriame (kitaip atsirastų tuščias / beprasmis langas).
+		// Pavadinimas susidėjo tik iš valdymo simbolių arba turi tarpų —
+		// tokio kanalo nekūriame (kitaip atsirastų tuščias / beprasmis
+		// langas, arba kanalas su klastotu komandos tikslu).
 		return nil
+	}
+	// RIBOS — atskiri biudžetai realiems kanalams ir privatiems pokalbiams.
+	ct, _, _, _, _ := c.isupSnapshot()
+	isRealChannel := strings.ContainsRune(ct, rune(safe[0]))
+	realCount, privateCount := c.countChannelsLocked()
+	if isRealChannel {
+		if realCount >= maxChannels {
+			// Išsaugome ATSISAKYTO kanalo vardą — įspėjimas turi būti
+			// tikslus (o ne „pakibęs“ ant kitos vėlesnės žinutės).
+			c.chanLimitHit = safe
+			return nil
+		}
+	} else {
+		// Privatūs pokalbiai (PM). Jie turi SAVO biudžetą — kad PM
+		// flood neužimtų vietos realiems kanalams.
+		if privateCount >= maxPrivateChannels {
+			c.chanLimitHit = safe
+			return nil
+		}
 	}
 	ch = newChannel(safe, c.maxMessages)
 	// Kanalas prisimena serverio ISUPPORT parametrus, kad nick'ų
@@ -799,14 +890,30 @@ func (c *Client) addMsg(chanName string, m Message) {
 	ch := c.ensureCh(chanName)
 	if ch == nil {
 		// Kanalas be pavadinimo — nekuriam (serverio klastota komanda)
+		//
+		// RIBOS ATMETA — pranešimas PRARADIMAS. Anksčiau jis tyliai
+		// išnykdavo (vartotojas manydavo, kad kanale nieko nėra).
+		// Dabar bent vieną kartą pranešame, kad žinutė nepristatyta.
+		// RIBOS PRIEŽASTIS — išsaugome, KAD ir kokia buvo (tikslus
+		// įspėjimas). Bet jei atmetimo priežastis buvo kita (pvz.
+		// kanalo pavadinimas su tarpais) — įspėjimo NIEKADA nėra.
+		limitHit := c.chanLimitHit
+		c.chanLimitHit = ""
 		c.mu.Unlock()
+		if limitHit != "" {
+			// ĮSPĖJIMAS nurodo TIKSLŲ kanalą (limitHit), o ne atmetimo
+			// kanalą — jie gali skirtis (pvz. riba pasieusta kanale A,
+			// o žinutė atmetta kanale B).
+			c.serverMsg("ĮSPĖJIMAS: pasiektas kanalų limitas — žinutė NEPRISTATYTA (" + sanitizeText(limitHit) + ")")
+		}
 		return
 	}
 	// Naudojame SANITIZUOTĄ pavadinimą — originalį gali atsiųsti priešiškas
 	// serveris (ESC simboliai → terminalo injekcija, kelias už logDir ribų).
 	chanName = ch.name
 	ch.addMsg(m)
-	isActive := c.activeChan() == ch
+	// c.mu jau užrakintas (addMsg pradžioje) — naudojame Locked variantą.
+	isActive := c.activeChanLocked() == ch
 	if !isActive {
 		ch.unread++
 		if m.highlight {
@@ -1613,8 +1720,18 @@ func (c *Client) parseIRC(line string) {
 		isMe := c.nickEqual(fromNick, c.nick)
 		channel := c.ensureCh(ch)
 		if channel == nil {
-			// Kanalas be pavadinimo — ignoruojame (serverio klastota komanda)
+			// Kanalas atmestas. Priežastis gali būti dvi: (a) kanalo
+			// pavadinimas netinkamas (klastota komanda) — tada ignoruojame;
+			// (b) pasiektas KANALŲ RIBAS — tada vartotojas turi žinoti.
+			//
+			// Anksčiau JOIN keliu įspėjimo NEBUVO — vartotojas matė
+			// „prisijungiau į kanalą“, bet lango nebuvo.
+			limitHit := c.chanLimitHit
+			c.chanLimitHit = ""
 			c.mu.Unlock()
+			if limitHit != "" {
+				c.serverMsg("ĮSPĖJIMAS: pasiektas kanalų limitas — kanalas „" + sanitizeText(limitHit) + "“ neatidarytas")
+			}
 			return
 		}
 		channel.addNick(fromNick)

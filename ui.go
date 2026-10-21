@@ -664,6 +664,24 @@ type Channel struct {
 	prefix        string // serverio PREFIX statuso prefiksai (ISUPPORT)
 	prefixModes   string // serverio PREFIX mode raidės (ISUPPORT)
 
+	// nickSet — rinkinys normalizuotų nick'ų (be prefikso, su
+	// casemapping'u) — greitas „ar toks nick'as yra?“ patikrinimas.
+	//
+	// KODĖL: be jo kiekvienas nick'o įterpimas buvo O(n) (stripMode +
+	// nickEqual per elementą). 5 000 nick'ų kanale tai 5 000 × 5 000
+	// = 25 milijonų operacijų — O(n²) DoS (užblokavimas).
+	//
+	// KODĖL NE map[string]int (su indeksais): po kiekvieno įterpimo
+	// VISI indeksai po tašku pasikeičia → žemėlapio atstatymas O(n) →
+	// vėl O(n²) visas. Rinkinys (be indeksų) yra stabilus per
+	// įterpimus: jį reikia atnaujinti tik PAŠALINUS arba pervadinus
+	// nick'ą (reti įvykiai).
+	//
+	// INVARIANTAS: galioja TIK SU c.mu (arba c.mu užrakintu).
+	// Peržiūrėtoji vieta — kiekvienas ch.nicks pakeitimas (addNick,
+	// removeNick, renameNick, changeNickMode, /names → nicks = nil).
+	nickSet map[string]struct{}
+
 	// Renderio cache'as: eilutės priklauso nuo žinučių, pločio ir spalvos.
 	// renderGen didinamas kiekvieną kartą pakeitus žinutes (addMsg, clear).
 	//
@@ -718,25 +736,110 @@ func (ch *Channel) prefixSigns(opt ...string) string {
 	return defaultPrefixSigns
 }
 
+// maxNicksPerChannel — didžiausias nick'ų skaičius viename kanale.
+//
+// Be ribos priešiškas serveris galėtų siųsti tūkstančius JOIN'ų į vieną
+// kanalą — kiekvienas su savo nick'u. Sąrašas augdavo neribotai, o
+// kiekvienas įterpimas buvo O(n) (žr. addNick) → O(n²) visas sudėtis.
+// 10 000 nick'ų kanale tai ~3,5 s pauzės (užblokavus visą klientą).
+const maxNicksPerChannel = 5000
+
+// normNick normalizuoja nick'ą į žemėlapio raktą: be statuso prefikso,
+// su serverio casemapping'u.
+//
+// NUDAŽIA: nickEqual() lygina su casemapping'u, todėl raktas turi būti
+// lyginamas TAIP PAT — „Žilvinas“ ir „žilvinas“ yra VIENAS nick'as
+// (pagal RFC 1459 ASCII rulą), o ne du.
+//
+// CASEMAPPING: pagal RFC 1459 lygina „[“ ≡ „{“, „]“ ≡ „}“, „\\“ ≡ „|“;
+// pagal „ascii“ (ASCII casefold) — NIEKO nelygina. Todėl ant „ascii“
+// serverio „[a]“ ir „{a}“ yra DU SKIRTINGI nick'ai. Ankstesnė versija
+// visada naudojo RFC 1459 → „{a}“ būdavo atmestas kaip „[a]“ dublikatas,
+// o vėlesnis QUIT ištrindavo NE TĄ nick'ą.
+//
+// Parametras `cm` — serverio casemapping („“ arba „rfc1459“ → RFC 1459;
+// „ascii“ → ASCII).
+func normNick(nick, sign, cm string) string {
+	bare := stripMode(nick, sign)
+	if cm == "ascii" {
+		// ASCII casefold — NELYGINA ne-ASCII raidžių (t. y. „Žilvinas“
+		// ≠ „žilvinas“), tiksliai kaip nickEqual().
+		return asciiFold(bare)
+	}
+	return strings.Map(lowerIRC, bare)
+}
+
+// rebuildNickSet atstato rinkinį iš `nicks` slice'o.
+//
+// Reikalingas po operacijų, kurios PAŠALINA arba PERVADINA nick'ą.
+func (ch *Channel) rebuildNickSet(sign string) {
+	ch.nickSet = make(map[string]struct{}, len(ch.nicks))
+	for _, n := range ch.nicks {
+		ch.nickSet[normNick(n, sign, ch.casemapping)] = struct{}{}
+	}
+}
+
+// hasNickKey tikrina, ar kanale yra toks nick'as (O(1)).
+//
+// NAUDOJA nickSet rinkinį. Jei rinkinys neegzistuoja (kanalas
+// sukurtas senais būdais) — atstatomas iš `nicks` slice'o.
+func (ch *Channel) hasNickKey(nick, sign string) bool {
+	if ch.nickSet == nil {
+		ch.rebuildNickSet(sign)
+	}
+	_, ok := ch.nickSet[normNick(nick, sign, ch.casemapping)]
+	return ok
+}
+
+// findNickIdx ieško nick'o indekso kanale. Grąžina -1, jei nėra.
+//
+// NAUDOJA rinkinį tik kaip greitą „egzistuoja?“ patikrinimą; indeksas
+// surandamas tiesiogine paieška (tik reikia retai — pašalinimas,
+// pervadinas, prefikso pakeitimas — ne kiekvienam įterpinui).
+func (ch *Channel) findNickIdx(nick, sign string) int {
+	if !ch.hasNickKey(nick, sign) {
+		return -1
+	}
+	target := normNick(nick, sign, ch.casemapping)
+	for i, n := range ch.nicks {
+		if normNick(n, sign, ch.casemapping) == target {
+			return i
+		}
+	}
+	return -1
+}
+
 func (ch *Channel) addNick(nick string, signOpt ...string) {
 	sign := ch.prefixSigns(signOpt...)
-	for i, n := range ch.nicks {
-		if nickEqual(stripMode(n, sign), stripMode(nick, sign), ch.casemapping) {
-			// Nick'as jau yra sąraše. Bet 353 (NAMES) gali atneši STATUSO
-			// prefiksą, kurio nebuvo, kai jis įrašytas (pvz. JOIN pridėjo
-			// „Žilvinas“, o 353 atnešė „@Žilvinas“). Anksčiau čia buvo
-			// grynas „return“ → prefiksas tyliai dingdavo ir vartotojas
-			// nematė, kad jis operatorius.
-			// Atnaujiname tik tada, kai NAUJAS nick'as turi prefiksą —
-			// jei jo nėra, esantis prefiksas (iš MODE komandos) lieka.
-			newPrefix := modePrefix(nick, sign)
-			if newPrefix == "" || newPrefix == modePrefix(n, sign) {
-				return
-			}
-			ch.nicks[i] = newPrefix + stripMode(n, sign)
-			sortNicks(ch.nicks, sign)
+	if ch.nickSet == nil {
+		ch.rebuildNickSet(sign)
+	}
+	key := normNick(nick, sign, ch.casemapping)
+	if _, exists := ch.nickSet[key]; exists {
+		// Nick'as jau yra sąraše. Bet 353 (NAMES) gali atneši STATUSO
+		// prefiksą, kurio nebuvo, kai jis įrašytas (pvz. JOIN pridėjo
+		// „Žilvinas“, o 353 atnešė „@Žilvinas“). Anksčiau čia buvo
+		// grynas „return“ → prefiksas tyliai dingdavo ir vartotojas
+		// nematė, kad jis operatorius.
+		// Atnaujiname tik tada, kai NAUJAS nick'as turi prefiksą —
+		// jei jo nėra, esantis prefiksas (iš MODE komandos) lieka.
+		i := ch.findNickIdx(nick, sign)
+		if i < 0 {
 			return
 		}
+		n := ch.nicks[i]
+		newPrefix := modePrefix(nick, sign)
+		if newPrefix == "" || newPrefix == modePrefix(n, sign) {
+			return
+		}
+		ch.nicks[i] = newPrefix + stripMode(n, sign)
+		sortNicks(ch.nicks, sign)
+		// Raktas (be prefikso) tas pats — rinkinio atnaujinti nereikia.
+		return
+	}
+	// RIBOS — kanale negali būti begalybės nick'ų.
+	if len(ch.nicks) >= maxNicksPerChannel {
+		return
 	}
 	// Įstatome į SAVO VIETĄ (dichotominė paieška) — anksčiau kiekvienam
 	// įterpimui buvo pilnas sortNicks (O(n log n)). 500 nick'ų kanale tai
@@ -747,40 +850,40 @@ func (ch *Channel) addNick(nick string, signOpt ...string) {
 	ch.nicks = append(ch.nicks, "")
 	copy(ch.nicks[pos+1:], ch.nicks[pos:])
 	ch.nicks[pos] = nick
+	// Rinkinys atnaujinamas O(1) — indeksai nekeičiami.
+	ch.nickSet[key] = struct{}{}
 }
 
 // hasNick tikrina, ar kanalo nick'ų sąraše yra toks nick (su prefiksu arba
 // be jo). Naudojama NICK komandai — pranešimą rodoma tik ten, kur nick
 // realiai buvo.
 func (ch *Channel) hasNick(nick string) bool {
-	sign := ch.prefixSigns()
-	for _, n := range ch.nicks {
-		if nickEqual(stripMode(n, sign), stripMode(nick, sign), ch.casemapping) {
-			return true
-		}
-	}
-	return false
+	return ch.findNickIdx(nick, ch.prefixSigns()) >= 0
 }
 
 func (ch *Channel) removeNick(nick string, signOpt ...string) {
 	sign := ch.prefixSigns(signOpt...)
-	for i, n := range ch.nicks {
-		if nickEqual(stripMode(n, sign), stripMode(nick, sign), ch.casemapping) {
-			ch.nicks = append(ch.nicks[:i], ch.nicks[i+1:]...)
-			return
-		}
+	i := ch.findNickIdx(nick, sign)
+	if i < 0 {
+		return
 	}
+	ch.nicks = append(ch.nicks[:i], ch.nicks[i+1:]...)
+	// Pašalintas nick'as — rinkinys atnaujinamas.
+	delete(ch.nickSet, normNick(nick, sign, ch.casemapping))
 }
 
 func (ch *Channel) renameNick(oldNick, newNick string, signOpt ...string) {
 	sign := ch.prefixSigns(signOpt...)
-	for i, n := range ch.nicks {
-		if nickEqual(stripMode(n, sign), oldNick, ch.casemapping) {
-			ch.nicks[i] = modePrefix(n, sign) + newNick
-			sortNicks(ch.nicks, sign)
-			return
-		}
+	i := ch.findNickIdx(oldNick, sign)
+	if i < 0 {
+		return
 	}
+	oldKey := normNick(ch.nicks[i], sign, ch.casemapping)
+	ch.nicks[i] = modePrefix(ch.nicks[i], sign) + newNick
+	sortNicks(ch.nicks, sign)
+	// Raktas pasikeitė (nick'o vardas) — rinkinys atnaujinamas.
+	delete(ch.nickSet, oldKey)
+	ch.nickSet[normNick(newNick, sign, ch.casemapping)] = struct{}{}
 }
 
 func (ch *Channel) setMode(nick, mode string, signsOpt ...string) {
@@ -811,18 +914,19 @@ func (ch *Channel) setMode(nick, mode string, signsOpt ...string) {
 }
 
 func (ch *Channel) changeNickMode(nick string, prefix byte, adding bool, signs string) {
-	for i, n := range ch.nicks {
-		if nickEqual(stripMode(n, signs), nick, ch.casemapping) {
-			bare := stripMode(n, signs)
-			if adding {
-				ch.nicks[i] = string(prefix) + bare
-			} else {
-				ch.nicks[i] = bare
-			}
-			sortNicks(ch.nicks, signs)
-			return
-		}
+	i := ch.findNickIdx(nick, signs)
+	if i < 0 {
+		return
 	}
+	bare := stripMode(ch.nicks[i], signs)
+	if adding {
+		ch.nicks[i] = string(prefix) + bare
+	} else {
+		ch.nicks[i] = bare
+	}
+	sortNicks(ch.nicks, signs)
+	// Prefiksas pasikeitė → tvarka pasikeitė, bet raktas (be prefikso) tas
+	// pats — rinkinio atnaujinti nereikia.
 }
 
 // stripMode/prefixStatus naudoja serverio parametrus (PREFIX iš ISUPPORT),

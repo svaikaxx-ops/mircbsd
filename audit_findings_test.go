@@ -526,10 +526,15 @@ func TestFinding_UnboundedChannelList(t *testing.T) {
 		c.parseIRC(":flood" + n + "!u@h JOIN #c" + n)
 	}
 	c.mu.Lock()
-	n := len(c.channels)
+	// Skaičiuojame TIK realius kanalus — vidinis „*server*“ langas nėra
+	// vartotojo kanalas (jis visada egzistuoja).
+	real, private := c.countChannelsLocked()
 	c.mu.Unlock()
-	if n > 100 {
-		t.Errorf("CONFIRMED: JOIN flood sukūrė %d kanalų (neribota)", n)
+	if real > maxChannels {
+		t.Errorf("CONFIRMED: JOIN flood sukūrė %d realių kanalų (neribota)", real)
+	}
+	if private > maxPrivateChannels {
+		t.Errorf("CONFIRMED: PM flood sukūrė %d privačių pokalbių (neribota)", private)
 	}
 }
 
