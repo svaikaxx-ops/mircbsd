@@ -1055,7 +1055,12 @@ func (c *Client) logMessage(logDir, server, chanName string, m Message) {
 	}
 	// Rotacija per dieną: kiekviena para — savo failas
 	// (kanalas-2026-09-29.log); senas failas uždaromas pradedant naują.
-	key := server + "/" + chanName + "/" + m.ts.Format("2006-01-02")
+	//
+	// Raktas naudoja SANITIZUOTĄ kanalo pavadinimą — tas pats, kas failo
+	// vardas diske. clearLogs() atranda failus pagal tą patį raktą, todėl
+	// abu turi sutapti (nesanitizuotas raktas pritrūkdavo prie
+	// uždarymo — atviru failu likdavo neuždaryti).
+	key := server + "/" + sanitizePath(chanName) + "/" + m.ts.Format("2006-01-02")
 	c.mu.Lock()
 	f, ok := c.logFiles[key]
 	if !ok {
@@ -1065,7 +1070,8 @@ func (c *Client) logMessage(logDir, server, chanName string, m Message) {
 			return
 		}
 		// uždarome ankstesnės dienos failą tos pačios kanalo eilutės
-		oldPrefix := server + "/" + chanName + "/"
+		// (prefiksas — su sanitizuotu vardu, kaip ir pats raktas)
+		oldPrefix := server + "/" + sanitizePath(chanName) + "/"
 		for otherKey, otherF := range c.logFiles {
 			if strings.HasPrefix(otherKey, oldPrefix) {
 				otherF.Close()
@@ -1086,6 +1092,32 @@ func (c *Client) logMessage(logDir, server, chanName string, m Message) {
 	ts := m.ts.Format("2006-01-02 15:04:05")
 	plain := sanitizeText(stripIRCFormat(m.text))
 	nick := sanitizeText(m.nick)
+	// Slaptažodžio aptikimas ŽURNALE.
+	//
+	// NAUDOJAME isSensitiveLogLine (ne isSensitiveHistory): žurnale yra ir
+	// ĮPRASTI POKALBIAI, o platus „pirmas žodis“ tikrinimas slėpdų viską,
+	// kas pradžiasi žodžiais „register“/„pass“/„auth“ — t. y. žurnalas
+	// tyliai prarastų realų pokalbių tekstą („register your vote today“).
+	//
+	// Tikriname kūną, NICK'o lauką (serveris siunčia „:NickServ!serv@host
+	// PRIVMSG man :set password …“ — nick'o laukas yra „NickServ“) ir
+	// junginį (atpažinti komandą, kai kontekstas atskirtas).
+	//
+	// NICK'O LAUKAS gali būti „NickServ“ (serveris siunčia „:NickServ!serv@host
+	// PRIVMSG man :set password …“) — tada VISAS kūnas yra komanda, todėl
+	// jį tikriname kaip NickServ komandą (platis „pirmas žodis“ tikrinimas
+	// čia leistinas — kontekstas aiškus).
+	nickIsServ := strings.EqualFold(nick, "NickServ") ||
+		strings.EqualFold(nick, "nickserv") ||
+		strings.EqualFold(nick, "NickServ")
+	sensitive := isSensitiveLogLine(plain) ||
+		isSensitiveLogLine(nick) ||
+		isSensitiveLogLine(plain+" "+nick)
+	if nickIsServ {
+		// Kūnas yra NickServ komanda — tikrinime PLACIAI (be konteksto
+		// komandos, pvz. „register <pass>“).
+		sensitive = sensitive || isSensitiveHistory(plain)
+	}
 	var line string
 	switch m.msgType {
 	case MsgChat:
@@ -1109,7 +1141,7 @@ func (c *Client) logMessage(logDir, server, chanName string, m Message) {
 	}
 	// Slaptažodžiai (NickServ IDENTIFY/REGISTER/SET PASSWORD) niekada ne
 	// rašomi į žurnalą — jame liktų plaintext slaptažodis.
-	if isSensitiveHistory(plain) {
+	if sensitive {
 		line = fmt.Sprintf("[%s] <%s> [slaptažodis paslėptas]\n", ts, nick)
 	}
 	_, _ = f.WriteString(line)
@@ -1159,8 +1191,13 @@ func (c *Client) clearLogs(chanName string) int {
 	// Uždarom atidarytus handle'us — vengiant rašymo į jau ištrintus failus
 	prefix := ""
 	if chanName != "" {
-		// raktas: server/kanalas/data
-		prefix = server + "/" + chanName + "/"
+		// Raktas: server/kanalas/data.
+		//
+		// SANITIZUOJAME čia pat: failų VARDAI diske yra sanitizuoti
+		// (sanitizePath), o raktas c.logFiles — tai server/kanalas/data
+		// su ORIGINALIU kanalo pavadinimu. Jei šie skirtųsi, atviras
+		// failas likdavo neuždarytas (ir rašė į ištrintą failą).
+		prefix = server + "/" + sanitizePath(chanName) + "/"
 	}
 	closed := 0
 	for k, f := range c.logFiles {
@@ -1186,7 +1223,7 @@ func (c *Client) clearLogs(chanName string) int {
 		if e.IsDir() {
 			continue
 		}
-		if filePrefix != "" && !strings.HasPrefix(e.Name(), filePrefix+"-2") && e.Name() != filePrefix+".log" {
+		if filePrefix != "" && !isChannelLogFile(e.Name(), filePrefix) {
 			continue
 		}
 		if os.Remove(filepath.Join(srvDir, e.Name())) == nil {
@@ -1194,6 +1231,40 @@ func (c *Client) clearLogs(chanName string) int {
 		}
 	}
 	return removed
+}
+
+// isChannelLogFile tikrina, ar failo vardas yra LYGIAI nurodyto kanalo
+// žurnalas.
+//
+// Failų vardai: <KANALAS>-YYYY-MM-DD.log (ir senieji <KANALAS>.log).
+//
+// Ankstesnė patikra buvo `strings.HasPrefix(name, kanalas+"-2")` — ji
+// tikėjosi, kad data visada prasideda „2“ (metais 2xxx). Tai sukeldavo
+// dviejų klaidų:
+//   - „/clearlogs #k“ ištrindavo kito kanalo „#k-2“ žurnalą
+//     (jo failas „#k-2-2026-10-21.log“ — prefiksas sutampa);
+//   - senesnių metų žurnalai („#k-2025-03-15.log“) NEBUDavo ištrinami.
+//
+// Dabar tikrinama tiksli struktūra: prefiksas sutampa VISAS, o data
+// turi būti reali YYYY-MM-DD data.
+func isChannelLogFile(name, chanPrefix string) bool {
+	// Senasis formatas (be datos).
+	if name == chanPrefix+".log" {
+		return true
+	}
+	if !strings.HasPrefix(name, chanPrefix+"-") {
+		return false
+	}
+	rest := name[len(chanPrefix)+1:]
+	if !strings.HasSuffix(rest, ".log") {
+		return false
+	}
+	date := strings.TrimSuffix(rest, ".log")
+	if len(date) != len("2006-01-02") {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", date)
+	return err == nil
 }
 
 // ---- IRC ryšys ----

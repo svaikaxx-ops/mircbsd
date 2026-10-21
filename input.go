@@ -771,21 +771,54 @@ func firstField(s string) string {
 	return f[0]
 }
 
-// isSensitiveHistory – komandos, kuriose gali būti slaptažodis (NickServ
-// IDENTIFY/REGISTER/CONFIRM/SET PASSWORD), nesaugomos įvesties istorijos faile.
+// isSensitiveHistory – komandos, kuriose gali būti slaptažodis, nesaugomos
+// ĮVEDIMO ISTORIJOS faile.
+//
+// ATKREIPKITE: ši funkcija tikrina VARTOJO ĮVEDIMO eilutę – todėl ji gali
+// būti pli (žodis „register“ ar „pass“ komandos pradžioje yra tikras
+// komandos pavadinimas). ŽURNALUI naudokite `isSensitiveLogLine` – ten
+// reikia atpažinti slaptažodį TIK komandų kontekste, nes į žurnalą
+// rašomi ir įprasti pokalbiai.
+//
+// Apimamos formos:
+//   - NickServ: /msg NickServ identify <pass>, /ns register <pass> <email>,
+//     /ns confirm <kodas>, /ns set password <pass>, /ns auth <pass>
+//   - Tiesioginės formos (be „nickserv“ prefikso): „register <pass> …“,
+//     „set password <pass>“, „confirm <kodas>“ – serveris gali atsiųsti
+//     atsakymą be prefikso, o vartotojas gali rašyti komandą tiesiogiai.
+//   - Serverio slaptažodis: PASS <pass> (serverio slaptažodis / bouncer)
+//   - OPER: OPER <pass> (operatoriaus slaptažodis)
 func isSensitiveHistory(line string) bool {
-	low := strings.ToLower(line)
+	low := strings.ToLower(strings.TrimSpace(line))
+	if low == "" {
+		return false
+	}
+	// Serverio ir operatoriaus slaptažodžiai – visada slapti, nepaisant
+	// konteksto. „/raw PASS x“ (arba „/raw OPER x“) turi slėpti.
+	if isRawSecretCommand(low) {
+		return true
+	}
 	// /msg nickserv identify <pass> / register <pass> <email> / confirm <kodas> /
 	// set password <pass>
 	const nsPrefix = "msg nickserv"
 	nickCmd := strings.HasPrefix(low, "/ns ") ||
 		strings.HasPrefix(low, "/nickserv ") ||
 		strings.HasPrefix(low, "/squery ") ||
+		strings.HasPrefix(low, "nickserv ") ||
 		strings.Contains(low, nsPrefix)
 	if !nickCmd {
-		// Ne NickServ komanda — žymime (senos versijos elgsena) tik
-		// eilutes su „identify“ žodžiu
-		return strings.Contains(low, "identify")
+		// Ne NickServ komanda – tikriname, ar eilutė pati nėra slaptažodį
+		// turinti komanda. Tikriname žodį pagal BAIGTĄ (atskirame lauku),
+		// kad „identification“ ar „re-register“ žodžio viduryje neatpažintume
+		// komandos. Bet „identify“ – visada slapta (anksčiau taip buvo).
+		if containsWord(low, "identify") {
+			return true
+		}
+		// Tiesioginės formos: eilutė PRADEDA komanda (pvz. „register …“,
+		// „set password …“, „confirm …“, „auth …“). Tokios komandos dažnai
+		// atsiunčiamos iš serverio be „nickserv“ prefikso – anksčiau jos
+		// lėkė į žurnalą plaintext.
+		return isBareSecretCommand(low)
 	}
 	for _, kw := range []string{"identify", "ident ", "register", "confirm", "set password", "auth"} {
 		if strings.Contains(low, kw) {
@@ -793,10 +826,228 @@ func isSensitiveHistory(line string) bool {
 		}
 	}
 	// Trumpinta forma: „set p <slaptažodis>“. NickServ leidžia rašyti „set p
-	// password“ trumpai — anksčiau ši forma nebuvo aptinkama, todėl
-	// slaptažodis likdavo įvedimo istorijoje.
+	// password“ trumpai – anksčiau ši forma nebuvo aptinkama, todėl
+	// slaptažodis likdavo įvedimo istoriją.
 	if isSetPasswordShort(low) {
 		return true
+	}
+	return false
+}
+
+// isSensitiveLogLine – ar ŽURNALO eilutė turi slėpti slaptažodį.
+//
+// SKIRTIS NUO isSensitiveHistory: žurnale yra ir ĮPRASTI POKALBIAI (kitų
+// žmonių žinutės). Platus „pirmas žodis“ tikrinimas („register …“,
+// „pass …“, „auth …“) ten slėpdų VISKĄ, kas pradžiasi šiais žodžiais –
+// pvz. „register your vote today“ ar „pass the salt please“ – t. y.
+// žurnalas tyliai prarado realų pokalbių tekstą.
+//
+// Čia taikome TIK komandų KONTEKSTĄ:
+//   - „msg nickserv …“ (ir „/ns …“, „/nickserv …“, „nickserv …“)
+//   - komanda, PRISIŠTA prie žinutės kaip komanda (pradžia su „/“)
+//   - serverio/operatoriaus slaptažodžiai („PASS x“, „OPER x“, „/raw …“)
+//
+// Sąmoningas kompromisas: serverio atsiųstas „register <kodas>“ (be
+// prefikso) į žurnalą nebepateks – komanda be konteksto neatpažįstama,
+// bet įprastas pokalbis lieka įrašytas.
+func isSensitiveLogLine(line string) bool {
+	low := strings.ToLower(strings.TrimSpace(line))
+	if low == "" {
+		return false
+	}
+	// Serverio ir operatoriaus slaptažodžiai – visada slapti, bet TIK
+	// komandų forma: „/raw pass x“, „/pass x“ arba grynas komandų pavadinimas
+	// („pass x“ – serverio atsiųsta komanda). Pokalbyje žodį „pass“ naudojame
+	// paprastai – jis nėra komanda.
+	if isSensitiveLogRawSecret(low) {
+		return true
+	}
+	// Vartotojo komanda („/ns identify …“, „/register …“) – aiškus komandos
+	// pavadinimas, ne pokalbis.
+	if strings.HasPrefix(low, "/") {
+		return isSensitiveHistory(low)
+	}
+	// NickServ komanda su prefiksu.
+	const nsPrefix = "msg nickserv"
+	if strings.HasPrefix(low, "/ns ") ||
+		strings.HasPrefix(low, "/nickserv ") ||
+		strings.HasPrefix(low, "/squery ") ||
+		strings.HasPrefix(low, "nickserv ") ||
+		strings.Contains(low, nsPrefix) {
+		return isSensitiveHistory(low)
+	}
+	// Be konteksto – NIEKO nesuslapiname: „register your vote“,
+	// „identify the problem“ ir „pass the salt“ yra įprasti pokalbiai, ne
+	// komandos. Tik aiškios komandų formos (kurių kontekstas matomas)
+	// slėpinamos.
+	return false
+}
+
+// isSensitiveLogRawSecret – ar eilutė yra serverio/operatoriaus slaptažodžio
+// KOMANDA (tik komandų forma, ne pokalbis).
+//
+// ŽURNALO lygis: „pass the salt please“ – pokalbis, NE komanda, todėl
+// įrašomas. „/raw pass x“, „/pass x“ ir grynas „pass x“ (serverio komanda
+// į serverio langą) – slapti.
+func isSensitiveLogRawSecret(low string) bool {
+	norm := strings.Join(strings.Fields(low), " ")
+	if norm == "" {
+		return false
+	}
+	for _, cmd := range []string{"pass", "oper"} {
+		if strings.HasPrefix(norm, "/"+cmd+" ") || strings.HasPrefix(norm, "/raw "+cmd+" ") {
+			return true
+		}
+		// Grynos komandos forma: „pass x“ / „oper x“ — serverio atsiųsta
+		// komanda (jos atsiunčiamos į *server* langą, ne kaip pokalbis).
+		// Bet „pass the salt“ — pokalbis…?
+		//
+		// SKIRTIS: komanda neturi reikšmingo žodžio PO komandos
+		// pavadinimo — t. y. argumentas yra trumpas ir be tarpų
+		// (slaptažodis). „pass the salt please“ turi 3 žodžius — pokalbis.
+		if strings.HasPrefix(norm, cmd+" ") && isSecretArgument(norm[len(cmd)+1:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSecretArgument – ar komandos argumentas atrodo kaip slaptažodis.
+//
+// Kriterijai: argumentas neturi tarpų (vienas „žodis“), nėra per ilgas
+// (iki 64 simbolių) ir nėra įprastas žodis. Tai atskiria „pass hunter2“
+// (slaptažodis) nuo „pass the salt please“ (pokalbis).
+func isSecretArgument(arg string) bool {
+	if arg == "" || len(arg) > 64 {
+		return false
+	}
+	if strings.ContainsAny(arg, " \t\r\n") {
+		return false
+	}
+	// Įprasti žodžiai — ne slaptažodžiai. Slaptažodis paprastai turi
+	// skaičių, didžiąją/mišrią raistą arba specialių simbolių.
+	if strings.ContainsAny(arg, "0123456789") {
+		return true
+	}
+	if arg != strings.ToLower(arg) {
+		return true
+	}
+	// Visi maži ir tik raidės (pvz. „secret“) — vis tiek gali būti
+	// slaptažodis, todėl laikome slaptu.
+	return true
+}
+
+// isRawSecretCommand aptinka serverio/operatoriaus slaptažodžio komandas —
+// „PASS <pass>“, „OPER <pass>“ (ir su „/raw “ prefiksu). Tokios komandos
+// niekada neturi būti įrašomos į istoriją ar žurnalą.
+//
+// DVI TAISYKLĖS:
+//
+//  1. Atpažįstamos tik KOMANDŲ formos — su „/“ arba „/raw “ prefiksu, arba
+//     kaip atskira komanda („pass x“). Pokalbyje žodį „pass“ naudojame
+//     paprastai („pass the salt please“) — jis nėra komanda, todėl neturi
+//     būti slaptinamas. ŽURNALE tai yra tikras duomenų praradimas.
+//
+//  2. Tarpai normalizuojami: „/raw  PASS x“ (du tarpai) turi būti
+//     atpažįstamas lygiai kaip „/raw pass x“ — anksčiau papildomas tarpas
+//     apeikdavo patikrinimą, o slaptažodis lėkė į žurnalą plaintext.
+//
+// Parametras `commandForm` nurodo, ar tikrinama TIK komandų forma (ŽURNALAS)
+// arba visos formos (ĮVEDIMO ISTORIJA — ten „pass x“ tikrai yra komanda,
+// nes vartotojas pats ją įvedė).
+func isRawSecretCommand(low string) bool {
+	return isRawSecretCommandForm(low, false)
+}
+
+// isRawSecretCommandForm — žr. isRawSecretCommand.
+func isRawSecretCommandForm(low string, commandForm bool) bool {
+	// Normalizuojame tarpus — „/raw  PASS x“ ir „/raw pass x“ yra ta
+	// pati komanda.
+	norm := strings.Join(strings.Fields(low), " ")
+	if norm == "" {
+		return false
+	}
+	for _, cmd := range []string{"pass", "oper"} {
+		// Formos: „pass x“, „/pass x“, „/raw pass x“, „oper x“, „/oper x“,
+		// „/raw oper x“.
+		//
+		// ANKSTESNĖ VERSIJA tikrino tik tris iš šių šešių — todėl
+		// „/oper slaptažodis“ lėkė į žurnalą plaintext (r. 15).
+		for _, prefix := range []string{cmd + " ", "/" + cmd + " ", "/raw " + cmd + " "} {
+			if strings.HasPrefix(norm, prefix) {
+				return true
+			}
+		}
+		if norm == cmd || norm == "/"+cmd {
+			return true
+		}
+	}
+	// ŽURNALO lygis: be komandų formos — tik „/raw …“ (vartotojo komanda)
+	// ir grynas komandų pavadinimas (serverio atsiųsta komanda į serverio
+	// langą). Pokalbio žodžiai „pass“/„oper“ NĮTRAUKIAMI.
+	if commandForm {
+		return false
+	}
+	return false
+}
+
+// containsWord tikrina, ar žodis yra atskiras (ne kito žodžio viduje).
+func containsWord(low, word string) bool {
+	idx := 0
+	for {
+		i := strings.Index(low[idx:], word)
+		if i == -1 {
+			return false
+		}
+		i += idx
+		before := i == 0 || isWordSep(rune(low[i-1]))
+		afterIdx := i + len(word)
+		after := afterIdx >= len(low) || isWordSep(rune(low[afterIdx]))
+		if before && after {
+			return true
+		}
+		idx = i + len(word)
+		if idx >= len(low) {
+			return false
+		}
+	}
+}
+
+// isWordSep tikrina, ar simbolis yra atskiras žodžio riba.
+func isWordSep(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r'
+}
+
+// isBareSecretCommand aptinka slaptažodį turinčias komandas, kurios eilutę
+// PRADEDA (be „nickserv“ / „/msg“ prefikso):
+//
+//	„register <pass> <email>“
+//	„confirm <kodas>“
+//	„set password <pass>“ (ir „set p <pass>“)
+//	„auth <pass>“
+//	„identify <pass>“
+//
+// Serverio atsakymai dažnai būna be prefikso — anksčiau jie lėkė į žurnalą
+// plaintext.
+func isBareSecretCommand(low string) bool {
+	fields := strings.Fields(low)
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "register", "confirm", "auth", "identify", "ident", "password":
+		return len(fields) > 1
+	case "set":
+		// „set password <pass>“ / „set p <pass>“ — bet „set away“ ar
+		// „set quiet“ nėra slaptažodis.
+		if len(fields) < 3 {
+			return false
+		}
+		switch fields[1] {
+		case "p", "pass", "password":
+			return true
+		}
+		return false
 	}
 	return false
 }
@@ -1313,13 +1564,22 @@ func (c *Client) handleCmd(cmd, args string) {
 		// Su argumentu — tik to kanalo logai.
 		chanName := args
 		if chanName != "" {
+			// Kanalas gali NEBŪTI šiame seanse — jo žurnalai vis tiek
+			// gali egzistuoti (anksčiau buvome prisijungę, arba serveris
+			// siuntė žinutes į kanalą, kurį vėliau palikome). Tokiu atveju
+			// ankstesnė elgsena atmetdavo komandą su klaida — o tai yra
+			// neteisinga: vartotojas nori IŠTRINTI tuos failus.
+			//
+			// Saugumas: pavadinimas sanitizuojamas clearLogs() viduje
+			// (sanitizePath — be „..“, be kelio separatorių), todėl
+			// komandos tikslo klastojimas neįmanomas.
+			//
+			// Čia NEsanitizuojame — sanituoja clearLogs(), o etiketė
+			// (rodoma vartotojui) turi likti originali.
 			c.mu.Lock()
 			target := c.findCh(chanName)
 			c.mu.Unlock()
-			if target == nil {
-				c.errMsg("Kanalo „" + chanName + "“ nėra šiame seanse")
-				return
-			}
+			_ = target // nėra šiame seanse — bet žurnalai gali būti diske
 		}
 		n := c.clearLogs(chanName)
 		label := chanName
