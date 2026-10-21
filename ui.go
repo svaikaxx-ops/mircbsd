@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ---- ANSI ----
@@ -556,7 +557,12 @@ func findChunk(original, plainChunk string) string {
 	if plainIdx == -1 {
 		return plainChunk
 	}
-	start, end := plainToOriginalBounds(original, plainIdx, len([]rune(trimmed)))
+	// strings.Index grąžina BAITŲ indeksą, o plainToOriginalBounds jį lygina
+	// su RUNE skaitikliu (plainSeen++ per raidę) — su ne-ASCII tekstu
+	// (lietuviškos raidės, emoji) baitų indeksas „per didelis“ ir apvyniotos
+	// eilutės riba nuslysta į kitas raides („begalingai“ → „galingai š“).
+	// Konvertuojame baitų indeksą į runę.
+	start, end := plainToOriginalBounds(original, utf8.RuneCountInString(plain[:plainIdx]), utf8.RuneCountInString(trimmed))
 	if start < 0 || end < 0 {
 		return plainChunk
 	}
@@ -961,20 +967,6 @@ func modePrefix(nick string, signsOpt ...string) string {
 	return ""
 }
 
-func nickOrder(n string, signsOpt ...string) int {
-	signs := defaultPrefixSigns
-	if len(signsOpt) > 0 {
-		signs = signsOpt[0]
-	}
-	if len(n) == 0 {
-		return len(signs)
-	}
-	if i := strings.IndexRune(signs, rune(n[0])); i >= 0 {
-		return i
-	}
-	return len(signs)
-}
-
 func sortNicks(nicks []string, signsOpt ...string) {
 	// Surūšiuoti pagal prefix'ų hierarchiją — signs imamas vieną kartą
 	// iš kvietėjo, kad visi nicks būtų surūšiuoti pagal tą patį PREFIX parametrą.
@@ -1035,6 +1027,23 @@ func nickLess(a, b, signs string) bool {
 
 const chanListWidth = 18
 const nickListWidth = 16
+
+// clampStatusLeft nukirpia statuso juostos kairiąją dalį iki laisvos vietos
+// (w minus statusRight plotis, ląstelėmis) ir grąžina tarpų kiekį iki
+// dešinės dalies — kitaip ilgas kanalo vardas perlenkia juostą į antrą
+// eilutę.
+func clampStatusLeft(statusLeft, statusRight string, w int) (string, int) {
+	maxLeft := w - stringWidth(statusRight)
+	if maxLeft < 0 {
+		maxLeft = 0
+	}
+	statusLeft = truncateWidth(statusLeft, maxLeft)
+	pad := maxLeft - stringWidth(statusLeft)
+	if pad < 0 {
+		pad = 0
+	}
+	return statusLeft, pad
+}
 
 func (c *Client) draw() {
 	c.mu.Lock()
@@ -1124,10 +1133,10 @@ func (c *Client) draw() {
 	}
 	statusRight := " PgUp/Dn:scroll Ctrl+N/P:kan Ctrl+←→:žodis Tab:AC /help "
 	statusLeft = sanitizeText(statusLeft)
-	pad := w - stringWidth(statusLeft) - stringWidth(statusRight)
-	if pad < 0 {
-		pad = 0
-	}
+	// statusLeft kirpimas iki laisvos vietos: ilgas kanalo pavadinimas
+	// (priešiškas serveris, ilgio ribos nėra) kitaip perlenkia statuso
+	// juostą į antrą eilutę ir sutrikdo temos/paieškos braižymą.
+	statusLeft, pad := clampStatusLeft(statusLeft, statusRight, w)
 	out.WriteString(statusLeft + strings.Repeat(" ", pad) + statusRight + ansiReset)
 	row++
 
@@ -1226,6 +1235,18 @@ func (c *Client) draw() {
 				badge := fmt.Sprintf("%d", st.unread)
 				if st.highlight > 0 {
 					badge = "!" + fmt.Sprintf("%d", st.highlight)
+				}
+				// Badge ribojamas iki eilutėje likusio ploto: milžiniškas
+				// unread (100000+) kitaip išlenda už „│“.
+				maxBadge := chanListWidth - 1 - len(fkeyPrefix) - unreadW
+				if maxBadge < 1 {
+					maxBadge = 1
+				}
+				if stringWidth(badge) > maxBadge {
+					badge = truncateWidth(badge, maxBadge)
+					if badge == "" {
+						badge = "+"
+					}
 				}
 				label = " " + fkeyPrefix + fitWidth(displayName, unreadW) + badge
 			}

@@ -496,7 +496,12 @@ type Client struct {
 	lastDrawn    *Channel // kuriuo kanalu paskutinį kartą braižyta (istorijos užšaldymui)
 
 	writeCh chan string
-	redraw  chan struct{}
+	// writeDone — rašytojos goroutine užsibaigimo signalas (po buferio
+	// flush). writeStopFn — dvigubam close apsaugotas writeStop uždarymas
+	// (/quit + nutrūkimas tvarko tą pačią jungtimi).
+	writeDone   chan struct{}
+	writeStopFn func()
+	redraw      chan struct{}
 
 	oldState *term.State
 	width    int
@@ -1285,9 +1290,9 @@ func (c *Client) logMessage(logDir, server, chanName string, m Message) {
 	// PRIVMSG man :set password …“) — tada VISAS kūnas yra komanda, todėl
 	// jį tikriname kaip NickServ komandą (platis „pirmas žodis“ tikrinimas
 	// čia leistinas — kontekstas aiškus).
-	nickIsServ := strings.EqualFold(nick, "NickServ") ||
-		strings.EqualFold(nick, "nickserv") ||
-		strings.EqualFold(nick, "NickServ")
+	// EqualFold neskiria raidžių dydžio — vienas kvietimas dengia ir
+	// „NickServ“, ir „nickserv“ (anksčiau trys dublioti variantai).
+	nickIsServ := strings.EqualFold(nick, "NickServ")
 	sensitive := isSensitiveLogLine(plain) ||
 		isSensitiveLogLine(nick) ||
 		isSensitiveLogLine(plain+" "+nick)
@@ -1483,6 +1488,26 @@ func (c *Client) send(line string) {
 	}
 }
 
+// finishWrites praneša aktyvios jungties rašytojai goroutine baigti darbą
+// (buferio flush) ir jos palaukia (daugiausia timeout) — naudojama /quit'e,
+// kol procesas dar gyvas: kitaip QUIT eilutė gali likti rašymo buferio
+// viduje ir kiti vartotojai QUIT nematys. Dvigubas writeStop uždarymas
+// (iš čia ir iš nutrūkimo tvarkos) apsaugotas sync.Once.
+func (c *Client) finishWrites(timeout time.Duration) {
+	c.mu.Lock()
+	stopW, done := c.writeStopFn, c.writeDone
+	c.mu.Unlock()
+	if stopW != nil {
+		stopW()
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(timeout):
+		}
+	}
+}
+
 // startConnect nutraukia senąjį ryšį ir pakuria naują jungimo ciklą.
 // connectGen padidinimas: senos connectLoop/doConnect goroutines tikrindamos
 // generaciją pasitraukia (be to read() cikle pasibaigia nuo conn.Close()).
@@ -1609,6 +1634,9 @@ func (c *Client) doConnect(gen int) {
 	// Nauja writeCh kiekvienam prisijungimui — sena goroutine nebepavogs žinučių
 	newWriteCh := make(chan string, 256)
 	writeStop := make(chan struct{})
+	var writeStopOnce sync.Once
+	stopWrites := func() { writeStopOnce.Do(func() { close(writeStop) }) }
+	writeDone := make(chan struct{})
 	c.mu.Lock()
 	if c.connectGen != gen {
 		// Nuo dial pradžios buvo /connect / /reconnect — ši jungtis nebeaktuali
@@ -1620,6 +1648,8 @@ func (c *Client) doConnect(gen int) {
 	c.connected = true
 	c.lastPong = time.Now()
 	c.writeCh = newWriteCh
+	c.writeDone = writeDone
+	c.writeStopFn = stopWrites
 	c.mu.Unlock()
 
 	c.mu.Lock()
@@ -1639,12 +1669,17 @@ func (c *Client) doConnect(gen int) {
 	// kick/ban ir nuo serverio išmetimo daugiaeilio pasta metu).
 	go func() {
 		buf := bufio.NewWriter(conn)
+		// writeDone uždaromas VISADA išėjimo metu — PO buferio flush. Per jį
+		// /quit laukia, kad QUIT eilutė tikrai išsiųsta (procesas priešingu
+		// atveju gali pasibaigti anksčiau nei rašytoja spėja flush'inti).
+		defer close(writeDone)
 		sent := 0 // eilutės šioje sekundėje
 		t0 := time.Now()
 		for {
 			select {
 			case line, ok := <-newWriteCh:
 				if !ok {
+					buf.Flush()
 					return
 				}
 				if now := time.Now(); now.Sub(t0) >= time.Second {
@@ -1739,7 +1774,7 @@ func (c *Client) doConnect(gen int) {
 	c.readLoop(reader)
 
 	close(pingStop)
-	close(writeStop)
+	stopWrites()
 	c.mu.Lock()
 	// Sena jungtis gali nutrūkti PO to, kai jau įsteigta nauja (vartotojas
 	// spaudė /connect). Tokiu atveju šio teardown'o negriebti naujos
@@ -2153,7 +2188,14 @@ func (c *Client) parseIRC(line string) {
 			_, signs, modes, _, chanModes := c.isupSnapshot()
 			c.mu.Lock()
 			ch := c.findCh(target)
-			if ch != nil && len(params) > 2 {
+			if ch == nil {
+				// Kanalo, kurio NESAME, MODE NEKURIA lango (kaip 332/353):
+				// žemiau addMsg viduje ensureCh sukurtų langą — priešiškas
+				// serveris MODE srautu prikurtų šimtą tuščių langų.
+				c.mu.Unlock()
+				return
+			}
+			if len(params) > 2 {
 				// params[2..] = argumentai mode raidėms. Privalime skaičiuoti
 				// VISUS mode, kurie imasi argumento (o/v/h/q/a nickams; b, k,
 				// l, e, I... irgi turi parametrą) — kitaip indeksas „nuklysta“
@@ -2230,6 +2272,17 @@ func (c *Client) parseIRC(line string) {
 		if len(text) >= 2 && strings.HasPrefix(text, "\x01") && strings.HasSuffix(text, "\x01") {
 			inner := text[1 : len(text)-1]
 			if strings.HasPrefix(inner, "ACTION ") {
+				// echo-message: serveris atsiunčia mūsų pačių žinutes ATGAL.
+				// /me atspausdinama lokaliai iš karto (input.go) — serverio
+				// AIDAS atsalinti, kitaip veiksmas atsiras DUKART (žinutes
+				// PRIVMSG atsalindavo echo filtras žemiau, o ACTION grįždavo
+				// anksčiau — iki apsaugos).
+				c.mu.Lock()
+				actionEcho := c.activeCaps["echo-message"] && c.nickEqual(fromNick, c.nick)
+				c.mu.Unlock()
+				if actionEcho {
+					return
+				}
 				action := inner[7:]
 				dest := target
 				if c.nickEqual(target, me) {
@@ -2365,7 +2418,10 @@ func (c *Client) parseIRC(line string) {
 		ch := p(1)
 		count := p(2)
 		topic := stripIRCFormat(p(3))
-		c.serverMsg(fmt.Sprintf("  %-30s %5s  %s", ch, count, topic))
+		// Stulpeliai pagal LĄSTELIŲ plotį (padRight, ne %-30s — fmt
+		// skaičiuoja runę: ne-ASCII kanalo vardai „kiekio“ stulpelį kiekvienoje
+		// eilutėje pastums skirtingai). Ta pati pataisa, kaip 352 (WHO).
+		c.serverMsg(fmt.Sprintf("  %s %5s  %s", padRight(sanitizeText(ch), 30), count, topic))
 	case "323":
 		c.serverMsg("── Sąrašo pabaiga ──")
 
@@ -2407,7 +2463,10 @@ func (c *Client) parseIRC(line string) {
 		c.serverMsg("── WHOWAS pabaiga ──")
 
 	case "251": // RPL_LUSERCLIENT
-		c.serverMsg(fmt.Sprintf("Serveris: %s vartotojų, %s nežinomų, %s kanalų", p(1), p(2), p(3)))
+		// Visi skaičiai — VIENAS galinis parametras (p(1) visas sakinys
+		// „There are N users and M invisible on K servers“); anksčiau jis buvo
+		// paskaidytas į tris laukus ir rodėsi sukiršinta eilutė.
+		c.serverMsg("Serveris: " + sanitizeText(p(1)))
 	case "252": // RPL_LUSEROP
 		c.serverMsg(fmt.Sprintf("Operatorių: %s", p(1)))
 	case "253": // RPL_LUSERUNKNOWN
@@ -2561,11 +2620,27 @@ func (c *Client) parseIRC(line string) {
 			saslAcked := false
 			c.mu.Lock()
 			for _, cap := range strings.Fields(capsStr) {
-				name := strings.ToLower(strings.TrimLeft(cap, "-"))
+				// ATUSISAKYMO ACK („CAP * ACK :-sasl“) — cap'as PAŠALINAMAS.
+				// Anksčiau „-“ buvo tiesiog nukerpmas ir atsisakymas
+				// AKTYVUODAVO cap'ą: priešiškas serveris, siųsdamas „:-sasl“
+				// niekada nesprašęs, apgyndavo saslPending apsaugą — klientas
+				// pats siųsdavo AUTHENTICATE PLAIN ir duodu slaptažodį.
+				if strings.HasPrefix(cap, "-") {
+					delete(c.activeCaps, strings.ToLower(cap[1:]))
+					continue
+				}
+				name := strings.ToLower(cap)
 				c.activeCaps[name] = true
 				if name == "sasl" {
 					saslAcked = true
 				}
+			}
+			// AUTHENTICATE PLAIN pradedame TIK jei PATYS užsižymėjome sasl'ą
+			// (capSASL būdavo nustatomas tik reikalaujant sasl'o su
+			// slaptažodžiu) — serverio savavališkas „ACK sasl“ be mūsų
+			// prašymo SASL negali pradėti slaptažodžio dialogo.
+			if !c.capSASL || c.saslPass == "" {
+				saslAcked = false
 			}
 			c.mu.Unlock()
 			if cont {

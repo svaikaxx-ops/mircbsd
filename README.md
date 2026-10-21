@@ -176,4 +176,4 @@ GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o mircbsd-linux .
 
 ## Versija
 
-v0.4.4 – lygiagretumo, ribų ir komandų tikslo pataisymai: data race (aktyvus kanalas, `draw()`, `AWAY`, `/keys`), žurnalo slaptažodžių nutekimas, gyvas terminalo sinkas per Tab-completion (OSC 52), kanalų su tarpais komandų tikslo klastojimas, PM flood užplėčiantis kanalų biudžetą, O(n²) nick'ų DoS, `CHANMODES` argumentų indeksai (zr. CHANGELOG.md)
+v0.4.6 – pilnos peržiūros pataisos: `findChunk` baitų/rune indeksų neatitikimas (apvyniotos lietuviškos žinutės prarasdavo raides), CAP ACK atsisakymo prefikso saugumo plyšis (SASL slaptažodžio nutekimas be prašymo), echo-message `/me` dubliavimas, `/quit` QUIT flush garantija, MODE kanalų kūrimo užplūdis, 251/322 formatavimas, statuso juostos kirpimas (žr. CHANGELOG.md)

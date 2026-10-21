@@ -1911,6 +1911,12 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 		if c.isConnected() {
 			c.send(fmt.Sprintf("QUIT :%s", msg))
+			// Palaukiame, kol rašytoja goroutine QUIT realiai išsiuntė ir
+			// flush'ino — kitaip procesas gali pasibaigti dar prieš send'o
+			// buferio įrašymą ir kiti vartotojai QUIT nematys (atrodys,
+			// kad nutrūko ryšys). Daugiausia 300 ms — ir taip eilė ištuštėja
+			// akimirksniu, laukimas tik apsauginis.
+			c.finishWrites(300 * time.Millisecond)
 		}
 		c.stop()
 

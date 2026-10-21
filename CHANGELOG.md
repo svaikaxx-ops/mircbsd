@@ -4,6 +4,61 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [0.4.6] – 2026-10-21 – pilnos atskitos peržiūros pataisos (8 radiniai)
+
+Penktoji peržiūra (pilna atskito peržiūros po merge — skaityti visi ~6 800
+eilučių iki galo). Visi ištaisyti, kiekvienas — su regresijos testu
+(`perziura_2026_10_21d_test.go`). findChunk testui patikrinta, kad su SENU
+kodų variantu jis tikrai sugautų klaidą („begalingai“ → „galingai š“ ir t. t.).
+
+### Taisyta (kritinis)
+
+- **`findChunk()` — baitų indeksas perduotas kaip rune indeksas** –
+  `strings.Index` grąžina **baitų** indeksą, o `plainToOriginalBounds` jį
+  lygina su **rune** skaitikliu (`plainSeen++` per raidę). Su ne-ASCII
+  tekstu (lietuviškos raidės, emoji) apvyniotos žinutės (2+ eilutės)
+  tęsinys rodydavo „nuslystus“ gabalus: „begalingai“ → „galingai š“,
+  „šokinėja“ → „kinėja“. Dabar indeksas konvertuojamas
+  (`utf8.RuneCountInString`).
+
+### Taisyta (saugumo)
+
+- **CAP ACK atsisakymo „-“ prefiksas NEBEAKTYVUOJA cap'o** – anksčiau
+  `TrimLeft(cap, "-")` tiesiog nukerpdavo minusą ir `CAP * ACK :-sasl`
+  aktyvuodavo sasl'ą, pradėdamas `AUTHENTICATE PLAIN` dialogą: priešiškas
+  serveris savavališku ACK galėtų gauti **SASL slaptažodį be mūsų prašymo**
+  (apeidamas `saslPending` apsaugą). Dabar „-“ prefiksas PAŠALINA cap'ą,
+  o AUTHENTICATE pradedamas TIK jei patys užsakėme sasl'ą (`capSASL` +
+  saslPass).
+
+### Taisyta (kiti)
+
+- **echo-message: savo `/me` AIDAS neberodomas dukart** – CTCP ACTION
+  filialas grįždavo iki echo filtro; dabar savo ACTION aidas atmetamas
+  (kito vartotojo `/me` nepakitęs).
+- **`/quit` dabar laukia, kol QUIT išsiunčiamas** – `finishWrites()`
+  praneša rašytojai goroutine baigti darbą (buferio flush) ir jos palaukia
+  (iki 300 ms); kitaip procesas gali pasibaigti dar prieš QUIT eilutės
+  išsiuntimą — kiti vartotojai matytų, ryšys nutrūko. writeStop uždarymas
+  apsaugotas `sync.Once` (dvigubas close /quit + nutrūkimo atveju be
+  panikos).
+- **MODE į neprijungtą kanalą NEBEKURIA lango** — kaip 332/353: priešiškas
+  serveris MODE srautu galėtų prikurti šimtą tuščių langų (addMsg viduje
+  `ensureCh` kūrė kanalą; dabar grįžtama dar prieš jį).
+- **251 (RPL_LUSERCLIENT) rodo pilną žinutę** – visi skaičiai — VIENAS
+  galinis parametras; anksčiau jis būdavo išskaidytas į tuščius laukus
+  („vartotojų,  nežinomų,  kanalų“).
+- **322 (LIST) stulpeliai pagal LĄSTELIŲ plotį** – `padRight(sanitize, 30)`
+  vietoj `%-30s` (fmt skaičiuoja runes: CJK/emoji kanalų vardai pastums
+  kiekio stulpelį skirtingai kiekvienoje eilutėje). Ta pati pataisa, kuri
+  anksčiau padaryta 352 (WHO).
+- **Statuso juostos kairysis kraštas nukirpiamas** (`clampStatusLeft()`) –
+  ilgas kanalo pavadinimas (ilgio ribos nėra — priešiškas serveris) kitaip
+  perlenkia juostą į antrą eilutę. Ir unread `badge` ribojamas iki eilei
+  likusio ploto (milžiniškas skaičius nebe išlenda už „│“).
+- **Negyvas kodas** – `nickOrder` (nepanaudotas) pašalintas;
+  `nickIsServ` — vienas `EqualFold` vietoj trijų dubliuojančių.
+
 ## [0.4.5] – 2026-10-21 – peržiūros prieš merge pataisos + klavišai
 
 Ketvirtoji peržiūra (code-review viso šakos diff'o) aptiko 10 radinių.
