@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -160,7 +161,11 @@ func (c *Client) handleKey(b []byte) {
 			c.queueRedraw()
 		case 'F': // Ctrl+End — kanalų sąrašo slinktis į apačią
 			c.mu.Lock()
+			// Offsetas turi būti leistinose ribose (žr. clampChanScrollLocked):
+			// kitaip handleMouse spustelėjimas perskaičiuoja NETEISINGĄ indeksą
+			// ir pasirenka ne tą kanalą (arba nieko).
 			c.chanScrollOff = len(c.channels)
+			c.clampChanScrollLocked()
 			c.mu.Unlock()
 			c.queueRedraw()
 		case 'C': // Ctrl+Right — žodis pirmyn
@@ -919,9 +924,20 @@ func isSensitiveLogRawSecret(low string) bool {
 
 // isSecretArgument – ar komandos argumentas atrodo kaip slaptažodis.
 //
-// Kriterijai: argumentas neturi tarpų (vienas „žodis“), nėra per ilgas
-// (iki 64 simbolių) ir nėra įprastas žodis. Tai atskiria „pass hunter2“
-// (slaptažodis) nuo „pass the salt please“ (pokalbis).
+// Kriterijai: argumentas neturi tarpų (vienas „žodis“) ir turi
+// SLAPTAŽODŽIO FORMĄ — skaičių, didžiąją/mišrią raistą arba specialų
+// simbolį („hunter2“, „Secret1!“, „my!pass“). Tai atskiria „pass hunter2“
+// (slaptažodis) nuo „pass the“ (pokalbis).
+//
+// Anksčiau KIEKVIENAS vieno žodžio argumentas buvo laikomas slaptu
+// (skaitmenų/raidžių patikros buvo negyvas kodas — visi keliai grąžindavo
+// true): pokalbio eilutė „pass the“ žurnale taptų „[slaptažodis
+// paslėptas]“ — tikras pokalbio tekstas prarastas.
+//
+// KOMPROMISAS: visos mažųjų raidžių slaptažodis („hunter2“ be skaitukos...
+// t. y. „mysecret“, trumpas) atpažįstamas kaip slaptažodis tik tada, kai
+// jis ilgesnis nei žodžiuose įprastai (slaptu, jei ilgesnis nei 10) —
+// trumpi žodžiai („the“, „me“, „salt“) yra pokalbis.
 func isSecretArgument(arg string) bool {
 	if arg == "" || len(arg) > 64 {
 		return false
@@ -929,17 +945,27 @@ func isSecretArgument(arg string) bool {
 	if strings.ContainsAny(arg, " \t\r\n") {
 		return false
 	}
-	// Įprasti žodžiai — ne slaptažodžiai. Slaptažodis paprastai turi
-	// skaičių, didžiąją/mišrią raistą arba specialių simbolių.
+	// Slaptažodžio FORMA — skaitmenys, didžiosios raidės (arba mišinys)
+	// arba specialūs simboliai visada kelia įtarimą.
 	if strings.ContainsAny(arg, "0123456789") {
 		return true
 	}
 	if arg != strings.ToLower(arg) {
 		return true
 	}
-	// Visi maži ir tik raidės (pvz. „secret“) — vis tiek gali būti
-	// slaptažodis, todėl laikome slaptu.
-	return true
+	if len(arg) != len(strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, arg)) {
+		// Yra specialių simbolių („my!pass“) — greičiausiai slaptažodis.
+		return true
+	}
+	// Visos mažosios raidės — įprastas žodis (pokalbis), NE slaptažodis;
+	// išimtis — ilgos eilutės („myverysecretpass“), kurios žodžių sąraše
+	// nebetelpa.
+	return len([]rune(arg)) > 10
 }
 
 // isRawSecretCommand aptinka serverio/operatoriaus slaptažodžio komandas —
@@ -957,15 +983,10 @@ func isSecretArgument(arg string) bool {
 //     atpažįstamas lygiai kaip „/raw pass x“ — anksčiau papildomas tarpas
 //     apeikdavo patikrinimą, o slaptažodis lėkė į žurnalą plaintext.
 //
-// Parametras `commandForm` nurodo, ar tikrinama TIK komandų forma (ŽURNALAS)
-// arba visos formos (ĮVEDIMO ISTORIJA — ten „pass x“ tikrai yra komanda,
-// nes vartotojas pats ją įvedė).
+// Istorijos lygis: „pass x“ čia TIKRAI yra komanda — vartotojas pats ją
+// įvedė (žurnalui žr. isSensitiveLogRawSecret, kur pokalbio forma
+// įvertinama atskirai).
 func isRawSecretCommand(low string) bool {
-	return isRawSecretCommandForm(low, false)
-}
-
-// isRawSecretCommandForm — žr. isRawSecretCommand.
-func isRawSecretCommandForm(low string, commandForm bool) bool {
 	// Normalizuojame tarpus — „/raw  PASS x“ ir „/raw pass x“ yra ta
 	// pati komanda.
 	norm := strings.Join(strings.Fields(low), " ")
@@ -977,7 +998,7 @@ func isRawSecretCommandForm(low string, commandForm bool) bool {
 		// „/raw oper x“.
 		//
 		// ANKSTESNĖ VERSIJA tikrino tik tris iš šių šešių — todėl
-		// „/oper slaptažodis“ lėkė į žurnalą plaintext (r. 15).
+		// „/oper slaptažodis“ lėkė į žurnalą plaintext.
 		for _, prefix := range []string{cmd + " ", "/" + cmd + " ", "/raw " + cmd + " "} {
 			if strings.HasPrefix(norm, prefix) {
 				return true
@@ -986,12 +1007,6 @@ func isRawSecretCommandForm(low string, commandForm bool) bool {
 		if norm == cmd || norm == "/"+cmd {
 			return true
 		}
-	}
-	// ŽURNALO lygis: be komandų formos — tik „/raw …“ (vartotojo komanda)
-	// ir grynas komandų pavadinimas (serverio atsiųsta komanda į serverio
-	// langą). Pokalbio žodžiai „pass“/„oper“ NĮTRAUKIAMI.
-	if commandForm {
-		return false
 	}
 	return false
 }
@@ -1225,8 +1240,21 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		c.mu.Lock()
-		c.ensureCh(chName)
-		c.mu.Unlock()
+		if ch := c.ensureCh(chName); ch == nil {
+			// Atmetimas (ribose ar negaliojantis vardas) — įspėjimą
+			// sunaudojame TIK kai įsimintas vardas atitinka ŠITĄ kanalą;
+			// kitaip (kai priežastis kita) palikume įspėjimą nevalytą —
+			// jis priklauso savam kanalui (žr. addMsg).
+			if hit := c.chanLimitHit; hit != "" && hit == sanitizeChanName(chName) {
+				c.chanLimitHit = ""
+				c.mu.Unlock()
+				c.errMsg(fmt.Sprintf("ĮSPĖJIMAS: pasiektas kanalų limitas — kanalas „%s“ neatidarytas", hit))
+			} else {
+				c.mu.Unlock()
+			}
+		} else {
+			c.mu.Unlock()
+		}
 		if c.isConnected() {
 			if len(parts) == 2 && parts[1] != "" {
 				// KANALO RAKTAS — jis įrašomas į JOIN komandą kaip
@@ -2004,6 +2032,11 @@ func (c *Client) handleMouse(b []byte) {
 		c.mu.Lock()
 		top := c.msgAreaTop
 		nChan := len(c.channels)
+		// Slinktis tarpininkauja perskaičiuodamas ekrano eilutę į kanalo
+		// indeksą — offsetas PRIEŠ tai SUGRUBINAMAS (terminalo perdarymas
+		// gali būti sumažinęs msgRows nuo paskutinio slinkties keitimo;
+		// draw() sugrubina tik savo kopiją — čia naudojame įRAŠYTĄ vertę).
+		c.clampChanScrollLocked()
 		chanScroll := c.chanScrollOff
 		c.mu.Unlock()
 		// Kanalų sąrašas gali būti paslinktas — spustelėjusio eilutės

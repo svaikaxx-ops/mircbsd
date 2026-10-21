@@ -4,6 +4,69 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [0.4.5] – 2026-10-21 – peržiūros prieš merge pataisos
+
+Ketvirtoji peržiūra (code-review viso šakos diff'o) aptiko 10 radinių.
+Visi ištaisyti, kiekvienas — su regresijos testu (`perziura_2026_10_21c_test.go`).
+
+### Taisyta (kritiniai)
+
+- **Skaitiklio buferis 512 → 4096 (`maxReadBuffer`)** – serverio pridėti
+  IRCv3 tag'ai (`server-time`, `msgid` — kuriuos patys prašome per CAP LS)
+  neįeina į eilutės 512 baitų biudžetą, todėl su 512 baitų buferiu kiekviena
+  reali žinutė su tag'ais (~550 B) sukelia `bufio.ErrBufferFull` ir būdavo
+  **atmetama — pokalbis prarastas**. Dabar buferis 4096; ilgesnės eilutės
+  vis tiek atmestamos (DoS apsauga lieka).
+
+- **`chanScrollOff` sugrubinamas kiekviename naudotojui** – Ctrl+End,
+  `switchCh` ir `handleMouse` anksčiau naudojo/įrašinėjo nesugrubintą
+  offsetą → po overscroll'o **pelės kanalų pasirinkimas** per skaiciuotų
+  NETEISINGĄ indeksą (pasirinkdavo ne tą kanalą ar nieko). Dabar
+  `clampChanScrollLocked()` visiems.
+
+- **`nickEqual()` (CASEMAPPING=ascii) suliejimas sutampa su `nickSet`
+  raktais** – anksčiau rinkinys naudojo `asciiFold` (ne-ASCII neliečia),
+  o `nickEqual` — `strings.EqualFold` (sulieja ir ne-ASCII: Ž ≡ ž). Dviejų
+  skirtingų fold'ų pasėkoje QUIT „žilvinas“ rinkinyje atrastų nick'ą
+  „Žilvinas“, o `findNickIdx` pagal raktą jo NESURASTŲ → **ghost nick'ai**.
+  Dabar abu naudoja tą patį `foldEqualIRC()` — vieną fold'o šaltinį.
+
+- **332 (tema), TOPIC ir KICK nebekuria kanalo, kurio nesame** – kaip ir
+  353: priešiškas serveris srauto numerikais galėtų prikurti langų ir
+  atimti kanalų biudžetą. Anksčiau apsauginis `findCh` buvo be reikšmės —
+  po jo sekejo `addMsg`, kuris vis tiek kūrė per `ensureCh`.
+
+### Taisyta (kita)
+
+- **QUIT o(n²) pašalintas ir iš trynimo kelių** – kanalų paieška QUIT metu
+  per `nickSet` rinkinį (O(1) per kanalą), o `findNickIdx` palyginimas —
+  be atminties alokacijų (`foldEqualIRC` rune/baitais, ne `strings.Map`
+  kas elementui). 5 000 QUIT'ų 5 000-nick kanale nebeužstringą kliento.
+
+- **Kanalų limito įspėjimas sunaudojamas tik teisingoje priežastyje** –
+  klastoto tikslo (pvz. kanalas su tarpu) atmetimas anksčiau „suvalgydavo“
+  įspėjimą apie KITA kanalą pasiektą limitą. Dabar `chanLimitHit` naudojamas
+  tik kai įsimintas vardas atitinka atmestą kanalą (addMsg, JOIN, /join).
+
+- **`switchCh` slinktis pagrįsta TIKRU matomų eilučių skaičiumi** –
+  `visibleChannelRowsLocked()` skaičiuoja `msgAreaTop` taip pat, kaip
+  `draw()` (temos juosta +1, paieškos juosta +1). Anksčiau buvo kieta
+  `height-4` — neatitiko be temos arba su paieškos juosta → slinktis
+  drift'ino nuo ekrano.
+
+- **Unread žymos stulpelis ląstelėmis** – `fitWidth` vietoje `%-*s`
+  (baitais): kitaip ne-ASCII kanalo pavadinimai su unread žyma išstumdavo
+  už `chanListWidth` ir šoninė juosta kryptų.
+
+- **Slaptažodžio heuristika (log'o lygiu) nebe slaptina įprastų pokalbių** –
+  `isSecretArgument` buvo negyvas kodas (visi keliai → true): eilutė
+  „pass the“ žurnale tamstoma „[slaptažodis paslėptas]“. Dabar forma
+  tikra: skaičius / didžioji raidė / specialus simbolis (arba ilgas
+  mažųjų žodis >10). Negyvas `commandForm` parametras pašalintas.
+
+- **WHO (352/354) stulpeliai** – flagas ATSKIRAS tarpu (anksčiau „Hbob“
+  iš „H“+«bob“), kanalo stulpelis `fitWidth` pagal ląstelių plotį.
+
 ## [0.4.4] – 2026-10-21 – lygiagretumo, ribų ir komandų tikslo pataisymai
 
 Tretioji peržiūra (po 23 ir 24 radinių) aptiko dar 18 radinių — daugiausia

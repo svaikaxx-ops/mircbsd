@@ -25,6 +25,18 @@ import (
 // (antraštė + CRLF + saugumo suma) palieka tiek baitų tekstui.
 const maxLineBytes = 512
 
+// maxReadBuffer – serverio skaitiklio (readLoop) bufferio dydis.
+//
+// DAUGIAU nei IRC 512 eilutės limitas (maxLineBytes): serverio PRIDĖTI
+// IRCv3 tag'ai (server-time, msgid — kuriuos patys prašome per CAP LS)
+// NEĮEINA į 512 eilutės biudžetą, todėl realios žinutės su tag'ais yra
+// ~550+ baitų. Su 512 baitų bufferiu kiekviena tokia eilutė sukelia
+// bufio.ErrBufferFull → eilutė atmestama ir POKALBIS PRARANDAMAS.
+//
+// Priešiškas serveris vis tiek negali siųsti be galo ilgos eilutės —
+// ilgesnė nei maxReadBuffer atmestama (žr. readLoop).
+const maxReadBuffer = 4096
+
 // ircSendBurst – didžiausias eilučių skaičius per sekundę išėjimui (flood apsauga).
 const ircSendBurst = 5
 
@@ -258,9 +270,11 @@ func lowerIRC(r rune) rune {
 //
 // Naudojamas, kai serveris paskelbia CASEMAPPING=ascii: lyginami TIK
 // ASCII raidės (A–Z → a–z), ne-ASCII (lietuviškos) lieka TOKIOS, kokios
-// yra. Tai tiksliai atitinka nickEqual() elgseną „ascii“ atveju.
+// yra. Tai tiksliai atitinka nickEqual() elgseną „ascii“ atveju (jie abu
+// naudoja TĄ PATĮ asciiFold — kitaip rinkinio raktai ir lygybės sprendimai
+// išsiskirtų ir nick'ai liktų „ghost'ais“).
 //
-// strings.ToLower čia NEDAROMAME — jis lygina ir ne-ASCII raides
+// strings.ToLower čia NEDAROME — jis lygina ir ne-ASCII raides
 // („Žilvinas“ → „žilvinas“), o ASCII serveriui jos yra SKIRTINGOS.
 func asciiFold(s string) string {
 	hasUpper := false
@@ -291,14 +305,72 @@ func (c *Client) nickEqual(a, b string) bool {
 
 // nickEqual — laisva versija su casemapping parametru (naudojama
 // kanale, kur nėra prieigos prie Client).
+//
+// CASEMAPPING: pagal RFC 1459 lygina „[“ ≡ „{“, „]“ ≡ „}“, „\\“ ≡ „|“;
+// pagal „ascii“ — tik ASCII raidės (A–Z → a–z), ne-ASCII SKIRTINGOS.
+//
+// SVARBŪ: abu atvejai naudoja TĄ PATĮ fold'ą, kokiu nickSet raktai
+// sudaromi (normNick):
+//   - „ascii“: strings.EqualFold čia NEGALI — jis sulieja ir ne-ASCII
+//     raides („Žilvinas“ ≡ „žilvinas“), o rinkinys jų NESULIEJA (asciiFold)
+//     → QUIT/parts ieškotų nicko, KURIO rinkinyje NĖRA („ghost nick'ai“:
+//     įvykis atrodo suvaldytas, bet nick'as lieka sąraše, nes
+//     findNickIdx pagal raktą jo nesuranda).
+//   - „rfc1459“: foldEqualIRC rune po rune — tas pats kaip
+//     strings.Map(lowerIRC) palyginimas, bet be alokacijų.
 func nickEqual(a, b, cm string) bool {
 	if a == "" || b == "" {
 		return a == b
 	}
-	if cm == "ascii" {
-		return strings.EqualFold(a, b)
+	return foldEqualIRC(a, b, cm == "ascii")
+}
+
+// foldEqualIRC — nick'ų lygybė pagal casemapping'ą BE atminties
+// alokacijų.
+//
+// Naudojama cikluose ant tūkstančių nick'ų (QUIT/PART/MODE per visą
+// kanalo sąrašą): strings.Map kiekvienam elementui kurtų po laikinąją
+// eilutę — 5 000 QUIT'ų 5 000-nick kanale tai milijonai alokacijų ir
+// kliento užstrigimas.
+func foldEqualIRC(a, b string, ascii bool) bool {
+	if ascii {
+		// ASCII fold baitais — UTF-8 ne-ASCII baitai niekada nepatenka
+		// į 'A'-'Z' diapazoną (0x41–0x5A), todėl jie lieka nesugadinti.
+		if len(a) != len(b) {
+			return false
+		}
+		for i := 0; i < len(a); i++ {
+			ca, cb := a[i], b[i]
+			if ca >= 'A' && ca <= 'Z' {
+				ca += 'a' - 'A'
+			}
+			if cb >= 'A' && cb <= 'Z' {
+				cb += 'a' - 'A'
+			}
+			if ca != cb {
+				return false
+			}
+		}
+		return true
 	}
-	return strings.Map(lowerIRC, a) == strings.Map(lowerIRC, b)
+	// RFC 1459 — rune po rune. strings.Map(lowerIRC, a) ==
+	// strings.Map(lowerIRC, b) ekvivalentas, tik be alokacijų.
+	ai, bi := 0, 0
+	for {
+		ra, sa := utf8.DecodeRuneInString(a[ai:])
+		rb, sb := utf8.DecodeRuneInString(b[bi:])
+		if sa == 0 && sb == 0 {
+			return true
+		}
+		if sa == 0 || sb == 0 {
+			return false
+		}
+		if lowerIRC(ra) != lowerIRC(rb) {
+			return false
+		}
+		ai += sa
+		bi += sb
+	}
 }
 
 // isChannel arba pavadinimas yra kanalas pagal serverio CHANTYPES.
@@ -936,16 +1008,26 @@ func (c *Client) addMsg(chanName string, m Message) {
 		// RIBOS ATMETA — pranešimas PRARADIMAS. Anksčiau jis tyliai
 		// išnykdavo (vartotojas manydavo, kad kanale nieko nėra).
 		// Dabar bent vieną kartą pranešame, kad žinutė nepristatyta.
-		// RIBOS PRIEŽASTIS — išsaugome, KAD ir kokia buvo (tikslus
-		// įspėjimas). Bet jei atmetimo priežastis buvo kita (pvz.
-		// kanalo pavadinimas su tarpais) — įspėjimo NIEKADA nėra.
-		limitHit := c.chanLimitHit
-		c.chanLimitHit = ""
+		//
+		// Bet įspėjimo chanLimitHit NENAUDOJAME bet kokiam atmetimui:
+		// ensureCh jį nustato TIK kai atmetimas dėl RIBOS. Kanalo
+		// pavadinimas su tarpais ar valdymo simboliais atmetamas KITOS
+		// priežasties — jei jo atžvilgiu sunaudotume pasiliktą kito
+		// kanalo įspėjimą, vartotojas gautų apgavystę („limitas“ ant
+		// nesusijusio klastoto tikslo). Todėl įspėjimą sunaudojame tik
+		// tada, kai įsimintas vardas atitinka ŠITĄ kanalą.
+		// (c.mu JAU užrakintas — addMsg pradžioje.)
+		limitHit := ""
+		if hit := c.chanLimitHit; hit != "" && hit == sanitizeChanName(chanName) {
+			c.chanLimitHit = ""
+			limitHit = hit
+		}
+		// ĮSPĖJIMAS nurodo TIKSLŲ kanalą (limitHit), o ne atmetimo kanalą
+		// — jie gali skirtis (pvz. riba pasiekta kanale A, o žinutė
+		// atmesta kanale B). serverMsg() per addMsg įeina su RAKINTU —
+		// todėl pranešimas iškviečiamas ATVERTAS TARPELYJE.
 		c.mu.Unlock()
 		if limitHit != "" {
-			// ĮSPĖJIMAS nurodo TIKSLŲ kanalą (limitHit), o ne atmetimo
-			// kanalą — jie gali skirtis (pvz. riba pasieusta kanale A,
-			// o žinutė atmetta kanale B).
 			c.serverMsg("ĮSPĖJIMAS: pasiektas kanalų limitas — žinutė NEPRISTATYTA (" + sanitizeText(limitHit) + ")")
 		}
 		return
@@ -1027,22 +1109,76 @@ func (c *Client) switchCh(idx int) {
 		c.nickScrollOff = 0
 		c.searchMode = false
 		// Kanalų sąrašo slinktis — aktyvus kanalas turi būti MATOMAS.
-		// (Slikties ribą skaičiuojame čia, po c.mu — visibleChannelRows()
-		// ima patį c.mu, todėl negalima jo iškviesti laikant užrakintą.)
-		rows := c.height - 4
-		if rows < 1 {
-			rows = 1
-		}
+		//
+		// Eilučių skaičius skaičiuojamas TAIP PAT, kaip draw() (žr.
+		// visibleChannelRowsLocked): temos/paieškos juostos keičia
+		// msgAreaTop. Anksčiau čia buvo KiETA c.height-4 — ji neatitiko
+		// draw() be temos arba su paieškos juosta → slinktis drift'indavo
+		// nuo to, ką iš tikrųjų rodo ekranas.
 		if idx < c.chanScrollOff {
 			// Peršokome į viršų — slinktis grįžta, kad kanalas matytųsi.
 			c.chanScrollOff = idx
-		} else if idx >= c.chanScrollOff+rows {
+		} else if idx >= c.chanScrollOff+c.visibleChannelRowsLocked() {
 			// Peršokome žemyn — slinktis nusikelia iki kanalo.
 			c.chanScrollOff = idx
 		}
+		// O kai aktyvus kanalas lieka MATOMU langelyje — offsetas vis tiek
+		// turi būti leistinose ribose (kitaip handleMouse spustelėjimas
+		// perskaičiuotų NETEISINGĄ indeksą ir pasirinktų ne tą kanalą).
+		c.clampChanScrollLocked()
 	}
 	c.mu.Unlock()
 	c.queueRedraw()
+}
+
+// visibleChannelRowsLocked apskaičiuoja, KIEK kanalų eilučių draw()
+// atvaizduos šoninėje juostoje (msgRows) su DABARTINE būsena. Pavyzdys
+// turi sutapti su msgAreaTop skaičiavimu draw() (ui.go):
+//
+//	statuso juosta: 1 eilutė (row=1) → pirmoji sąrašo eilutė yra row=2
+//	temos juosta:   +1 (tik kai aktyviame kanale tema netuščia)
+//	paieškos juosta:+1 (tik kai ieškoma)
+//
+// Taigi msgAreaTop = 2 + (tema? 1 : 0) + (paieška? 1 : 0), o msgRows =
+// (h-2) - msgAreaTop + 1 = h - 1 - msgAreaTop.
+//
+// TIK SU c.mu užrakintu (naudoja activeChanLocked).
+func (c *Client) visibleChannelRowsLocked() int {
+	top := 2
+	if cur := c.activeChanLocked(); cur != nil && cur.topic != "" {
+		top++
+	}
+	if c.searchMode {
+		top++
+	}
+	rows := c.height - 1 - top
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
+
+// clampChanScrollLocked suvaržo chanScrollOff iki [0, len(channels)-rows].
+//
+// Offsetas gali pasenti net nespaudus nieko: terminalas PERDARYMAS
+// (sumažėjęs aukštis) sumažina msgRows, tad senas offsetas tampa per
+// didelis. draw() sugrubina tik SAVO vietinę kopiją — o handleMouse
+// naudoja įRAŠYTĄ vertę perskaičiuodamas indekso poziciją, todėl
+// KIEKVIENAS naudotojas turi būti sugrubintas (kitaip spustelėjimas
+// perskaičiuoja NETEISINGĄ indeksą ir pasirenka ne tą kanalą).
+//
+// TIK SU c.mu užrakintu (naudoja visibleChannelRowsLocked → c.mu).
+func (c *Client) clampChanScrollLocked() {
+	maxChanScroll := len(c.channels) - c.visibleChannelRowsLocked()
+	if maxChanScroll < 0 {
+		maxChanScroll = 0
+	}
+	if c.chanScrollOff > maxChanScroll {
+		c.chanScrollOff = maxChanScroll
+	}
+	if c.chanScrollOff < 0 {
+		c.chanScrollOff = 0
+	}
 }
 
 // ---- Logging ----
@@ -1590,14 +1726,16 @@ func (c *Client) doConnect(gen int) {
 	c.send("NICK " + nick)
 	c.send(fmt.Sprintf("USER %s 0 * :%s", nick, realName))
 
-	// 512 baitų bufferis — IRC eilutės riba (RFC 2812: 512 baitai, įskaitant
-	// CRLF). Numatytoji bufio.NewReader() naudoja 4096 baitus, todėl
-	// priešiškas serveris galėtų siųsti 3 KB eilutę — kurią readLoop
-	// apleidžia tik jei viršytų BUFFERĮ, o ne protokolo ribą.
+	// ŠKAITIKLIO BUFERIS didesnis nei IRC 512 eilutės limitas: IRCv3
+	// serverio pridėti tag'ai (server-time, msgid) NEĮEINA į eilutės
+	// 512 baitų biudžetą, todėl realios žinutės su tag'ais viršija 512
+	// baitus — su 512 bufferiu jos sukelia ErrBufferFull ir būtų ATMESTOS
+	// (pokalbis prarastas). MaxReadBuffer = 4096 — eilutės be tag'ų iki
+	// 512, o su tag'ais iki ~4 KB.
 	//
-	// Su 512 baitų bufferiu kiekviena per didelė eilutė sukelia
-	// ErrBufferFull → eilutė apleidžiama ir įspėjama vartotojui.
-	reader := bufio.NewReaderSize(conn, maxLineBytes)
+	// Ilgesnė nei buferio eilutė sukelia ErrBufferFull → apleidžiama ir
+	// įspėjama vartotojui (žr. apačioje).
+	reader := bufio.NewReaderSize(conn, maxReadBuffer)
 	c.readLoop(reader)
 
 	close(pingStop)
@@ -1847,8 +1985,15 @@ func (c *Client) parseIRC(line string) {
 			//
 			// Anksčiau JOIN keliu įspėjimo NEBUVO — vartotojas matė
 			// „prisijungiau į kanalą“, bet lango nebuvo.
-			limitHit := c.chanLimitHit
-			c.chanLimitHit = ""
+			//
+			// Įspėjimą sunaudojame tik tada, kai įsimintas vardas atitinka
+			// ŠITĄ JOIN kanalą (žr. addMsg: kitaip klastoto tikslo atmetimas
+			// sunaudotų kito kanalo įspėjimą).
+			limitHit := ""
+			if hit := c.chanLimitHit; hit != "" && hit == sanitizeChanName(ch) {
+				c.chanLimitHit = ""
+				limitHit = hit
+			}
 			c.mu.Unlock()
 			if limitHit != "" {
 				c.serverMsg("ĮSPĖJIMAS: pasiektas kanalų limitas — kanalas „" + sanitizeText(limitHit) + "“ neatidarytas")
@@ -1904,16 +2049,18 @@ func (c *Client) parseIRC(line string) {
 		// Casemapping'ą imame VIENĄ kartą — c.nickEqual() kiekvieną kartą
 		// ima isupMu.RLock, o cikle su 100 kanalų × 500 nick'ų tai 50 000
 		// rakinio įvedių (RWMutex.skalių operacija).
-		_, _, _, cm, _ := c.isupSnapshot()
 		c.mu.Lock()
-		// Rasti kanalus kuriuose buvo nick PRIEŠ pašalinimą
+		// Rasti kanalus kuriuose buvo nick PRIEŠ pašalinimą.
+		//
+		// O(1) rinkinio patikra (hasNickKey), NE O(n) per visą nick'ų
+		// sąrašą su nickEqual kas elementui: priešiškas serveris 5 000
+		// QUIT'ų 5 000-nick kanale sukeltų ~25 milijonus lyginimų su
+		// strings.Map alokacija kiekvienam (readLoop'as užstringa —
+		// o rinkinio raktai suderinti su nickEqual, žr. normNick).
 		var affected []*Channel
 		for _, ch := range c.channels {
-			for _, n := range ch.nicks {
-				if nickEqual(stripMode(n, ch.prefixSigns()), fromNick, cm) {
-					affected = append(affected, ch)
-					break
-				}
+			if ch.hasNickKey(fromNick, ch.prefixSigns()) {
+				affected = append(affected, ch)
 			}
 		}
 		for _, ch := range affected {
@@ -1930,10 +2077,15 @@ func (c *Client) parseIRC(line string) {
 		reason := p(2)
 		c.mu.Lock()
 		me := c.nick
-		if channel := c.findCh(ch); channel != nil {
+		// NAUJŲ kanalų nekuriame (findCh, ne ensureCh) — kaip 332/353.
+		channel := c.findCh(ch)
+		if channel != nil {
 			channel.removeNick(kicked)
 		}
 		c.mu.Unlock()
+		if channel == nil {
+			return
+		}
 		if c.nickEqual(kicked, me) {
 			c.errMsg(fmt.Sprintf("Buvai išmestas iš %s (%s)", ch, reason))
 			// Pateikti kanalą kaip neaktyvų, bet neuždaryti lango
@@ -2050,11 +2202,17 @@ func (c *Client) parseIRC(line string) {
 	case "TOPIC":
 		ch := p(0)
 		newTopic := p(1)
+		// NAUJŲ kanalų nekuriame (findCh, ne ensureCh) — kaip 332/353:
+		// priešiškas serveris TOPIC srautu galėtų prikurti langų.
 		c.mu.Lock()
-		if channel := c.findCh(ch); channel != nil {
+		channel := c.findCh(ch)
+		if channel != nil {
 			channel.topic = newTopic
 		}
 		c.mu.Unlock()
+		if channel == nil {
+			return
+		}
 		c.addMsg(ch, Message{ts: now, nick: fromNick, text: "keičia temą į: " + newTopic, msgType: MsgServer})
 		c.queueRedraw()
 
@@ -2162,11 +2320,19 @@ func (c *Client) parseIRC(line string) {
 		if ch == "" {
 			return
 		}
+		// NAUJŲ kanalų nekuriame (findCh, ne ensureCh): priešiškas
+		// serveris 332 srautu galėtų užpildyti šoninę juostą ir atimti
+		// kanalų biudžetą (kaip 353 — žr. ten). Temos pranešimą rodome
+		// TIK kanale, kuriame iš tikrųjų esame.
 		c.mu.Lock()
-		if channel := c.findCh(ch); channel != nil {
+		channel := c.findCh(ch)
+		if channel != nil {
 			channel.topic = topic
 		}
 		c.mu.Unlock()
+		if channel == nil {
+			return
+		}
 		c.addMsg(ch, Message{ts: now, text: "Tema: " + topic, msgType: MsgServer})
 		c.queueRedraw()
 
@@ -2212,11 +2378,17 @@ func (c *Client) parseIRC(line string) {
 	case "352": // RPL_WHOREPLY: <client> <channel> <user> <host> <server> <nick> <flags> :<hopcount> <realname>
 		// Anksčiau šis numerikas krisdavo į `default:` ir buvo rodomas
 		// žaliai kaip „[352] …“ — vartotojas nematė, kas yra kanale.
+		//
+		// Stulpeliai ATSKIRAI: kanalo stulpelis pagal LĄSTELIŲ plotį
+		// (fitWidth, ne %-20s — kitaip ne-ASCII kanalo vardai kiekvieną
+		// eilutę pastums skirtingai) ir flag'as atskirtas TARPŪ — anksčiau
+		// „%s%s“ sulipdavo „Hbob“ iš „H“ + „bob“.
 		whoChan := p(1)
 		whoNick := p(5)
 		whoFlags := p(6)
 		if whoNick != "" {
-			c.whoReplyMsg(fmt.Sprintf("│  %-20s %s%s", whoChan, whoFlags, whoNick))
+			c.whoReplyMsg(fmt.Sprintf("│  %s %s %s",
+				fitWidth(sanitizeText(whoChan), 16), sanitizeText(whoFlags), sanitizeText(whoNick)))
 		}
 
 	case "354": // RPL_WHOSPCRPL — WHOIS stilingas (whowas)
@@ -2224,7 +2396,7 @@ func (c *Client) parseIRC(line string) {
 		whoFlags := p(2)
 		whoReal := p(7)
 		if whoNick != "" {
-			c.whoReplyMsg(fmt.Sprintf("│  %s%s — %s", whoFlags, whoNick, whoReal))
+			c.whoReplyMsg(fmt.Sprintf("│  %s %s — %s", whoFlags, whoNick, whoReal))
 		}
 
 	case "367": // RPL_BANLIST: <client> <channel> <mask> <who> <when>

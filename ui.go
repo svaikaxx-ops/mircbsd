@@ -796,13 +796,18 @@ func (ch *Channel) hasNickKey(nick, sign string) bool {
 // NAUDOJA rinkinį tik kaip greitą „egzistuoja?“ patikrinimą; indeksas
 // surandamas tiesiogine paieška (tik reikia retai — pašalinimas,
 // pervadinas, prefikso pakeitimas — ne kiekvienam įterpinui).
+//
+// Tiesioginei paieškai naudojame foldEqualIRC — BE atminties alokacijų
+// po kiekvieną elementą (strings.Map kurtų po laikinąją eilutę 5 000
+// nick'ų sąraše — pašalinimų srautas užstrigtų klientą).
 func (ch *Channel) findNickIdx(nick, sign string) int {
 	if !ch.hasNickKey(nick, sign) {
 		return -1
 	}
-	target := normNick(nick, sign, ch.casemapping)
+	target := stripMode(nick, sign)
+	ascii := ch.casemapping == "ascii"
 	for i, n := range ch.nicks {
-		if normNick(n, sign, ch.casemapping) == target {
+		if foldEqualIRC(stripMode(n, sign), target, ascii) {
 			return i
 		}
 	}
@@ -1214,11 +1219,15 @@ func (c *Client) draw() {
 				if unreadW < 1 {
 					unreadW = 1
 				}
+				// Stulpelio plotis LĄSTELĖMIS (fitWidth), ne baitais (%-*s):
+				// kitaip ne-ASCII pavadinimai (lietuviški, CJK) užima daugiau
+				// stulpelių, nei yra baitų — „!N“ žyma išstumtų už
+				// chanListWidth ir visos eilutės pradėtų svirti.
+				badge := fmt.Sprintf("%d", st.unread)
 				if st.highlight > 0 {
-					label = fmt.Sprintf(" %s%-*s!%d", fkeyPrefix, unreadW, displayName, st.highlight)
-				} else {
-					label = fmt.Sprintf(" %s%-*s%d", fkeyPrefix, unreadW, displayName, st.unread)
+					badge = "!" + fmt.Sprintf("%d", st.highlight)
 				}
+				label = " " + fkeyPrefix + fitWidth(displayName, unreadW) + badge
 			}
 			out.WriteString(label + ansiReset)
 		}
