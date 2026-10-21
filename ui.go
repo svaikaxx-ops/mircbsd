@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // ---- ANSI ----
@@ -268,37 +267,158 @@ type Message struct {
 	highlight bool
 }
 
+// wrapText apvynio tekstą pagal plotį LĄSTELĖMIS (ne rune'ais).
+//
+// CJK ideogramai užima 2 ląsteles, o derinamieji ženklai (ą, č, emoji odų
+// tonai) — 0. Rune'ų skaičiavimas todėl perlydavo terminalo plotį.
+// Tekstas taip pat skaidomas į grafinius klasterius, kad akcentuota raidė arba
+// emoji nebūtų nutrūkta perpusę.
 func wrapText(text string, width int) []string {
 	if width <= 0 {
 		width = 1
 	}
-	var lines []string
-	runes := []rune(text)
-	for len(runes) > width {
-		cut := width
-		for cut > width/2 && runes[cut-1] != ' ' {
-			cut--
-		}
-		if cut <= width/2 {
-			cut = width
-		}
-		lines = append(lines, string(runes[:cut]))
-		runes = []rune(strings.TrimLeft(string(runes[cut:]), " "))
+	clusters := runeClusters(text)
+	if len(clusters) == 0 {
+		return []string{""}
 	}
-	lines = append(lines, string(runes))
+	var lines []string
+	cur := make([]string, 0, width)
+	curW := 0
+	for _, cl := range clusters {
+		cw := clusterWidth(cl)
+		if curW+cw > width {
+			// Eilutė pilna — ieškome pertraukimo vietos (tarpai).
+			// Žodis per ilgas (neteliko nė vienos eilutės) — nukerpame
+			// paskutinį klasterį.
+			cut := -1
+			for i := len(cur) - 1; i >= 0; i-- {
+				if cur[i] == " " {
+					cut = i
+					break
+				}
+			}
+			if cut < 0 {
+				// Žodis neteliko — kirsti pagal plotį.
+				if len(cur) == 0 {
+					// Vienas klasteris (pvz. 2 ląstelės) viršija plotį —
+					// vis tiek jį išspausdiname, kad tekstas nebūtų
+					// prarastas.
+					cur = append(cur, cl)
+					curW = cw
+					lines = append(lines, strings.Join(cur, ""))
+					cur = cur[:0]
+					curW = 0
+					continue
+				}
+				lines = append(lines, strings.Join(cur, ""))
+				cur = cur[:0]
+				curW = 0
+				// Pridedame klasterį į naują eilutę.
+				cur = append(cur, cl)
+				curW = cw
+				continue
+			}
+			// Perskirsti iki paskutinio tarpo: turinys po tarpu — kita
+			// eilutė.
+			lines = append(lines, strings.Join(cur[:cut], ""))
+			rest := cur[cut+1:]
+			cur = append(cur[:0], rest...)
+			curW = 0
+			for _, r := range cur {
+				curW += clusterWidth(r)
+			}
+			cur = append(cur, cl)
+			curW += cw
+			continue
+		}
+		cur = append(cur, cl)
+		curW += cw
+	}
+	if len(cur) > 0 || len(lines) == 0 {
+		lines = append(lines, strings.Join(cur, ""))
+	}
 	return lines
 }
 
+// highlightURLs apvynioja URL'us ANSI spalva.
+//
+// Anksčiau naudota `strings.Fields` + `strings.Replace(..., 1)`:
+//   - tekstas jau būdavo su ANSI kodais, todėl spalvotame tekste URL niekada
+//     neatpažįstamas (kodai pačioje URL pradžioje);
+//   - antrą kartą aptinkamas tas pats URL (jau apvyniotas) → įdubiniai
+//     ANSI kodai, o antrasis URL likdavo neapvyniotas.
+//
+// Dabar tekstas skenuojamas simbolį po simbolį: ANSI seka praleidžiama,
+// o kiekvienas URL apvyniojamas lygiai VIENĄ kartą.
 func highlightURLs(text string) string {
-	words := strings.Fields(text)
-	result := text
-	for _, w := range words {
-		bare := strings.TrimRight(w, ".,!?)")
-		if strings.HasPrefix(bare, "http://") || strings.HasPrefix(bare, "https://") || strings.HasPrefix(bare, "ftp://") {
-			result = strings.Replace(result, bare, ansiCyan+ansiBold+bare+ansiReset, 1)
+	var b strings.Builder
+	b.Grow(len(text) + 32)
+	i := 0
+	for i < len(text) {
+		// ANSI pakeitimo seka (ESC [ ... m) — praleidžiama, nekeičiama.
+		if text[i] == 0x1b {
+			j := skipANSISeq(text, i)
+			b.WriteString(text[i:j])
+			i = j
+			continue
 		}
+		// URL?
+		if hasURLPrefix(text[i:]) {
+			j := i
+			for j < len(text) && !isURLBoundary(text[j]) {
+				j++
+			}
+			core := strings.TrimRight(text[i:j], ".,!?)")
+			if len(core) > 0 {
+				b.WriteString(ansiCyan + ansiBold + core + ansiReset)
+				// Uždarymo punctacija — neapvyniota.
+				b.WriteString(text[i+len(core) : j])
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(text[i])
+		i++
 	}
-	return result
+	return b.String()
+}
+
+// hasURLPrefix tikrina, ar tekstas prasideda URL schema.
+func hasURLPrefix(s string) bool {
+	return strings.HasPrefix(s, "http://") ||
+		strings.HasPrefix(s, "https://") ||
+		strings.HasPrefix(s, "ftp://")
+}
+
+// isURLBoundary tikrina, ar simbolis baigia URL'ą.
+func isURLBoundary(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '<', '>', '"', '\'', 0x1b:
+		return true
+	}
+	return false
+}
+
+// skipANSISeq grąžina indeksą už ANSI pakeitimo sekos (ESC [ ... m).
+func skipANSISeq(s string, i int) int {
+	j := i + 1
+	if j < len(s) && s[j] == '[' {
+		j++
+		for j < len(s) && !isANSITerminator(s[j]) {
+			j++
+		}
+		if j < len(s) {
+			j++
+		}
+		return j
+	}
+	// Ne CSI seka — 2 simboliai.
+	return i + 2
+}
+
+// isANSITerminator tikrina, ar simbolis baigia ANSI seką.
+func isANSITerminator(c byte) bool {
+	return c >= 0x40 && c <= 0x7e
 }
 
 func (m Message) renderLines(msgW int, myNick string) []string {
@@ -330,14 +450,14 @@ func (m Message) renderLines(msgW int, myNick string) []string {
 		hl := hlBgCode
 		nickStr := "<" + m.nick + "> "
 		if m.highlight {
-			p = part{hl + ansiBold + ts + nc + nickStr + ansiReset + hl, tsLen + len([]rune(nickStr))}
+			p = part{hl + ansiBold + ts + nc + nickStr + ansiReset + hl, tsLen + stringWidth(nickStr)}
 		} else {
-			p = part{ts + nc + nickStr + ansiReset, tsLen + len([]rune(nickStr))}
+			p = part{ts + nc + nickStr + ansiReset, tsLen + stringWidth(nickStr)}
 		}
 	case MsgAction:
 		nc := nickColor(m.nick)
 		pfx := "* " + m.nick + " "
-		p = part{ts + nc + pfx, tsLen + len([]rune(pfx))}
+		p = part{ts + nc + pfx, tsLen + stringWidth(pfx)}
 	case MsgJoin:
 		p = part{ts + ansiGreen, tsLen}
 	case MsgPart:
@@ -348,7 +468,7 @@ func (m Message) renderLines(msgW int, myNick string) []string {
 		p = part{ts + ansiGreen, tsLen}
 	case MsgNotice:
 		pfx := "-" + m.nick + "- "
-		p = part{ts + ansiCyan + pfx, tsLen + len([]rune(pfx))}
+		p = part{ts + ansiCyan + pfx, tsLen + stringWidth(pfx)}
 	case MsgServer:
 		p = part{ts + ansiCyan, tsLen}
 	case MsgError:
@@ -411,17 +531,113 @@ func (m Message) renderLines(msgW int, myNick string) []string {
 
 // findChunk bando rasti atitinkamą dalį originaliame tekste (su formatavimo kodais)
 // Jei nepavyksta - grąžina plain chunk
+// findChunk bando rasti atitinkamą dalį originaliame tekste (su
+// formatavimo kodais).
+//
+// Anksčiau ieškojo PLAIN tekste ir grąžindavo plainChunk (be formatavimo
+// kodų) — todėl spalvos ir paryškiavimas išgyveno TIK vienos eilutės
+// žinutėse. Dabar ieškoma originaliame tekste, ieškant ribų pagal plain
+// indeksą, todėl formatavimo kodai išsaugomi.
+//
+// Jei eilutė yra trumpesnė nei plotis (viena eilutė) — grąžinamas visas
+// originalas.
 func findChunk(original, plainChunk string) string {
 	plain := stripIRCFormat(original)
-	idx := strings.Index(plain, strings.TrimSpace(plainChunk))
-	if idx == -1 {
+	trimmed := strings.TrimSpace(plainChunk)
+	if trimmed == "" {
 		return plainChunk
 	}
-	// Grąžiname originalą jei trumpas (viena eilutė)
-	if len([]rune(plain)) == len([]rune(plainChunk)) {
+	// Būtina visas originalo tekstas (viena eilutė) — grąžiname ją.
+	if len([]rune(plain)) == len([]rune(trimmed)) {
 		return original
 	}
-	return plainChunk
+	// Ieškome PLAIN tekste ribų, tada atsižvelgiame į formatavimo kodus.
+	plainIdx := strings.Index(plain, trimmed)
+	if plainIdx == -1 {
+		return plainChunk
+	}
+	start, end := plainToOriginalBounds(original, plainIdx, len([]rune(trimmed)))
+	if start < 0 || end < 0 {
+		return plainChunk
+	}
+	return original[start:end]
+}
+
+// plainToOriginalBounds konvertuoja indeksus PLAIN tekste į indeksus
+// originaliame tekste (su IRC formatavimo kodais).
+//
+// plainIdx — simbolio indeksas be formatavimo kodų;
+// plainLen — simbolių skaičius.
+//
+// Grąžina [start, end) baitų indeksus originaliame tekste.
+func plainToOriginalBounds(original string, plainIdx, plainLen int) (int, int) {
+	runes := []rune(original)
+	plainSeen := 0
+	startByte := -1
+	endByte := -1
+	bytePos := 0
+	// inColor — esame spalvos kodo parametruose (skaičiai po \x03).
+	inColor := false
+	// pendingCodeByte — baitų pozicija, kurioje prasidėjo formatavimo kodas.
+	// Jei plain turis prasideda tiesiog po kodo, riba turi būti PRADEDAMA
+	// nuo kodo pradžios (kitaip spalvos kodas atitrūksta nuo savo teksto).
+	codeStart := -1
+	// lastCodeEnd — baitų pozicija, kur baigėsi paskutinis formatavimo kodas.
+	lastCodeEnd := -1
+
+	for _, r := range runes {
+		rlen := len(string(r))
+		isCode := false
+		switch r {
+		case '\x02', '\x1d', '\x1f', '\x16', '\x0f':
+			isCode = true
+			inColor = false
+		case '\x03':
+			isCode = true
+			inColor = true
+		default:
+			if inColor {
+				if (r >= '0' && r <= '9') || r == ',' {
+					// spalvos parametro dalis — kodas tęsiasi.
+					isCode = true
+				} else {
+					inColor = false
+				}
+			}
+		}
+
+		if isCode {
+			if codeStart < 0 {
+				codeStart = bytePos
+			}
+			bytePos += rlen
+			lastCodeEnd = bytePos
+			continue
+		}
+
+		// Įprastas simbolis — skaičiuojamas į plain tekstą.
+		if plainSeen == plainIdx && startByte < 0 {
+			if codeStart >= 0 && lastCodeEnd == bytePos {
+				// Plain turis prasideda po formatavimo kodo — įtraukiame
+				// kodą į gabalą, kad spalva liktų su savo tekstu.
+				startByte = codeStart
+			} else {
+				startByte = bytePos
+			}
+		}
+		if plainSeen == plainIdx+plainLen {
+			endByte = bytePos
+			return startByte, endByte
+		}
+		plainSeen++
+		bytePos += rlen
+		lastCodeEnd = -1
+		codeStart = -1
+	}
+	if startByte >= 0 && endByte < 0 {
+		endByte = len(original)
+	}
+	return startByte, endByte
 }
 
 // ---- Channel ----
@@ -448,13 +664,38 @@ type Channel struct {
 	prefix        string // serverio PREFIX statuso prefiksai (ISUPPORT)
 	prefixModes   string // serverio PREFIX mode raidės (ISUPPORT)
 
+	// nickSet — rinkinys normalizuotų nick'ų (be prefikso, su
+	// casemapping'u) — greitas „ar toks nick'as yra?“ patikrinimas.
+	//
+	// KODĖL: be jo kiekvienas nick'o įterpimas buvo O(n) (stripMode +
+	// nickEqual per elementą). 5 000 nick'ų kanale tai 5 000 × 5 000
+	// = 25 milijonų operacijų — O(n²) DoS (užblokavimas).
+	//
+	// KODĖL NE map[string]int (su indeksais): po kiekvieno įterpimo
+	// VISI indeksai po tašku pasikeičia → žemėlapio atstatymas O(n) →
+	// vėl O(n²) visas. Rinkinys (be indeksų) yra stabilus per
+	// įterpimus: jį reikia atnaujinti tik PAŠALINUS arba pervadinus
+	// nick'ą (reti įvykiai).
+	//
+	// INVARIANTAS: galioja TIK SU c.mu (arba c.mu užrakintu).
+	// Peržiūrėtoji vieta — kiekvienas ch.nicks pakeitimas (addNick,
+	// removeNick, renameNick, changeNickMode, /names → nicks = nil).
+	nickSet map[string]struct{}
+
 	// Renderio cache'as: eilutės priklauso nuo žinučių, pločio ir spalvos.
 	// renderGen didinamas kiekvieną kartą pakeitus žinutes (addMsg, clear).
-	renderGen    int
-	renderedGen  int // <== renderGen kai cache galioja
-	renderedW    int
-	renderedNick string
-	rendered     []string
+	//
+	// renderedMsgCount — kiek žinučių jau IŠRENDERIUOTA cache'e. Kai
+	// pridedama nauja žinutė, senos eilutės lieka galiojančios — tik
+	// naujos pridedamos (inkrementalus renderiavimas). Anksčiau kiekviena
+	// nauja žinutė nugriaždindavo VISĄ cache'ą (5000 žinučių → 5000
+	// renderLines() kiekviename braižyme).
+	renderGen        int
+	renderedGen      int // <== renderGen kai cache galioja
+	renderedW        int
+	renderedNick     string
+	rendered         []string
+	renderedMsgCount int // kiek žinučių cache'e apskaičiuota
 }
 
 func newChannel(name string, maxMsg int) *Channel {
@@ -473,6 +714,12 @@ func (ch *Channel) addMsg(m Message) {
 		trim := ch.maxMessages / 4
 		ch.messages = ch.messages[trim:]
 		ch.renderGen++
+		// Senos eilutės cache'e nebeatitinka žinutėms — cache'ą
+		// reikia atkurti nuo nulio (kitaip inkrementalus cache'as
+		// rodytų senas, jau ištrintas žinutes).
+		ch.rendered = nil
+		ch.renderedGen = -1
+		ch.renderedMsgCount = 0
 	}
 }
 
@@ -489,36 +736,159 @@ func (ch *Channel) prefixSigns(opt ...string) string {
 	return defaultPrefixSigns
 }
 
-func (ch *Channel) addNick(nick string, signOpt ...string) {
-	sign := ch.prefixSigns(signOpt...)
+// maxNicksPerChannel — didžiausias nick'ų skaičius viename kanale.
+//
+// Be ribos priešiškas serveris galėtų siųsti tūkstančius JOIN'ų į vieną
+// kanalą — kiekvienas su savo nick'u. Sąrašas augdavo neribotai, o
+// kiekvienas įterpimas buvo O(n) (žr. addNick) → O(n²) visas sudėtis.
+// 10 000 nick'ų kanale tai ~3,5 s pauzės (užblokavus visą klientą).
+const maxNicksPerChannel = 5000
+
+// normNick normalizuoja nick'ą į žemėlapio raktą: be statuso prefikso,
+// su serverio casemapping'u.
+//
+// NUDAŽIA: nickEqual() lygina su casemapping'u, todėl raktas turi būti
+// lyginamas TAIP PAT — „Žilvinas“ ir „žilvinas“ yra VIENAS nick'as
+// (pagal RFC 1459 ASCII rulą), o ne du.
+//
+// CASEMAPPING: pagal RFC 1459 lygina „[“ ≡ „{“, „]“ ≡ „}“, „\\“ ≡ „|“;
+// pagal „ascii“ (ASCII casefold) — NIEKO nelygina. Todėl ant „ascii“
+// serverio „[a]“ ir „{a}“ yra DU SKIRTINGI nick'ai. Ankstesnė versija
+// visada naudojo RFC 1459 → „{a}“ būdavo atmestas kaip „[a]“ dublikatas,
+// o vėlesnis QUIT ištrindavo NE TĄ nick'ą.
+//
+// Parametras `cm` — serverio casemapping („“ arba „rfc1459“ → RFC 1459;
+// „ascii“ → ASCII).
+func normNick(nick, sign, cm string) string {
+	bare := stripMode(nick, sign)
+	if cm == "ascii" {
+		// ASCII casefold — NELYGINA ne-ASCII raidžių (t. y. „Žilvinas“
+		// ≠ „žilvinas“), tiksliai kaip nickEqual().
+		return asciiFold(bare)
+	}
+	return strings.Map(lowerIRC, bare)
+}
+
+// rebuildNickSet atstato rinkinį iš `nicks` slice'o.
+//
+// Reikalingas po operacijų, kurios PAŠALINA arba PERVADINA nick'ą.
+func (ch *Channel) rebuildNickSet(sign string) {
+	ch.nickSet = make(map[string]struct{}, len(ch.nicks))
 	for _, n := range ch.nicks {
-		if nickEqual(stripMode(n, sign), stripMode(nick, sign), ch.casemapping) {
-			return
+		ch.nickSet[normNick(n, sign, ch.casemapping)] = struct{}{}
+	}
+}
+
+// hasNickKey tikrina, ar kanale yra toks nick'as (O(1)).
+//
+// NAUDOJA nickSet rinkinį. Jei rinkinys neegzistuoja (kanalas
+// sukurtas senais būdais) — atstatomas iš `nicks` slice'o.
+func (ch *Channel) hasNickKey(nick, sign string) bool {
+	if ch.nickSet == nil {
+		ch.rebuildNickSet(sign)
+	}
+	_, ok := ch.nickSet[normNick(nick, sign, ch.casemapping)]
+	return ok
+}
+
+// findNickIdx ieško nick'o indekso kanale. Grąžina -1, jei nėra.
+//
+// NAUDOJA rinkinį tik kaip greitą „egzistuoja?“ patikrinimą; indeksas
+// surandamas tiesiogine paieška (tik reikia retai — pašalinimas,
+// pervadinas, prefikso pakeitimas — ne kiekvienam įterpinui).
+//
+// Tiesioginei paieškai naudojame foldEqualIRC — BE atminties alokacijų
+// po kiekvieną elementą (strings.Map kurtų po laikinąją eilutę 5 000
+// nick'ų sąraše — pašalinimų srautas užstrigtų klientą).
+func (ch *Channel) findNickIdx(nick, sign string) int {
+	if !ch.hasNickKey(nick, sign) {
+		return -1
+	}
+	target := stripMode(nick, sign)
+	ascii := ch.casemapping == "ascii"
+	for i, n := range ch.nicks {
+		if foldEqualIRC(stripMode(n, sign), target, ascii) {
+			return i
 		}
 	}
-	ch.nicks = append(ch.nicks, nick)
-	sortNicks(ch.nicks, sign)
+	return -1
+}
+
+func (ch *Channel) addNick(nick string, signOpt ...string) {
+	sign := ch.prefixSigns(signOpt...)
+	if ch.nickSet == nil {
+		ch.rebuildNickSet(sign)
+	}
+	key := normNick(nick, sign, ch.casemapping)
+	if _, exists := ch.nickSet[key]; exists {
+		// Nick'as jau yra sąraše. Bet 353 (NAMES) gali atneši STATUSO
+		// prefiksą, kurio nebuvo, kai jis įrašytas (pvz. JOIN pridėjo
+		// „Žilvinas“, o 353 atnešė „@Žilvinas“). Anksčiau čia buvo
+		// grynas „return“ → prefiksas tyliai dingdavo ir vartotojas
+		// nematė, kad jis operatorius.
+		// Atnaujiname tik tada, kai NAUJAS nick'as turi prefiksą —
+		// jei jo nėra, esantis prefiksas (iš MODE komandos) lieka.
+		i := ch.findNickIdx(nick, sign)
+		if i < 0 {
+			return
+		}
+		n := ch.nicks[i]
+		newPrefix := modePrefix(nick, sign)
+		if newPrefix == "" || newPrefix == modePrefix(n, sign) {
+			return
+		}
+		ch.nicks[i] = newPrefix + stripMode(n, sign)
+		sortNicks(ch.nicks, sign)
+		// Raktas (be prefikso) tas pats — rinkinio atnaujinti nereikia.
+		return
+	}
+	// RIBOS — kanale negali būti begalybės nick'ų.
+	if len(ch.nicks) >= maxNicksPerChannel {
+		return
+	}
+	// Įstatome į SAVO VIETĄ (dichotominė paieška) — anksčiau kiekvienam
+	// įterpimui buvo pilnas sortNicks (O(n log n)). 500 nick'ų kanale tai
+	// 500 × 500×log(500) operacijų; dabar — 500 × log(500) paieškų.
+	pos := sort.Search(len(ch.nicks), func(i int) bool {
+		return !nickLess(ch.nicks[i], nick, sign)
+	})
+	ch.nicks = append(ch.nicks, "")
+	copy(ch.nicks[pos+1:], ch.nicks[pos:])
+	ch.nicks[pos] = nick
+	// Rinkinys atnaujinamas O(1) — indeksai nekeičiami.
+	ch.nickSet[key] = struct{}{}
+}
+
+// hasNick tikrina, ar kanalo nick'ų sąraše yra toks nick (su prefiksu arba
+// be jo). Naudojama NICK komandai — pranešimą rodoma tik ten, kur nick
+// realiai buvo.
+func (ch *Channel) hasNick(nick string) bool {
+	return ch.findNickIdx(nick, ch.prefixSigns()) >= 0
 }
 
 func (ch *Channel) removeNick(nick string, signOpt ...string) {
 	sign := ch.prefixSigns(signOpt...)
-	for i, n := range ch.nicks {
-		if nickEqual(stripMode(n, sign), stripMode(nick, sign), ch.casemapping) {
-			ch.nicks = append(ch.nicks[:i], ch.nicks[i+1:]...)
-			return
-		}
+	i := ch.findNickIdx(nick, sign)
+	if i < 0 {
+		return
 	}
+	ch.nicks = append(ch.nicks[:i], ch.nicks[i+1:]...)
+	// Pašalintas nick'as — rinkinys atnaujinamas.
+	delete(ch.nickSet, normNick(nick, sign, ch.casemapping))
 }
 
 func (ch *Channel) renameNick(oldNick, newNick string, signOpt ...string) {
 	sign := ch.prefixSigns(signOpt...)
-	for i, n := range ch.nicks {
-		if nickEqual(stripMode(n, sign), oldNick, ch.casemapping) {
-			ch.nicks[i] = modePrefix(n, sign) + newNick
-			sortNicks(ch.nicks, sign)
-			return
-		}
+	i := ch.findNickIdx(oldNick, sign)
+	if i < 0 {
+		return
 	}
+	oldKey := normNick(ch.nicks[i], sign, ch.casemapping)
+	ch.nicks[i] = modePrefix(ch.nicks[i], sign) + newNick
+	sortNicks(ch.nicks, sign)
+	// Raktas pasikeitė (nick'o vardas) — rinkinys atnaujinamas.
+	delete(ch.nickSet, oldKey)
+	ch.nickSet[normNick(newNick, sign, ch.casemapping)] = struct{}{}
 }
 
 func (ch *Channel) setMode(nick, mode string, signsOpt ...string) {
@@ -549,18 +919,19 @@ func (ch *Channel) setMode(nick, mode string, signsOpt ...string) {
 }
 
 func (ch *Channel) changeNickMode(nick string, prefix byte, adding bool, signs string) {
-	for i, n := range ch.nicks {
-		if nickEqual(stripMode(n, signs), nick, ch.casemapping) {
-			bare := stripMode(n, signs)
-			if adding {
-				ch.nicks[i] = string(prefix) + bare
-			} else {
-				ch.nicks[i] = bare
-			}
-			sortNicks(ch.nicks, signs)
-			return
-		}
+	i := ch.findNickIdx(nick, signs)
+	if i < 0 {
+		return
 	}
+	bare := stripMode(ch.nicks[i], signs)
+	if adding {
+		ch.nicks[i] = string(prefix) + bare
+	} else {
+		ch.nicks[i] = bare
+	}
+	sortNicks(ch.nicks, signs)
+	// Prefiksas pasikeitė → tvarka pasikeitė, bet raktas (be prefikso) tas
+	// pats — rinkinio atnaujinti nereikia.
 }
 
 // stripMode/prefixStatus naudoja serverio parametrus (PREFIX iš ISUPPORT),
@@ -635,6 +1006,31 @@ func sortNicks(nicks []string, signsOpt ...string) {
 	})
 }
 
+// nickLess atskleidžia surūšiuojimo taisyklę, kad addNick galėtų įstatyti
+// nick'ą į VIETĄ (be pilno perrankymo).
+func nickLess(a, b, signs string) bool {
+	order := func(n string) int {
+		if len(n) == 0 {
+			return len(signs)
+		}
+		if i := strings.IndexRune(signs, rune(n[0])); i >= 0 {
+			return i
+		}
+		return len(signs)
+	}
+	strip := func(n string) string {
+		if len(n) > 0 && strings.ContainsRune(signs, rune(n[0])) {
+			return n[1:]
+		}
+		return n
+	}
+	oi, oj := order(a), order(b)
+	if oi != oj {
+		return oi < oj
+	}
+	return strings.ToLower(strip(a)) < strings.ToLower(strip(b))
+}
+
 // ---- UI ----
 
 const chanListWidth = 18
@@ -647,7 +1043,8 @@ func (c *Client) draw() {
 		c.mu.Unlock()
 		return
 	}
-	active := c.activeChan()
+	// c.mu jau užrakintas — Locked variantas.
+	active := c.activeChanLocked()
 	if active == nil {
 		// Aktyvaus kanalo nėra (activeIdx negaliojantis) — nebraižyk
 		c.mu.Unlock()
@@ -659,11 +1056,35 @@ func (c *Client) draw() {
 	nicks := make([]string, len(active.nicks))
 	copy(nicks, active.nicks)
 	topic := active.topic
+	activeName := active.name
+	// SIDEBAR'O KANALŲ LAUKAI — nukopijuojame SU RAKINU.
+	//
+	// Anksčiau ch.unread / ch.highlight / ch.isPrivate buvo skaitomi PO
+	// c.mu.Unlock() (ši eilutė piešė visus kanalus) — parseIRC gorutina tuo
+	// pačiu juos keitė (addMsg → unread++, irc.go:726). Duomenų lenktynė.
+	//
+	// Atkreipkite: addMsg didina unread TIK kai kanalas NĖRA aktyvus — todėl
+	// lenktynė nematyti, kai piešiamas aktyvus kanalas. Švarus
+	// `go test -race` baseline'as to neįrodė.
+	type chanState struct {
+		unread    int
+		highlight int
+		isPrivate bool
+	}
+	states := make([]chanState, len(channels))
+	for i, ch := range channels {
+		states[i] = chanState{
+			unread:    ch.unread,
+			highlight: ch.highlight,
+			isPrivate: ch.isPrivate,
+		}
+	}
 	inputRunes := make([]rune, len(c.input))
 	copy(inputRunes, c.input)
 	inputPos := c.inputPos
 	scrollOff := c.scrollOff
 	nickScrollOff := c.nickScrollOff
+	chanScrollOff := c.chanScrollOff
 	connected := c.connected
 	myNick := c.nick
 	server := c.server
@@ -673,7 +1094,7 @@ func (c *Client) draw() {
 	searchQuery := c.searchQuery
 	c.mu.Unlock()
 
-	showNicks := c.isChannel(active.name)
+	showNicks := c.isChannel(activeName)
 	out := &strings.Builder{}
 	out.WriteString(ansiHideCur)
 
@@ -697,13 +1118,13 @@ func (c *Client) draw() {
 		reconnMark = " [RECONNECTING...]"
 	}
 	statusLeft := fmt.Sprintf(" mircBSD %s| %s%s%s @ %s | %s ",
-		tlsMark, myNick, awayMark, reconnMark, server, active.name)
+		tlsMark, myNick, awayMark, reconnMark, server, activeName)
 	if !connected && server == "" {
 		statusLeft = " mircBSD | [NEPRISIJUNGTA] "
 	}
 	statusRight := " PgUp/Dn:scroll Ctrl+N/P:kan Ctrl+←→:žodis Tab:AC /help "
 	statusLeft = sanitizeText(statusLeft)
-	pad := w - utf8.RuneCountInString(statusLeft) - utf8.RuneCountInString(statusRight)
+	pad := w - stringWidth(statusLeft) - stringWidth(statusRight)
 	if pad < 0 {
 		pad = 0
 	}
@@ -718,9 +1139,7 @@ func (c *Client) draw() {
 		out.WriteString(ansiDarkGray + " ✦ " + ansiReset)
 		topicPlain := sanitizeText(stripIRCFormat(topic))
 		maxTopic := w - 4
-		if len([]rune(topicPlain)) > maxTopic {
-			topicPlain = string([]rune(topicPlain)[:maxTopic-1]) + "…"
-		}
+		topicPlain = truncateWidth(topicPlain, maxTopic)
 		out.WriteString(ansiCyan + topicPlain + ansiReset)
 		row++
 	}
@@ -745,56 +1164,86 @@ func (c *Client) draw() {
 	}
 
 	// --- Kanalų sąrašas ---
+	//
+	// SLINKTIS: kanalų gali būti daugiau, nei telpa ekrane (iki 100).
+	// Anksčiau rodydavome tik pirmus 12 ir likusieji buvo NEPASIEKIAMI.
+	// Dabar — slinktis (chanScrollOff) + rodyklės ▲▼.
+	chanScroll := chanScrollOff
+	maxChanScroll := len(channels) - msgRows
+	if maxChanScroll < 0 {
+		maxChanScroll = 0
+	}
+	if chanScroll > maxChanScroll {
+		chanScroll = maxChanScroll
+	}
+	if chanScroll < 0 {
+		chanScroll = 0
+	}
 	for i := 0; i < msgRows; i++ {
 		r := msgAreaTop + i
 		out.WriteString(moveTo(r, 1))
 		out.WriteString(fmt.Sprintf("\033[%dX", chanListWidth))
 		out.WriteString(moveTo(r, 1))
-		if i < len(channels) {
-			ch := channels[i]
+		chanIdx := chanScroll + i
+		if chanIdx < len(channels) {
+			ch := channels[chanIdx]
 			name := ch.name
-			if i == activeIdx {
+			st := states[chanIdx]
+			if chanIdx == activeIdx {
 				out.WriteString(ansiBgBlue + ansiBold + ansiWhite)
-			} else if ch.highlight > 0 {
+			} else if st.highlight > 0 {
 				out.WriteString(ansiRed + ansiBold)
-			} else if ch.unread > 0 {
+			} else if st.unread > 0 {
 				out.WriteString(ansiYellow + ansiBold)
-			} else if ch.isPrivate {
+			} else if st.isPrivate {
 				out.WriteString(ansiMagenta)
 			} else {
 				out.WriteString(ansiDarkGray)
 			}
 			displayName := sanitizeText(name)
-			if ch.isPrivate {
+			if st.isPrivate {
 				// Privatūs kanalai pažymėti „>“ — pavadinimas taip pat
 				// turi būti sanitizuotas (priešiškas serveris gali atsiųsti
 				// PRIVMSG su ESC simboliais nick'e).
 				displayName = ">" + displayName
 			}
 			fkeyPrefix := ""
-			if i < 12 {
-				fkeyPrefix = fmt.Sprintf("%d:", i+1)
+			if chanIdx < 12 {
+				fkeyPrefix = fmt.Sprintf("%d:", chanIdx+1)
 			}
 			maxNameW := chanListWidth - 2 - len(fkeyPrefix)
-			if len([]rune(displayName)) > maxNameW {
-				displayName = string([]rune(displayName)[:maxNameW])
-			}
-			label := fmt.Sprintf(" %s%-*s", fkeyPrefix, maxNameW, displayName)
-			if ch.unread > 0 && i != activeIdx {
+			displayName = truncateWidth(displayName, maxNameW)
+			label := " " + fkeyPrefix + fitWidth(displayName, maxNameW)
+			if st.unread > 0 && chanIdx != activeIdx {
 				unreadW := maxNameW - 3
 				if unreadW < 1 {
 					unreadW = 1
 				}
-				if ch.highlight > 0 {
-					label = fmt.Sprintf(" %s%-*s!%d", fkeyPrefix, unreadW, displayName, ch.highlight)
-				} else {
-					label = fmt.Sprintf(" %s%-*s%d", fkeyPrefix, unreadW, displayName, ch.unread)
+				// Stulpelio plotis LĄSTELĖMIS (fitWidth), ne baitais (%-*s):
+				// kitaip ne-ASCII pavadinimai (lietuviški, CJK) užima daugiau
+				// stulpelių, nei yra baitų — „!N“ žyma išstumtų už
+				// chanListWidth ir visos eilutės pradėtų svirti.
+				badge := fmt.Sprintf("%d", st.unread)
+				if st.highlight > 0 {
+					badge = "!" + fmt.Sprintf("%d", st.highlight)
 				}
+				label = " " + fkeyPrefix + fitWidth(displayName, unreadW) + badge
 			}
 			out.WriteString(label + ansiReset)
 		}
 		out.WriteString(moveTo(r, chanListWidth+1))
 		out.WriteString(ansiDarkGray + "│" + ansiReset)
+	}
+	// Kanalų sąrašo rodyklės (kai kanalų daugiau, nei telpa ekrane)
+	if maxChanScroll > 0 {
+		if chanScroll > 0 {
+			out.WriteString(moveTo(msgAreaTop, chanListWidth))
+			out.WriteString(ansiYellow + "▲" + ansiReset)
+		}
+		if chanScroll < maxChanScroll {
+			out.WriteString(moveTo(msgAreaBot, chanListWidth))
+			out.WriteString(ansiYellow + "▼" + ansiReset)
+		}
 	}
 
 	// --- Žinutės ---
@@ -808,21 +1257,47 @@ func (c *Client) draw() {
 	}
 
 	// Eilučių cache'as: nerenderiojam žinučių iš naujo kiekvienam klavišui,
-	// jei žinutės ir plotis nepasikeitę (greitis ant užimtų kanalų)
+	// jei žinutės ir plotis nepasikeitę (greitis ant užimtų kanalų).
+	//
+	// INCREMENTALUS: kai pridedama nauja žinutė, senos eilutės lieka
+	// galiojančios — renderiuojame tik NAUJAS. Tai sumažina braižmo
+	// kainą nuo O(n) iki O(naujų žinučių) kiekviename redraw.
 	c.mu.Lock()
-	var lines []string
 	gen := active.renderGen
-	if active.renderedGen == gen && active.renderedW == msgW && active.renderedNick == myNick {
+	msgs := active.messages
+	// Kiek žinučių cache'e jau apskaičiuota (ir ar tas pats plotis/nick).
+	cacheOK := active.renderedGen == gen && active.renderedW == msgW && active.renderedNick == myNick
+	// Jei žinutės tik PRIDETOS (renderGen pakito, bet senas cache galioja
+	// tame pačiame pločiu) — tęsiame cache'ą. Žinutės gali būti tik
+	// pridamos į galą (addMsg), todėl cache'o prieiga lieka tik galoje.
+	incremental := active.renderedGen != -1 && active.renderedW == msgW &&
+		active.renderedNick == myNick && active.renderedMsgCount <= len(msgs)
+	var lines []string
+	if cacheOK {
 		lines = active.rendered
 		c.mu.Unlock()
 	} else {
-		msgs := make([]Message, len(active.messages))
-		copy(msgs, active.messages)
+		// Kopijuojame tik TA DALĮ, kurią reikia renderiuoti.
+		start := 0
+		if incremental {
+			start = active.renderedMsgCount
+		}
+		// Copiuojame naujas žinutes (be c.mu — renderLines ilgas).
+		newMsgs := make([]Message, len(msgs)-start)
+		copy(newMsgs, msgs[start:])
+		existing := active.rendered
 		c.mu.Unlock()
 
-		lines = make([]string, 0, len(msgs)+len(msgs))
-		for _, m := range msgs {
-			lines = append(lines, m.renderLines(msgW, myNick)...)
+		lines = existing
+		if !incremental {
+			lines = nil
+		}
+		if len(newMsgs) > 0 {
+			fresh := make([]string, 0, len(newMsgs)+len(newMsgs))
+			for _, m := range newMsgs {
+				fresh = append(fresh, m.renderLines(msgW, myNick)...)
+			}
+			lines = append(lines, fresh...)
 		}
 
 		// Cache'uoti tik jei žinutės nepakitę renderio metu
@@ -832,6 +1307,7 @@ func (c *Client) draw() {
 			active.renderedGen = gen
 			active.renderedW = msgW
 			active.renderedNick = myNick
+			active.renderedMsgCount = len(msgs)
 		}
 		c.mu.Unlock()
 	}
@@ -914,15 +1390,12 @@ func (c *Client) draw() {
 					}
 					hint = fmt.Sprintf("(%d/%d)", shown, len(nicks))
 				}
-				out.WriteString(ansiBold + ansiCyan + fmt.Sprintf("%-*s", nickListWidth, " Nick"+hint) + ansiReset)
+				out.WriteString(ansiBold + ansiCyan + fitWidth(" Nick"+hint, nickListWidth) + ansiReset)
 			} else {
 				ni := nickScrollOff + i - 1
 				if ni < len(nicks) {
 					n := sanitizeText(nicks[ni])
-					display := n
-					if len([]rune(display)) > nickListWidth {
-						display = string([]rune(display)[:nickListWidth])
-					}
+					display := truncateWidth(n, nickListWidth)
 					color := ansiWhite
 					switch modePrefix(n, active.prefixSigns()) {
 					case "~", "&", "@":
@@ -932,7 +1405,7 @@ func (c *Client) draw() {
 					case "+":
 						color = ansiCyan
 					}
-					out.WriteString(color + fmt.Sprintf("%-*s", nickListWidth, display) + ansiReset)
+					out.WriteString(color + fitWidth(display, nickListWidth) + ansiReset)
 				}
 			}
 		}
@@ -966,7 +1439,13 @@ func (c *Client) draw() {
 	if away != "" {
 		prefixLen += 7
 	}
-	dispRunes := []rune(string(inputRunes))
+	// SANITIZUOJAME ĮVESTIES EILUTĘ — tai vienintelė vieta, kur nesanitizuotas
+	// tekstas pasiekia terminalą. Serverio duomenys (nick'o prefiksas, kuris
+	// atėjo per JOIN/NAMES) gali turėti ESC/OSC seką: be šio filtro
+	// „OSC 52“ (rašymas į iškarpinę) ar „OSC 0“ (keisti lango pavadinimą)
+	// pasiektų terminalą be vartotojo žinios.
+	safeInput := sanitizeText(string(inputRunes))
+	dispRunes := []rune(safeInput)
 	maxInput := w - prefixLen - 1
 	dispStart := 0
 	if len(dispRunes) > maxInput {
@@ -974,7 +1453,15 @@ func (c *Client) draw() {
 	}
 	out.WriteString(string(dispRunes[dispStart:]))
 
-	cursorCol := prefixLen + 1 + (inputPos - dispStart)
+	// Kursorio pozicija — per SANITIZUOTĄ tekstą (sanitizavimas pašalina
+	// simbolius, todėl raw indeksas nebetinka). Skaičiuojame, kiek simbolių
+	// liko iki inputPos.
+	prefixRunes := inputRunes
+	if inputPos < len(prefixRunes) {
+		prefixRunes = prefixRunes[:inputPos]
+	}
+	curPos := len([]rune(sanitizeText(string(prefixRunes))))
+	cursorCol := prefixLen + 1 + (curPos - dispStart)
 	if cursorCol < 1 {
 		cursorCol = 1
 	}

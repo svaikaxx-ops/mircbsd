@@ -17,6 +17,10 @@ realname=Mano Vardas
 # Vartotojo vardas = nick laukas viršuje
 # sasl=slaptazodis
 
+# Serverio slaptažodis (PASS komanda) — bouncer arba privatus serveris.
+# Siunčiamas prieš NICK, kaip reikalauja RFC 2812.
+# password=slaptazodis
+
 # Automatiškai prisijungti prie kanalų paleidus
 # autojoin=#linux,#freebsd,#lietuviai
 

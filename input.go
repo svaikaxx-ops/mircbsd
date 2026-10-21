@@ -6,12 +6,16 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
 // ---- Klavišai ----
 
 func (c *Client) readKeys() {
+	// Panika klaviatūros apdoravime (pvz. neteisingas indeksas) negali palikti
+	// terminalo raw režimu — atkursime jį ir sustabdysime klientą.
+	defer c.recoverPanic("klaviatūros įvestis")
 	buf := make([]byte, 64)
 	for {
 		n, err := os.Stdin.Read(buf)
@@ -25,7 +29,13 @@ func (c *Client) readKeys() {
 }
 
 func (c *Client) handleKey(b []byte) {
-	if c.keysDebug {
+	// c.keysDebug skaitoma SU RAKINU — /keys komanda ją rašo parseIRC
+	// gorutinoje (handleCmd → input.go), o handleKey veikia klaviatūros
+	// gorutinoje. Be rakino — duomenų lenktynė.
+	c.mu.Lock()
+	keysDebug := c.keysDebug
+	c.mu.Unlock()
+	if keysDebug {
 		parts := make([]string, len(b))
 		for i, x := range b {
 			if x >= 32 && x < 127 {
@@ -65,9 +75,14 @@ func (c *Client) handleKey(b []byte) {
 				c.mu.Lock()
 				lines := c.pasteBuf
 				c.pasteBuf = nil
-				active := c.activeChan()
+				// c.mu jau užrakintas — Locked variantas.
+				active := c.activeChanLocked()
+				activeName := ""
+				if active != nil {
+					activeName = active.name
+				}
 				c.mu.Unlock()
-				if c.isConnected() && active != nil && active.name != "*server*" {
+				if c.isConnected() && activeName != "" && activeName != "*server*" {
 					for _, l := range lines {
 						if l == "" {
 							continue
@@ -137,6 +152,20 @@ func (c *Client) handleKey(b []byte) {
 		case 'B': // Ctrl+Down — nick scroll žemyn
 			c.mu.Lock()
 			c.nickScrollOff++
+			c.mu.Unlock()
+			c.queueRedraw()
+		case 'H': // Ctrl+Home — kanalų sąrašo slinktis į viršų
+			c.mu.Lock()
+			c.chanScrollOff = 0
+			c.mu.Unlock()
+			c.queueRedraw()
+		case 'F': // Ctrl+End — kanalų sąrašo slinktis į apačią
+			c.mu.Lock()
+			// Offsetas turi būti leistinose ribose (žr. clampChanScrollLocked):
+			// kitaip handleMouse spustelėjimas perskaičiuoja NETEISINGĄ indeksą
+			// ir pasirenka ne tą kanalą (arba nieko).
+			c.chanScrollOff = len(c.channels)
+			c.clampChanScrollLocked()
 			c.mu.Unlock()
 			c.queueRedraw()
 		case 'C': // Ctrl+Right — žodis pirmyn
@@ -455,7 +484,8 @@ func (c *Client) handleSearchKey(b []byte) {
 		case '\r', '\n': // Enter - atlikti paiešką
 			c.mu.Lock()
 			q := c.searchQuery
-			active := c.activeChan()
+			// c.mu jau užrakintas — Locked variantas.
+			active := c.activeChanLocked()
 			c.mu.Unlock()
 			if q != "" && active != nil {
 				c.doSearch(active, q)
@@ -594,14 +624,32 @@ var allCommands = []string{
 	"/nick", "/open", "/op", "/deop", "/voice", "/devoice",
 	"/part", "/query", "/quit", "/q",
 	"/raw", "/reconnect", "/search", "/time", "/topic",
-	"/unignore", "/urls", "/w", "/wc", "/whois", "/wi", "/win",
+	"/unignore", "/urls", "/w", "/wc", "/whois", "/wi", "/win", "/window",
 	"/help", "/keys",
 }
 
 func (c *Client) doTab() {
 	c.mu.Lock()
 	inputStr := string(c.input[:c.inputPos])
-	active := c.activeChan()
+	// c.mu jau užrakintas — Locked variantas.
+	active := c.activeChanLocked()
+	// Nukopijuojame nick'ų ir žinučių sąrašus — parseIRC gorutina tuo tarpu
+	// gali juos modifikuoti (sort.Nicks keičia vietomis), o be kopijos būtų
+	// duomenų lenktynė (race).
+	var nicks []string
+	var msgNicks []string
+	if active != nil {
+		nicks = append(nicks, active.nicks...)
+		for _, m := range active.messages {
+			if m.nick != "" {
+				msgNicks = append(msgNicks, m.nick)
+			}
+		}
+	}
+	prefixSigns := ""
+	if active != nil {
+		prefixSigns = active.prefixSigns()
+	}
 	c.mu.Unlock()
 	if active == nil {
 		return
@@ -611,8 +659,7 @@ func (c *Client) doTab() {
 		c.tabIdx = (c.tabIdx + 1) % len(c.tabCandidates)
 		chosen := c.tabCandidates[c.tabIdx]
 		c.mu.Lock()
-		wb := wordBefore(c.tabPrefix)
-		prefix := c.tabPrefix[:len([]rune(c.tabPrefix))-len([]rune(wb))]
+		prefix := stripLastWord(c.tabPrefix)
 		suffix := ""
 		if !strings.HasPrefix(c.tabPrefix, "/") {
 			if prefix == "" {
@@ -649,18 +696,23 @@ func (c *Client) doTab() {
 		}
 	} else {
 		seen := map[string]bool{}
-		for _, n := range active.nicks {
-			bare := stripMode(n, active.prefixSigns())
+		for _, n := range nicks {
+			// SANITIZUOJAME: nick'as atėjo iš serverio (JOIN/NAMES) ir gali
+			// turėti ESC/OSC seką. Be to jis įrašiamas į c.input, kuris
+			// (be sanitizavimo) pasiekia terminalą — per Tab-completion būtų
+			// gyvas OSC 52 (rašymas į iškarpinę) sinkas.
+			bare := sanitizeText(stripMode(n, prefixSigns))
 			if !seen[bare] && strings.HasPrefix(strings.ToLower(bare), wordLow) {
 				seen[bare] = true
 				candidates = append(candidates, bare)
 			}
 		}
-		for _, m := range active.messages {
-			if m.nick != "" && !seen[m.nick] {
-				seen[m.nick] = true
-				if strings.HasPrefix(strings.ToLower(m.nick), wordLow) {
-					candidates = append(candidates, m.nick)
+		for _, m := range msgNicks {
+			m = sanitizeText(m)
+			if !seen[m] {
+				seen[m] = true
+				if strings.HasPrefix(strings.ToLower(m), wordLow) {
+					candidates = append(candidates, m)
 				}
 			}
 		}
@@ -676,7 +728,7 @@ func (c *Client) doTab() {
 
 	chosen := candidates[0]
 	c.mu.Lock()
-	prefix := inputStr[:len([]rune(inputStr))-len([]rune(word))]
+	prefix := stripLastWord(inputStr)
 	suffix := ""
 	if !strings.HasPrefix(word, "/") {
 		if prefix == "" {
@@ -694,6 +746,20 @@ func (c *Client) doTab() {
 	c.inputPos = len([]rune(prefix + chosen + suffix))
 	c.mu.Unlock()
 	c.queueRedraw()
+}
+
+// stripLastWord grąžina s be paskutinio žodžio (iki jo pradžios).
+//
+// Anksčiau buvo `s[:len([]rune(s))-len([]rune(word))]` — tai BYTE slicing
+// su RUNE'ų skaičiumi: „žinutė kai“ nukirpo iki „žinut\xc4“ (nutrūkusi
+// UTF-8 seka). Dabar skaičiuojama rune'ais.
+func stripLastWord(s string) string {
+	r := []rune(s)
+	word := []rune(wordBefore(s))
+	if len(word) >= len(r) {
+		return ""
+	}
+	return string(r[:len(r)-len(word)])
 }
 
 func wordBefore(s string) string {
@@ -715,28 +781,325 @@ func firstField(s string) string {
 	return f[0]
 }
 
-// isSensitiveHistory – komandos, kuriose gali būti slaptažodis (NickServ
-// IDENTIFY/REGISTER/CONFIRM/SET PASSWORD), nesaugomos įvesties istorijos faile.
+// isSensitiveHistory – komandos, kuriose gali būti slaptažodis, nesaugomos
+// ĮVEDIMO ISTORIJOS faile.
+//
+// ATKREIPKITE: ši funkcija tikrina VARTOJO ĮVEDIMO eilutę – todėl ji gali
+// būti pli (žodis „register“ ar „pass“ komandos pradžioje yra tikras
+// komandos pavadinimas). ŽURNALUI naudokite `isSensitiveLogLine` – ten
+// reikia atpažinti slaptažodį TIK komandų kontekste, nes į žurnalą
+// rašomi ir įprasti pokalbiai.
+//
+// Apimamos formos:
+//   - NickServ: /msg NickServ identify <pass>, /ns register <pass> <email>,
+//     /ns confirm <kodas>, /ns set password <pass>, /ns auth <pass>
+//   - Tiesioginės formos (be „nickserv“ prefikso): „register <pass> …“,
+//     „set password <pass>“, „confirm <kodas>“ – serveris gali atsiųsti
+//     atsakymą be prefikso, o vartotojas gali rašyti komandą tiesiogiai.
+//   - Serverio slaptažodis: PASS <pass> (serverio slaptažodis / bouncer)
+//   - OPER: OPER <pass> (operatoriaus slaptažodis)
 func isSensitiveHistory(line string) bool {
-	low := strings.ToLower(line)
+	low := strings.ToLower(strings.TrimSpace(line))
+	if low == "" {
+		return false
+	}
+	// Serverio ir operatoriaus slaptažodžiai – visada slapti, nepaisant
+	// konteksto. „/raw PASS x“ (arba „/raw OPER x“) turi slėpti.
+	if isRawSecretCommand(low) {
+		return true
+	}
 	// /msg nickserv identify <pass> / register <pass> <email> / confirm <kodas> /
 	// set password <pass>
 	const nsPrefix = "msg nickserv"
 	nickCmd := strings.HasPrefix(low, "/ns ") ||
 		strings.HasPrefix(low, "/nickserv ") ||
 		strings.HasPrefix(low, "/squery ") ||
+		strings.HasPrefix(low, "nickserv ") ||
 		strings.Contains(low, nsPrefix)
 	if !nickCmd {
-		// Ne NickServ komanda — žymime (senos versijos elgsena) tik
-		// eilutes su „identify“ žodžiu
-		return strings.Contains(low, "identify")
+		// Ne NickServ komanda – tikriname, ar eilutė pati nėra slaptažodį
+		// turinti komanda. Tikriname žodį pagal BAIGTĄ (atskirame lauku),
+		// kad „identification“ ar „re-register“ žodžio viduryje neatpažintume
+		// komandos. Bet „identify“ – visada slapta (anksčiau taip buvo).
+		if containsWord(low, "identify") {
+			return true
+		}
+		// Tiesioginės formos: eilutė PRADEDA komanda (pvz. „register …“,
+		// „set password …“, „confirm …“, „auth …“). Tokios komandos dažnai
+		// atsiunčiamos iš serverio be „nickserv“ prefikso – anksčiau jos
+		// lėkė į žurnalą plaintext.
+		return isBareSecretCommand(low)
 	}
 	for _, kw := range []string{"identify", "ident ", "register", "confirm", "set password", "auth"} {
 		if strings.Contains(low, kw) {
 			return true
 		}
 	}
+	// Trumpinta forma: „set p <slaptažodis>“. NickServ leidžia rašyti „set p
+	// password“ trumpai – anksčiau ši forma nebuvo aptinkama, todėl
+	// slaptažodis likdavo įvedimo istoriją.
+	if isSetPasswordShort(low) {
+		return true
+	}
 	return false
+}
+
+// isSensitiveLogLine – ar ŽURNALO eilutė turi slėpti slaptažodį.
+//
+// SKIRTIS NUO isSensitiveHistory: žurnale yra ir ĮPRASTI POKALBIAI (kitų
+// žmonių žinutės). Platus „pirmas žodis“ tikrinimas („register …“,
+// „pass …“, „auth …“) ten slėpdų VISKĄ, kas pradžiasi šiais žodžiais –
+// pvz. „register your vote today“ ar „pass the salt please“ – t. y.
+// žurnalas tyliai prarado realų pokalbių tekstą.
+//
+// Čia taikome TIK komandų KONTEKSTĄ:
+//   - „msg nickserv …“ (ir „/ns …“, „/nickserv …“, „nickserv …“)
+//   - komanda, PRISIŠTA prie žinutės kaip komanda (pradžia su „/“)
+//   - serverio/operatoriaus slaptažodžiai („PASS x“, „OPER x“, „/raw …“)
+//
+// Sąmoningas kompromisas: serverio atsiųstas „register <kodas>“ (be
+// prefikso) į žurnalą nebepateks – komanda be konteksto neatpažįstama,
+// bet įprastas pokalbis lieka įrašytas.
+func isSensitiveLogLine(line string) bool {
+	low := strings.ToLower(strings.TrimSpace(line))
+	if low == "" {
+		return false
+	}
+	// Serverio ir operatoriaus slaptažodžiai – visada slapti, bet TIK
+	// komandų forma: „/raw pass x“, „/pass x“ arba grynas komandų pavadinimas
+	// („pass x“ – serverio atsiųsta komanda). Pokalbyje žodį „pass“ naudojame
+	// paprastai – jis nėra komanda.
+	if isSensitiveLogRawSecret(low) {
+		return true
+	}
+	// Vartotojo komanda („/ns identify …“, „/register …“) – aiškus komandos
+	// pavadinimas, ne pokalbis.
+	if strings.HasPrefix(low, "/") {
+		return isSensitiveHistory(low)
+	}
+	// NickServ komanda su prefiksu.
+	const nsPrefix = "msg nickserv"
+	if strings.HasPrefix(low, "/ns ") ||
+		strings.HasPrefix(low, "/nickserv ") ||
+		strings.HasPrefix(low, "/squery ") ||
+		strings.HasPrefix(low, "nickserv ") ||
+		strings.Contains(low, nsPrefix) {
+		return isSensitiveHistory(low)
+	}
+	// Be konteksto – NIEKO nesuslapiname: „register your vote“,
+	// „identify the problem“ ir „pass the salt“ yra įprasti pokalbiai, ne
+	// komandos. Tik aiškios komandų formos (kurių kontekstas matomas)
+	// slėpinamos.
+	return false
+}
+
+// isSensitiveLogRawSecret – ar eilutė yra serverio/operatoriaus slaptažodžio
+// KOMANDA (tik komandų forma, ne pokalbis).
+//
+// ŽURNALO lygis: „pass the salt please“ – pokalbis, NE komanda, todėl
+// įrašomas. „/raw pass x“, „/pass x“ ir grynas „pass x“ (serverio komanda
+// į serverio langą) – slapti.
+func isSensitiveLogRawSecret(low string) bool {
+	norm := strings.Join(strings.Fields(low), " ")
+	if norm == "" {
+		return false
+	}
+	for _, cmd := range []string{"pass", "oper"} {
+		if strings.HasPrefix(norm, "/"+cmd+" ") || strings.HasPrefix(norm, "/raw "+cmd+" ") {
+			return true
+		}
+		// Grynos komandos forma: „pass x“ / „oper x“ — serverio atsiųsta
+		// komanda (jos atsiunčiamos į *server* langą, ne kaip pokalbis).
+		// Bet „pass the salt“ — pokalbis…?
+		//
+		// SKIRTIS: komanda neturi reikšmingo žodžio PO komandos
+		// pavadinimo — t. y. argumentas yra trumpas ir be tarpų
+		// (slaptažodis). „pass the salt please“ turi 3 žodžius — pokalbis.
+		if strings.HasPrefix(norm, cmd+" ") && isSecretArgument(norm[len(cmd)+1:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSecretArgument – ar komandos argumentas atrodo kaip slaptažodis.
+//
+// Kriterijai: argumentas neturi tarpų (vienas „žodis“) ir turi
+// SLAPTAŽODŽIO FORMĄ — skaičių, didžiąją/mišrią raistą arba specialų
+// simbolį („hunter2“, „Secret1!“, „my!pass“). Tai atskiria „pass hunter2“
+// (slaptažodis) nuo „pass the“ (pokalbis).
+//
+// Anksčiau KIEKVIENAS vieno žodžio argumentas buvo laikomas slaptu
+// (skaitmenų/raidžių patikros buvo negyvas kodas — visi keliai grąžindavo
+// true): pokalbio eilutė „pass the“ žurnale taptų „[slaptažodis
+// paslėptas]“ — tikras pokalbio tekstas prarastas.
+//
+// KOMPROMISAS: visos mažųjų raidžių slaptažodis („hunter2“ be skaitukos...
+// t. y. „mysecret“, trumpas) atpažįstamas kaip slaptažodis tik tada, kai
+// jis ilgesnis nei žodžiuose įprastai (slaptu, jei ilgesnis nei 10) —
+// trumpi žodžiai („the“, „me“, „salt“) yra pokalbis.
+func isSecretArgument(arg string) bool {
+	if arg == "" || len(arg) > 64 {
+		return false
+	}
+	if strings.ContainsAny(arg, " \t\r\n") {
+		return false
+	}
+	// Slaptažodžio FORMA — skaitmenys, didžiosios raidės (arba mišinys)
+	// arba specialūs simboliai visada kelia įtarimą.
+	if strings.ContainsAny(arg, "0123456789") {
+		return true
+	}
+	if arg != strings.ToLower(arg) {
+		return true
+	}
+	if len(arg) != len(strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, arg)) {
+		// Yra specialių simbolių („my!pass“) — greičiausiai slaptažodis.
+		return true
+	}
+	// Visos mažosios raidės — įprastas žodis (pokalbis), NE slaptažodis;
+	// išimtis — ilgos eilutės („myverysecretpass“), kurios žodžių sąraše
+	// nebetelpa.
+	return len([]rune(arg)) > 10
+}
+
+// isRawSecretCommand aptinka serverio/operatoriaus slaptažodžio komandas —
+// „PASS <pass>“, „OPER <pass>“ (ir su „/raw “ prefiksu). Tokios komandos
+// niekada neturi būti įrašomos į istoriją ar žurnalą.
+//
+// DVI TAISYKLĖS:
+//
+//  1. Atpažįstamos tik KOMANDŲ formos — su „/“ arba „/raw “ prefiksu, arba
+//     kaip atskira komanda („pass x“). Pokalbyje žodį „pass“ naudojame
+//     paprastai („pass the salt please“) — jis nėra komanda, todėl neturi
+//     būti slaptinamas. ŽURNALE tai yra tikras duomenų praradimas.
+//
+//  2. Tarpai normalizuojami: „/raw  PASS x“ (du tarpai) turi būti
+//     atpažįstamas lygiai kaip „/raw pass x“ — anksčiau papildomas tarpas
+//     apeikdavo patikrinimą, o slaptažodis lėkė į žurnalą plaintext.
+//
+// Istorijos lygis: „pass x“ čia TIKRAI yra komanda — vartotojas pats ją
+// įvedė (žurnalui žr. isSensitiveLogRawSecret, kur pokalbio forma
+// įvertinama atskirai).
+func isRawSecretCommand(low string) bool {
+	// Normalizuojame tarpus — „/raw  PASS x“ ir „/raw pass x“ yra ta
+	// pati komanda.
+	norm := strings.Join(strings.Fields(low), " ")
+	if norm == "" {
+		return false
+	}
+	for _, cmd := range []string{"pass", "oper"} {
+		// Formos: „pass x“, „/pass x“, „/raw pass x“, „oper x“, „/oper x“,
+		// „/raw oper x“.
+		//
+		// ANKSTESNĖ VERSIJA tikrino tik tris iš šių šešių — todėl
+		// „/oper slaptažodis“ lėkė į žurnalą plaintext.
+		for _, prefix := range []string{cmd + " ", "/" + cmd + " ", "/raw " + cmd + " "} {
+			if strings.HasPrefix(norm, prefix) {
+				return true
+			}
+		}
+		if norm == cmd || norm == "/"+cmd {
+			return true
+		}
+	}
+	return false
+}
+
+// containsWord tikrina, ar žodis yra atskiras (ne kito žodžio viduje).
+func containsWord(low, word string) bool {
+	idx := 0
+	for {
+		i := strings.Index(low[idx:], word)
+		if i == -1 {
+			return false
+		}
+		i += idx
+		before := i == 0 || isWordSep(rune(low[i-1]))
+		afterIdx := i + len(word)
+		after := afterIdx >= len(low) || isWordSep(rune(low[afterIdx]))
+		if before && after {
+			return true
+		}
+		idx = i + len(word)
+		if idx >= len(low) {
+			return false
+		}
+	}
+}
+
+// isWordSep tikrina, ar simbolis yra atskiras žodžio riba.
+func isWordSep(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r'
+}
+
+// isBareSecretCommand aptinka slaptažodį turinčias komandas, kurios eilutę
+// PRADEDA (be „nickserv“ / „/msg“ prefikso):
+//
+//	„register <pass> <email>“
+//	„confirm <kodas>“
+//	„set password <pass>“ (ir „set p <pass>“)
+//	„auth <pass>“
+//	„identify <pass>“
+//
+// Serverio atsakymai dažnai būna be prefikso — anksčiau jie lėkė į žurnalą
+// plaintext.
+func isBareSecretCommand(low string) bool {
+	fields := strings.Fields(low)
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "register", "confirm", "auth", "identify", "ident", "password":
+		return len(fields) > 1
+	case "set":
+		// „set password <pass>“ / „set p <pass>“ — bet „set away“ ar
+		// „set quiet“ nėra slaptažodis.
+		if len(fields) < 3 {
+			return false
+		}
+		switch fields[1] {
+		case "p", "pass", "password":
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// isSetPasswordShort tikrina NickServ komandą „set p <slaptažodis>“.
+//
+// Atpažįstamos formos: „/msg NickServ set p <pass>“, „/ns set p <pass>“
+// (ir bet koks kitas NickServ komandos pavadinimas).
+func isSetPasswordShort(low string) bool {
+	// Ieškome žodžio „set“ ir po jo — raidės „p“ (arba „pass“).
+	idx := 0
+	for {
+		i := strings.Index(low[idx:], "set ")
+		if i == -1 {
+			return false
+		}
+		i += idx
+		rest := strings.TrimSpace(low[i+4:])
+		if rest == "" {
+			return false
+		}
+		// Pirmas žodis po „set“ turi būti slaptažodžio parametras.
+		word := rest
+		if j := strings.IndexAny(rest, " 	"); j != -1 {
+			word = rest[:j]
+		}
+		switch word {
+		case "p", "pass", "password":
+			return true
+		}
+		idx = i + 4
+	}
 }
 
 func decodeRune(b []byte) (rune, int) {
@@ -764,9 +1127,13 @@ func (c *Client) handleInput(text string) {
 		return
 	}
 	c.mu.Lock()
-	active := c.activeChan()
+	active := c.activeChanLocked()
+	activeName := ""
+	if active != nil {
+		activeName = active.name
+	}
 	c.mu.Unlock()
-	if active == nil || active.name == "*server*" {
+	if activeName == "" || activeName == "*server*" {
 		c.serverMsg("Rašyk /join #kanalas kad prisijungtum")
 		return
 	}
@@ -834,6 +1201,11 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.errMsg("Netinkamas slapyvardis (leistini simboliai: raidės, skaičiai, _-[]\\^{}|, max 30)")
 			return
 		}
+		// Serverio NICKLEN riba (kai pranešta 005).
+		if !c.isValidNickLen(newNick) {
+			c.errMsg(fmt.Sprintf("Slapyvardis per ilgas — serveris leidžia %d simbolius", c.nickLenLimit()))
+			return
+		}
 		c.mu.Lock()
 		c.nick = newNick
 		conn := c.conn
@@ -855,16 +1227,48 @@ func (c *Client) handleCmd(cmd, args string) {
 		// Kanalo pavadinimas įrašomas į JOIN komandą — turi būti
 		// skaidriai ribojamas (tarpai, CRLF, valdymo simboliai
 		// neleistini), kad būtų išvengta komandų injekcijos.
-		if !isValidChannel(chName) {
+		// Prefiksas tikrinamas pagal serverio CHANTYPES — kai serveris
+		// naudoja „#$“, kanalas „$kanalas“ yra galiojantis.
+		ct, _, _, _, _ := c.isupSnapshot()
+		if !isValidChannelFor(chName, ct) {
 			c.errMsg("Netinkamas kanalo pavadinimas (raidės, skaičiai ir .-_ ; max 50)")
 			return
 		}
+		// Serverio CHANNELLEN riba (kai pranešta 005).
+		if len([]rune(chName)) > c.channelLenLimit() {
+			c.errMsg(fmt.Sprintf("Kanalo pavadinimas per ilgas — serveris leidžia %d simbolius", c.channelLenLimit()))
+			return
+		}
 		c.mu.Lock()
-		c.ensureCh(chName)
-		c.mu.Unlock()
+		if ch := c.ensureCh(chName); ch == nil {
+			// Atmetimas (ribose ar negaliojantis vardas) — įspėjimą
+			// sunaudojame TIK kai įsimintas vardas atitinka ŠITĄ kanalą;
+			// kitaip (kai priežastis kita) palikume įspėjimą nevalytą —
+			// jis priklauso savam kanalui (žr. addMsg).
+			if hit := c.chanLimitHit; hit != "" && hit == sanitizeChanName(chName) {
+				c.chanLimitHit = ""
+				c.mu.Unlock()
+				c.errMsg(fmt.Sprintf("ĮSPĖJIMAS: pasiektas kanalų limitas — kanalas „%s“ neatidarytas", hit))
+			} else {
+				c.mu.Unlock()
+			}
+		} else {
+			c.mu.Unlock()
+		}
 		if c.isConnected() {
 			if len(parts) == 2 && parts[1] != "" {
-				c.send("JOIN " + chName + " " + parts[1])
+				// KANALO RAKTAS — jis įrašomas į JOIN komandą kaip
+				// parametras. Tarpas yra IRC parametrų skirtukas: rakte
+				// su tarpais serveris gavo „JOIN #kanalas raktas papildomas“
+				// — papildomą (netiesioginį) kanalą, kurio serveris nekvietė.
+				// Rakto NEGALI būti su tarpais, CRLF ar komandų skyrimo
+				// simboliais.
+				key := parts[1]
+				if !isValidChannelKey(key) {
+					c.errMsg("Netinkamas kanalo raktas (be tarpų ir specialių simbolių; max 64)")
+					return
+				}
+				c.send("JOIN " + chName + " " + key)
 			} else {
 				c.send("JOIN " + chName)
 			}
@@ -923,9 +1327,22 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		nick := parts[0]
+		// Nick'as įrašomas į INVITE komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		if !isValidNick(nick) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		chName := ""
 		if len(parts) >= 2 {
 			chName = parts[1]
+			// Kanalas įrašomas į komandą kaip TIKSLAS — turi būti
+			// serverio CHANTYPES atitinkantis pavadinimas.
+			ct, _, _, _, _ := c.isupSnapshot()
+			if !isValidChannelFor(chName, ct) {
+				c.errMsg("Netinkamas kanalo pavadinimas (raidės, skaičiai ir .-_ ; max 50)")
+				return
+			}
 		} else {
 			chName = c.activeName()
 		}
@@ -955,8 +1372,15 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		chName := c.activeName()
+		// Nick'as įrašomas į MODE komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		nick := firstField(args)
+		if !isValidNick(nick) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		if c.isConnected() {
-			c.send(fmt.Sprintf("MODE %s +o %s", chName, firstField(args)))
+			c.send(fmt.Sprintf("MODE %s +o %s", chName, nick))
 		}
 
 	case "deop":
@@ -965,8 +1389,15 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		chName := c.activeName()
+		// Nick'as įrašomas į MODE komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		nick := firstField(args)
+		if !isValidNick(nick) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		if c.isConnected() {
-			c.send(fmt.Sprintf("MODE %s -o %s", chName, firstField(args)))
+			c.send(fmt.Sprintf("MODE %s -o %s", chName, nick))
 		}
 
 	case "voice":
@@ -975,8 +1406,15 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		chName := c.activeName()
+		// Nick'as įrašomas į MODE komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		nick := firstField(args)
+		if !isValidNick(nick) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		if c.isConnected() {
-			c.send(fmt.Sprintf("MODE %s +v %s", chName, firstField(args)))
+			c.send(fmt.Sprintf("MODE %s +v %s", chName, nick))
 		}
 
 	case "devoice":
@@ -985,8 +1423,15 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		chName := c.activeName()
+		// Nick'as įrašomas į MODE komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		nick := firstField(args)
+		if !isValidNick(nick) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		if c.isConnected() {
-			c.send(fmt.Sprintf("MODE %s -v %s", chName, firstField(args)))
+			c.send(fmt.Sprintf("MODE %s -v %s", chName, nick))
 		}
 
 	case "me":
@@ -1002,6 +1447,12 @@ func (c *Client) handleCmd(cmd, args string) {
 			if args == "" {
 				c.send("TOPIC " + activeName)
 			} else {
+				// TOPICLEN riba (kai pranešta 005) — per ilga tema
+				// serveris atmetins, o kai kurie serveriai nutrūksta.
+				if len([]rune(args)) > c.topicLenLimit() {
+					c.errMsg(fmt.Sprintf("Tema per ilga — serveris leidžia %d simbolius", c.topicLenLimit()))
+					return
+				}
 				c.send(fmt.Sprintf("TOPIC %s :%s", activeName, args))
 			}
 		}
@@ -1017,9 +1468,20 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.errMsg("/kick galima tik kanale")
 			return
 		}
+		// Nick'as įrašomas į KICK komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		if !isValidNick(parts[0]) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		reason := "Kicked"
 		if len(parts) == 2 && parts[1] != "" {
 			reason = parts[1]
+		}
+		// KICKLEN riba (kai pranešta 005).
+		if c.kickLenLimit() > 0 && len([]rune(reason)) > c.kickLenLimit() {
+			c.errMsg(fmt.Sprintf("Priežastis per ilga — serveris leidžia %d simbolius", c.kickLenLimit()))
+			return
 		}
 		c.send(fmt.Sprintf("KICK %s %s :%s", chName, parts[0], reason))
 
@@ -1036,13 +1498,45 @@ func (c *Client) handleCmd(cmd, args string) {
 		// Jei pirmasis argumentas prasideda +/-, taikome aktyviam kanalui
 		if strings.HasPrefix(fields[0], "+") || strings.HasPrefix(fields[0], "-") {
 			chName := c.activeName()
-			c.send("MODE " + chName + " " + args)
+			if !c.isChannel(chName) {
+				c.errMsg("/mode galima tik kanale")
+				return
+			}
+			if !isValidModeSpec(fields[1:]) {
+				c.errMsg("Netinkami mode parametrai (per daug parametrų arba specialūs simboliai)")
+				return
+			}
+			c.send("MODE " + chName + " " + strings.Join(fields, " "))
 		} else {
-			c.send("MODE " + args)
+			// TIKSLAS (kanalas, nick'as ar serverio kaukė) — jis įrašomas
+			// į komandą kaip pirmas parametras. Be validacijos galėjo būti
+			// „*server*“-style kaukė su papildomais parametrais.
+			if !isValidModeTarget(fields[0]) {
+				c.errMsg("Netinkamas MODE tikslas (kanalas, nick'as ar serverio kaukė)")
+				return
+			}
+			if !isValidModeSpec(fields[1:]) {
+				c.errMsg("Netinkami mode parametrai (per daug parametrų arba specialūs simboliai)")
+				return
+			}
+			c.send("MODE " + strings.Join(fields, " "))
 		}
 
 	case "whois", "wi":
 		if w := firstField(args); c.isConnected() && w != "" {
+			// Nick'as įrašomas į WHOIS komandą — be validacijos jame gali
+			// būti tarpas (papildomas parametras).
+			if !isValidNick(w) {
+				c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+				return
+			}
+			// WHOIS atsakymai rodomi aktyviame kanale (jei esame kanale) —
+			// anksčiau jie visada eidavo į *server* langą.
+			if act := c.activeName(); c.isChannel(act) {
+				c.setWhoisTarget(act)
+			} else {
+				c.setWhoisTarget("")
+			}
 			c.send("WHOIS " + w)
 		}
 
@@ -1075,7 +1569,8 @@ func (c *Client) handleCmd(cmd, args string) {
 
 	case "clear":
 		c.mu.Lock()
-		activeCh := c.activeChan()
+		// c.mu jau užrakintas — Locked variantas.
+		activeCh := c.activeChanLocked()
 		if activeCh == nil {
 			c.mu.Unlock()
 			return
@@ -1088,6 +1583,12 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.chaseUntil = time.Time{}
 		activeCh.scrollOff = 0
 		activeCh.renderGen++
+		// Cache'ą reikia IŠTRINTI, ne tik „panaikinti“: senos eilutės
+		// liko cache'e, o žinutės buvo ištrintos — inkrementalus cache'as
+		// tikėtųsi, kad cache'e yra N žinučių, kurių jau nėra.
+		activeCh.rendered = nil
+		activeCh.renderedGen = -1
+		activeCh.renderedMsgCount = 0
 		c.mu.Unlock()
 		c.queueRedraw()
 
@@ -1096,13 +1597,22 @@ func (c *Client) handleCmd(cmd, args string) {
 		// Su argumentu — tik to kanalo logai.
 		chanName := args
 		if chanName != "" {
+			// Kanalas gali NEBŪTI šiame seanse — jo žurnalai vis tiek
+			// gali egzistuoti (anksčiau buvome prisijungę, arba serveris
+			// siuntė žinutes į kanalą, kurį vėliau palikome). Tokiu atveju
+			// ankstesnė elgsena atmetdavo komandą su klaida — o tai yra
+			// neteisinga: vartotojas nori IŠTRINTI tuos failus.
+			//
+			// Saugumas: pavadinimas sanitizuojamas clearLogs() viduje
+			// (sanitizePath — be „..“, be kelio separatorių), todėl
+			// komandos tikslo klastojimas neįmanomas.
+			//
+			// Čia NEsanitizuojame — sanituoja clearLogs(), o etiketė
+			// (rodoma vartotojui) turi likti originali.
 			c.mu.Lock()
 			target := c.findCh(chanName)
 			c.mu.Unlock()
-			if target == nil {
-				c.errMsg("Kanalo „" + chanName + "“ nėra šiame seanse")
-				return
-			}
+			_ = target // nėra šiame seanse — bet žurnalai gali būti diske
 		}
 		n := c.clearLogs(chanName)
 		label := chanName
@@ -1117,7 +1627,8 @@ func (c *Client) handleCmd(cmd, args string) {
 
 	case "names":
 		c.mu.Lock()
-		active := c.activeChan()
+		// c.mu jau užrakintas — Locked variantas.
+		active := c.activeChanLocked()
 		chName := ""
 		if active != nil {
 			chName = active.name
@@ -1125,6 +1636,10 @@ func (c *Client) handleCmd(cmd, args string) {
 		do := c.connected && c.isChannel(chName)
 		if do {
 			active.nicks = nil
+			// Žemėlapis turi būti išvalomas TOGIU PAT — priešingu atveju
+			// liko seni indeksai ir addNick/removeNick nebesutaptų su
+			// tikrais nick'ais.
+			active.nickSet = nil
 		}
 		c.mu.Unlock()
 		if do {
@@ -1160,7 +1675,10 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		c.mu.Lock()
-		newList := c.ignoreList[:0]
+		// NAUJA kopija, ne filtravimas in-place: senas backing array
+		// galėjo būti perskaitytas kito goroutine (isIgnored) — in-place
+		// filtravimas padaro ją laikinai klaida (dubliuoti elementai).
+		newList := make([]string, 0, len(c.ignoreList))
 		for _, ig := range c.ignoreList {
 			if !strings.EqualFold(ig, nick) {
 				newList = append(newList, ig)
@@ -1185,6 +1703,13 @@ func (c *Client) handleCmd(cmd, args string) {
 	case "list":
 		if c.isConnected() {
 			if args != "" {
+				// LIST filtras įrašomas į komandą kaip parametras —
+				// be validacijos jame gali būti tarpas (papildomas
+				// parametras) arba CRLF.
+				if !isValidListFilter(args) {
+					c.errMsg("Netinkamas LIST filtras (be tarpų ir specialių simbolių; max 64)")
+					return
+				}
 				c.send("LIST " + args)
 			} else {
 				c.send("LIST")
@@ -1199,7 +1724,8 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.mu.Unlock()
 		} else {
 			c.mu.Lock()
-			active := c.activeChan()
+			// c.mu jau užrakintas — Locked variantas.
+			active := c.activeChanLocked()
 			c.mu.Unlock()
 			if active != nil {
 				c.doSearch(active, args)
@@ -1250,7 +1776,42 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.send(args)
 		}
 
-	case "w", "win", "window":
+	case "w":
+		// /w — WHO (kaip visuose IRC klientuose). Anksčiau /w rodė langų
+		// sąrašą, todėl WHO komanda niekada nesiunčiama, o 352/354/315
+		// numerikai liko neapdoroti.
+		target := ""
+		if args != "" {
+			target = firstField(args)
+			// WHO tikslas įrašomas į komandą kaip parametras — be
+			// validacijos jame gali būti tarpas (papildomas parametras)
+			// arba CRLF.
+			if !isValidWhoTarget(target) {
+				c.errMsg("Netinkamas WHO tikslas (kanalas, nick'as arba „*“)")
+				return
+			}
+		}
+		if target == "" {
+			c.mu.Lock()
+			// c.mu jau užrakintas — Locked variantas.
+			if ch := c.activeChanLocked(); ch != nil {
+				target = ch.name
+			}
+			c.mu.Unlock()
+		}
+		if target == "" {
+			target = "*"
+		}
+		// Atsakymus rodykime kanale, kuriame užklausta (jei tai kanalas) —
+		// anksčiau jie visada eidavo į *server* langą ir kanale buvo nematomi.
+		if c.isChannel(target) {
+			c.setWhoTarget(target)
+		} else {
+			c.setWhoTarget("")
+		}
+		c.send("WHO " + target)
+
+	case "win", "window":
 		if args == "" {
 			c.mu.Lock()
 			type winRow struct {
@@ -1356,7 +1917,8 @@ func (c *Client) handleCmd(cmd, args string) {
 			"/open [n]                            atidaryti URL naršyklėje",
 			"/clear                               išvalyti kanalo istoriją",
 			"/clearlogs [kanalas]                 ištrinti log failus (numatytai: visi šiame serveryje)",
-			"/w [n]                               langų sąrašas",
+			"/w [mask]                            WHO (serverio vartotojai)",
+			"/window [n]                          langų sąrašas / perjungti",
 			"/quit                                išeiti",
 			"───────────────────────────────────────────────────",
 			"PgUp/PgDn       scroll      ↑↓   scroll / istorija",
@@ -1366,6 +1928,7 @@ func (c *Client) handleCmd(cmd, args string) {
 			"Ctrl+←/→        žodžio navigacija",
 			"F1-F12 / Alt+1-9  kanalas pagal numerį",
 			"Tab             autocomplete   Ctrl+↑↓  nick scroll",
+			"Ctrl+Home/End   kanalų sąrašo slinktis",
 			"───────────────────────────────────────────────────",
 			"/ignore dabar palaiko maskes: nick!user@host, *!user@*, *",
 		}
@@ -1469,8 +2032,17 @@ func (c *Client) handleMouse(b []byte) {
 		c.mu.Lock()
 		top := c.msgAreaTop
 		nChan := len(c.channels)
+		// Slinktis tarpininkauja perskaičiuodamas ekrano eilutę į kanalo
+		// indeksą — offsetas PRIEŠ tai SUGRUBINAMAS (terminalo perdarymas
+		// gali būti sumažinęs msgRows nuo paskutinio slinkties keitimo;
+		// draw() sugrubina tik savo kopiją — čia naudojame įRAŠYTĄ vertę).
+		c.clampChanScrollLocked()
+		chanScroll := c.chanScrollOff
 		c.mu.Unlock()
-		idx := y - top
+		// Kanalų sąrašas gali būti paslinktas — spustelėjusio eilutės
+		// kanalas atsiranda ne tiesioginiu indeksu, o su slinkties
+		// poslinkiu.
+		idx := y - top + chanScroll
 		if x <= chanListWidth && idx >= 0 && idx < nChan {
 			c.switchCh(idx)
 		}

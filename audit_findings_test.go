@@ -268,7 +268,7 @@ func TestFinding_ISUPPORTIsolatedPerClient(t *testing.T) {
 
 	c1.applyISUPPORT([]string{"CHANTYPES=!@"})
 
-	if ct, _, _, _ := c2.isupSnapshot(); ct != "#&" {
+	if ct, _, _, _, _ := c2.isupSnapshot(); ct != "#&" {
 		t.Errorf("CONFIRMED: vieno kliento ISUPPORT pakeitė kito: %q (turi likti \"#&\")", ct)
 	}
 }
@@ -526,10 +526,15 @@ func TestFinding_UnboundedChannelList(t *testing.T) {
 		c.parseIRC(":flood" + n + "!u@h JOIN #c" + n)
 	}
 	c.mu.Lock()
-	n := len(c.channels)
+	// Skaičiuojame TIK realius kanalus — vidinis „*server*“ langas nėra
+	// vartotojo kanalas (jis visada egzistuoja).
+	real, private := c.countChannelsLocked()
 	c.mu.Unlock()
-	if n > 100 {
-		t.Errorf("CONFIRMED: JOIN flood sukūrė %d kanalų (neribota)", n)
+	if real > maxChannels {
+		t.Errorf("CONFIRMED: JOIN flood sukūrė %d realių kanalų (neribota)", real)
+	}
+	if private > maxPrivateChannels {
+		t.Errorf("CONFIRMED: PM flood sukūrė %d privačių pokalbių (neribota)", private)
 	}
 }
 
@@ -552,6 +557,8 @@ func TestFinding_ClearLogsDocMismatch(t *testing.T) {
 
 	c.logMessage(dir, "srv", "#a", Message{ts: time.Now(), text: "x", msgType: MsgChat})
 	c.logMessage(dir, "srv", "#b", Message{ts: time.Now(), text: "x", msgType: MsgChat})
+	// Uždaryti atvirus rankenas — kad t.TempDir() galėtų ištrinti katalogą.
+	defer c.closeLogs()
 
 	c.handleCmd("clearlogs", "")
 

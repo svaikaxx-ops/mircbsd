@@ -176,7 +176,16 @@ type sentCollector struct {
 func collectSent(c *Client) *sentCollector {
 	sc := &sentCollector{}
 	go func() {
-		for line := range c.writeCh {
+		for {
+			// writeCh imamas SU RAKINU — doConnect jį keičia prisijungimo
+			// metu (be rakino — duomenų lenktynė).
+			c.mu.Lock()
+			ch := c.writeCh
+			c.mu.Unlock()
+			line, ok := <-ch
+			if !ok {
+				return
+			}
 			sc.mu.Lock()
 			sc.list = append(sc.list, line)
 			sc.mu.Unlock()
@@ -632,6 +641,7 @@ func TestLogging(t *testing.T) {
 		text:    "Labas!",
 		msgType: MsgChat,
 	}
+	defer c.closeLogs()
 	c.logMessage(dir, "irc.test.com", "#testas", msg)
 	// Leisti goroutine baigti
 	time.Sleep(20 * time.Millisecond)
@@ -1324,4 +1334,25 @@ func TestConfigQuotesStripped(t *testing.T) {
 	if loadConfig(p).RealName != `Vardas "P" Pav` {
 		t.Error("kabutė viduje neturi būti pašalinta")
 	}
+}
+
+// silenceStdout nukreipia stdout į /dev/null, kol vykdoma funkcija.
+//
+// draw() spausina ANSI seką tiesiai į stdout — testuose tai užteršia
+// testo išvestį. Testai, kurie kviečia draw(), turi naudoti šį
+// pagalbininką.
+func silenceStdout(t *testing.T, fn func()) {
+	t.Helper()
+	orig := os.Stdout
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		fn()
+		return
+	}
+	os.Stdout = devNull
+	defer func() {
+		os.Stdout = orig
+		devNull.Close()
+	}()
+	fn()
 }

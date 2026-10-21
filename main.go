@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -88,7 +89,12 @@ func notifyDesktop(title, body string) {
 	if t := []rune(body); len(t) > 120 {
 		body = string(t[:120]) + "…"
 	}
-	cmd := exec.Command(path, "-a", "mircBSD", "-t", "5000", title, body)
+	// „--“ skyri PRIEŠ pranešimo tekstą — be jo tekstas, prasidedantis „--“,
+	// būtų interpretuojamas kaip notify-send PARINKTIS, o ne kaip
+	// pranešimo turinys. Pavadinimas ir tekstas čia — serverio kontroliuojami
+	// (kanalo pavadinimas arba PRIVMSG), todėl „--urgency=critical“ buvo
+	// galima injekcija.
+	cmd := exec.Command(path, "-a", "mircBSD", "-t", "5000", "--", title, body)
 	_ = cmd.Start()
 }
 
@@ -99,6 +105,50 @@ var (
 	stopOnce sync.Once
 )
 
+// termRestoreOnce — terminalo atkūrimas turi įvykti VISIŠKAI KARTĄ, net jei
+// panika nutikptų keliuose goroutine (kitaip terminalas liktų raw režimu
+// ir š Shell neveiktų).
+var termRestoreOnce sync.Once
+
+// globalStateMu saugo globalOldState (naudojama atkūrimo funkcijoms).
+var (
+	globalStateMu  sync.Mutex
+	globalOldState *term.State
+)
+
+// restoreTerminal grąžina terminalą iš raw režimo: atkuria seną būsenį,
+// parodo kursorių ir nuvalo ekraną. Saugu kvieti kelis kartus.
+//
+// Jei globalOldState == nil (testai) — nieko nedarome, kad neužterštume
+// stdout'o ANSI kodus.
+func restoreTerminal() {
+	termRestoreOnce.Do(func() {
+		globalStateMu.Lock()
+		st := globalOldState
+		globalStateMu.Unlock()
+		if st == nil {
+			return
+		}
+		term.Restore(int(os.Stdin.Fd()), st)
+		fmt.Print(ansiShowCur + "\033[2J\033[H")
+	})
+}
+
+// recoverPanic atkuria terminalą ir sustabdo klientą, jei goroutine viduje
+// įvyko panika. Be to terminalas liktų raw režimu, o klaviatūra — neveikti.
+//
+// recoverPanic turi būti IŠKVIEČIAMAS per `defer` pačios funkcijos pradžioje.
+func (c *Client) recoverPanic(context string) {
+	if r := recover(); r != nil {
+		fmt.Fprintf(os.Stderr, "\r\nmircBSD: panika (%s): %v\r\n", context, r)
+		if dbg := os.Getenv("MIRCBSD_DEBUG"); dbg != "" {
+			debug.PrintStack()
+		}
+		restoreTerminal()
+		c.stop()
+	}
+}
+
 func (c *Client) stop() {
 	// stop() gali būti kviečiamas ir iš /quit, ir iš signalo — uždarome tik kartą
 	stopOnce.Do(func() {
@@ -107,6 +157,9 @@ func (c *Client) stop() {
 			fmt.Print("\033[?1002l\033[?1000l\033[?1006l")
 		}
 		c.saveHistory()
+		// Sustabdom žurnalų gorutiną (ištušindamas eilę), tik tada
+		// uždarome failus — kad neprarastų jau įrašytų žinučių.
+		c.stopLogWorker()
 		c.closeLogs()
 		close(stopCh)
 	})
@@ -126,18 +179,41 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Nepavyko nustatyti raw terminalo:", err)
 		os.Exit(1)
 	}
+	// Globalus būsenas — kad panikos atkūrimas galėtų atkurti terminalą
+	// iš bet kurios goroutine.
+	globalStateMu.Lock()
+	globalOldState = oldState
+	globalStateMu.Unlock()
 
 	cfg := loadConfig(configPath())
 	setTSColor(cfg.TimestampColor)
 	setHighlightColor(cfg.HighlightColor)
 	setNickColors(cfg.NickColors)
+	configWarn := loadConfigWarnings()
 
 	args := os.Args[1:]
 	if len(args) >= 2 {
-		cfg.Server = args[0]
-		cfg.Port = args[1]
+		// Komandinės eilutės argumentai VALIDUOJAMI — anksčiau serverio
+		// vardas, portas ir nick galėjo būti bet kokie (komandų injekcija
+		// į IRC komandas, neveiksmingas adresas).
+		if !isValidServer(args[0]) {
+			configWarn = append(configWarn, "Neteisingas serverio vardas: "+args[0])
+			args[0] = ""
+		}
+		if !isValidPort(args[1]) {
+			configWarn = append(configWarn, "Neteisingas portas: "+args[1])
+			args[1] = ""
+		}
+		if len(args) >= 2 {
+			cfg.Server = args[0]
+			cfg.Port = args[1]
+		}
 		if len(args) >= 3 {
-			cfg.Nick = args[2]
+			if !isValidNick(args[2]) {
+				configWarn = append(configWarn, "Neteisingas nick: "+args[2])
+			} else {
+				cfg.Nick = args[2]
+			}
 		}
 		if len(args) >= 4 && args[3] == "tls" {
 			cfg.TLS = true
@@ -153,6 +229,8 @@ func main() {
 
 	c.loadHistory()
 	c.loadIgnore()
+	// Žurnalų gorutina — vieta eilės tvarkai (viena rašytoja).
+	c.startLogWorker()
 
 	w, h, _ := term.GetSize(fd)
 	c.width, c.height = w, h
@@ -183,6 +261,9 @@ func main() {
 	} else {
 		c.errMsg("Nepavyko nustatyti konfigūracijos kelio (naudotojo katalogas nerastas)")
 	}
+	for _, w := range configWarn {
+		c.errMsg("ĮSPĖJIMAS: " + w)
+	}
 	if cfg.Server != "" {
 		c.serverMsg(fmt.Sprintf("Serveris: %s:%s (TLS:%v, reconnect:%v)", cfg.Server, cfg.Port, cfg.TLS, cfg.Reconnect))
 		go c.connectLoop()
@@ -195,11 +276,22 @@ func main() {
 	c.draw()
 	go c.readKeys()
 
+	// deferred recover — panika pagrindiniame cikle (pvz. draw()) taip pat
+	// turi atkurti terminalą, o ne palikti jį raw režimu.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "\r\nmircBSD: panika (pagrindinis ciklas): %v\r\n", r)
+			if dbg := os.Getenv("MIRCBSD_DEBUG"); dbg != "" {
+				debug.PrintStack()
+			}
+			restoreTerminal()
+		}
+	}()
+
 	for {
 		select {
 		case <-stopCh:
-			term.Restore(fd, oldState)
-			fmt.Print(ansiShowCur + "\033[2J\033[H")
+			restoreTerminal()
 			fmt.Println("Viso gero!")
 			return
 		case <-c.redraw:
@@ -208,4 +300,4 @@ func main() {
 	}
 }
 
-const version = "0.4.2"
+const version = "0.4.5"
