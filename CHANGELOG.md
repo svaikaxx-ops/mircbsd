@@ -4,10 +4,27 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
-## [0.4.5] – 2026-10-21 – peržiūros prieš merge pataisos
+## [0.4.5] – 2026-10-21 – peržiūros prieš merge pataisos + klavišai
 
 Ketvirtoji peržiūra (code-review viso šakos diff'o) aptiko 10 radinių.
 Visi ištaisyti, kiekvienas — su regresijos testu (`perziura_2026_10_21c_test.go`).
+
+### Taisyta (klavišai)
+
+- **Ctrl+Home/End alias'ai ir atsarginiai klavišai** – jei terminalas
+  siunčia kitokias sekas (arba nesenderia modifikatoriaus):
+  - priimamos formos: `\x1b[1;5H/F` (xterm), `\x1b[1;6H/F` (Ctrl+Shift),
+    `\x1b[5H/F` (trumpoji);
+  - **Ctrl+PgUp/PgDn** — tą patį (slinktis viršus/apačia);
+  - **paprastas Home/End su tuščia įvestimi** — tą patį (visiems
+    terminalams beveik visada veikia);
+- **Valdymo sekų buferiavimas** – `readKeys()` dabar suburia sekas, kurias
+  terminalas persiunčia per kelis skaitymus (anksčiau pirmas gabalas —
+  „ESC[“ — būtų prarastas; atskiras Esc visada veikia iškart);
+- **`/help`** – aprašyti nauji atsarginiai klavišai. Diagnostikai: **/keys**
+  parodo, kokią baitų seką terminalas realiai siunčia — jei Ctrl+Home/End
+  vis dar nefunkciančios, nuspausk jas su `/keys` įjungta ir pasižiūrėk,
+  kas atėjo (ar nieko neatėjo → terminalas savavalis: naudok Ctl+PgUp/Dn).
 
 ### Taisyta (kritiniai)
 

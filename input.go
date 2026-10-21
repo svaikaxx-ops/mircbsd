@@ -12,11 +12,19 @@ import (
 
 // ---- Klavišai ----
 
+// readKeys skaito terminalo įvestį ir perduoda handleKey.
+//
+// SEKŲ BUFERIAVIMAS: read() grąžina baitus, kurie pasiskirsto atsitiktinai
+// — kai kurie terminalai ilgą valdymo seką (pvz. Ctrl+Home "\x1b[1;5H")
+// gali persiųsti DALIMIS: pirmame skaityme "\x1b[", kitame "1;5H". Be
+// buferio pirmas gabalas ("ESC[") būtų prarastas (ESC — atšaukimo
+// klavišas) — dažna „klavišas neveikia“ priežastis.
 func (c *Client) readKeys() {
 	// Panika klaviatūros apdoravime (pvz. neteisingas indeksas) negali palikti
 	// terminalo raw režimu — atkursime jį ir sustabdysime klientą.
 	defer c.recoverPanic("klaviatūros įvestis")
 	buf := make([]byte, 64)
+	var pending []byte // pusiau gauta valdymo seka
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil || n == 0 {
@@ -24,7 +32,47 @@ func (c *Client) readKeys() {
 			c.stop()
 			return
 		}
-		c.handleKey(buf[:n])
+		b := buf[:n]
+		if len(pending) > 0 {
+			b = append(pending, b...)
+			pending = pending[:0]
+		}
+		if !escComplete(b) && len(b) < 24 {
+			// Nepabaigta valdymo seka — laukiame tęsinio kitoje skaitymoje.
+			pending = append(pending, b...)
+			continue
+		}
+		c.handleKey(b)
+	}
+}
+
+// escComplete — ar baitų seka (pradedanti ESC) jau BAIGTA.
+//
+// false reiškia „laukiame tęsinio“ (sekų buferiavimas readKeys). Atskiras
+// ESC — BAIGTAS (vartotojas nuspaudė Esc).
+func escComplete(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	if b[0] != 0x1b {
+		return true
+	}
+	switch {
+	case len(b) == 1:
+		// Vienintelis ESC — atskiras klavišas (paieškos išeitis ir kt.).
+		return true
+	case b[1] == '[':
+		// CSI seka („\x1b[<params><final>“): baigiasi finalo baitu 0x40–0x7E.
+		if len(b) == 2 {
+			return false
+		}
+		return b[len(b)-1] >= 0x40 && b[len(b)-1] <= 0x7e
+	case b[1] == 'O':
+		// SS3 seka („\x1bOX“): vienas simbolis po „O“.
+		return len(b) >= 3
+	default:
+		// „\x1bX“ — Alt+X (du baitai).
+		return len(b) >= 2
 	}
 }
 
@@ -139,8 +187,11 @@ func (c *Client) handleKey(b []byte) {
 		return
 	}
 
-	// Ctrl+rodyklė
-	if len(b) >= 6 && b[0] == 0x1b && b[1] == '[' && b[2] == '1' && b[3] == ';' && b[4] == '5' {
+	// Ctrl (+Shift) rodyklės/Home/End
+	//
+	// Pagrindinė forma: \x1b[1;5X (modifikatorius 5 = Ctrl); kai kurie
+	// terminalai siunčia \x1b[1;6X (Ctrl+Shift — elgiamės kaip Ctrl).
+	if len(b) >= 6 && b[0] == 0x1b && b[1] == '[' && b[2] == '1' && b[3] == ';' && (b[4] == '5' || b[4] == '6') {
 		switch b[5] {
 		case 'A': // Ctrl+Up — nick scroll aukštyn
 			c.mu.Lock()
@@ -198,6 +249,23 @@ func (c *Client) handleKey(b []byte) {
 		return
 	}
 
+	// Kai kurių terminalų trumpoji Ctrl+Home/End forma: \x1b[5H / \x1b[5F
+	// (be papildomo „1;“ parametrų bloko).
+	if len(b) == 4 && b[0] == 0x1b && b[1] == '[' && (b[2] == '5' || b[2] == '6') && (b[3] == 'H' || b[3] == 'F') {
+		if b[3] == 'H' {
+			c.mu.Lock()
+			c.chanScrollOff = 0
+			c.mu.Unlock()
+		} else {
+			c.mu.Lock()
+			c.chanScrollOff = len(c.channels)
+			c.clampChanScrollLocked()
+			c.mu.Unlock()
+		}
+		c.queueRedraw()
+		return
+	}
+
 	if len(b) >= 3 && b[0] == 0x1b && b[1] == '[' {
 		// Pelės įvykis (SGR 1006): \x1b[<b;x;yM arba m
 		if b[2] == '<' {
@@ -240,6 +308,15 @@ func (c *Client) handleKey(b []byte) {
 			return
 		case '5':
 			c.mu.Lock()
+			// Ctrl+PgUp (\x1b[5;5~), +Shift (\x1b[5;6~) — kanalų sąrašo
+			// slinktis į VIRŠŪNĘ. Kai kuriuose terminaluose Ctrl+PgUp
+			// yra patikimesnis už Ctrl+Home (jį terminalas nesuvalgo).
+			if len(b) >= 5 && b[3] == ';' && (b[4] == '5' || b[4] == '6') {
+				c.chanScrollOff = 0
+				c.mu.Unlock()
+				c.queueRedraw()
+				return
+			}
 			c.scrollOff += c.height - 4
 			c.chaseUntil = time.Time{} // slinkimas aukštyn — vėl užšaldom vaizdą
 			c.mu.Unlock()
@@ -247,7 +324,11 @@ func (c *Client) handleKey(b []byte) {
 			return
 		case '6':
 			c.mu.Lock()
-			if len(b) >= 4 && b[3] == ';' {
+			if len(b) >= 5 && b[3] == ';' && (b[4] == '5' || b[4] == '6') {
+				// Ctrl+PgDn (\x1b[6;5~) — kanalų sąrašo slinktis iki APAČIOS.
+				c.chanScrollOff = len(c.channels)
+				c.clampChanScrollLocked()
+			} else if len(b) >= 4 && b[3] == ';' {
 				// Shift+PgDn — grįžti apačion
 				c.scrollOff = 0
 				c.chaseUntil = time.Time{}
@@ -282,15 +363,29 @@ func (c *Client) handleKey(b []byte) {
 			c.queueRedraw()
 			return
 		case 'H':
+			// SU TUŠČIA įvestimi — atsarginis kanalų slinktis į pradžią
+			// (kai kuriuose terminaluose Ctrl+Home nesenderia apskritai);
+			// su tekstuvėmis — žymeklis į įvesties pradžią.
 			c.mu.Lock()
-			c.inputPos = 0
+			if len(c.input) == 0 {
+				c.chanScrollOff = 0
+			} else {
+				c.inputPos = 0
+			}
 			c.mu.Unlock()
 			c.tabCandidates = nil
 			c.queueRedraw()
 			return
 		case 'F':
+			// SU TUŠČIA įvestimi — atsarginis kanalų slinktis į apačią;
+			// su tekstuvėmis — žymeklis į įvesties pabaigą.
 			c.mu.Lock()
-			c.inputPos = len(c.input)
+			if len(c.input) == 0 {
+				c.chanScrollOff = len(c.channels)
+				c.clampChanScrollLocked()
+			} else {
+				c.inputPos = len(c.input)
+			}
 			c.mu.Unlock()
 			c.tabCandidates = nil
 			c.queueRedraw()
@@ -1929,6 +2024,9 @@ func (c *Client) handleCmd(cmd, args string) {
 			"F1-F12 / Alt+1-9  kanalas pagal numerį",
 			"Tab             autocomplete   Ctrl+↑↓  nick scroll",
 			"Ctrl+Home/End   kanalų sąrašo slinktis",
+			"Ctrl+PgUp/PgDn  tą patį (be kita terminalų formų)",
+			"Home/End (tuščia įvestis) — taip pat kanalų sąrašo slinktis",
+			"/keys           klavišų diagnostika (koks baitus siunčia terminalas)",
 			"───────────────────────────────────────────────────",
 			"/ignore dabar palaiko maskes: nick!user@host, *!user@*, *",
 		}
