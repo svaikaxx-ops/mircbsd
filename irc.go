@@ -214,6 +214,16 @@ func (g chanModeGroups) takesParam(letter rune, adding bool, prefixModes string)
 //
 // Kviečia CAP REQ su mumis pageidaujamais cap'ais arba CAP END, jei
 // nieko nereikia.
+// ircv3WantedCaps — cap'ų sąrašas, kurį prašome CAP LS ir CAP NEW metu
+// (bendras, kad du keliai nesiskirtų).
+var ircv3WantedCaps = []string{
+	"multi-prefix", "away-notify", "server-time", "echo-message",
+	// v0.4.7 — nauji: JOIN su paskyra/realname (extended-join), paskyrų
+	// pakeitimo pranešimas (account-notify), vartotojo/hosto pakeitimas
+	// (chghost), pakvietimų pranešimai į bendrus kanalus (invite-notify).
+	"extended-join", "account-notify", "chghost", "invite-notify",
+}
+
 func (c *Client) handleCapNew(capsStr string) {
 	c.mu.Lock()
 	if c.capAvailable == nil {
@@ -225,7 +235,7 @@ func (c *Client) handleCapNew(capsStr string) {
 	}
 	available := c.capAvailable
 	var wanted []string
-	for _, want := range []string{"multi-prefix", "away-notify", "server-time", "echo-message"} {
+	for _, want := range ircv3WantedCaps {
 		if available[want] {
 			// Tik jei dar neaktyvus.
 			if !c.activeCaps[want] {
@@ -1044,6 +1054,13 @@ func (c *Client) addMsg(chanName string, m Message) {
 	// c.mu jau užrakintas (addMsg pradžioje) — naudojame Locked variantą.
 	isActive := c.activeChanLocked() == ch
 	if !isActive {
+		// Pirmosios neperskaitytos žinutės riba — grįžus į kanalą prieš ją
+		// įstatysime „── naujos žinutės ──“ (switchCh). Po ch.addMsg (ir
+		// galimo limito „priptalpimo“) — len(messages)-1 yra TIKSLUS
+		// šios žinutės indeksas.
+		if ch.unread == 0 {
+			ch.unreadFrom = len(ch.messages) - 1
+		}
 		ch.unread++
 		if m.highlight {
 			ch.highlight++
@@ -1109,8 +1126,24 @@ func (c *Client) switchCh(idx int) {
 		c.activeIdx = idx
 		// Atstatyti išsaugotą poziciją
 		c.scrollOff = c.channels[idx].scrollOff
-		c.channels[idx].unread = 0
-		c.channels[idx].highlight = 0
+		target := c.channels[idx]
+		if target.unread > 0 && target.unreadFrom > 0 && target.unreadFrom < len(target.messages) {
+			// „── naujos žinutės ──“ žyma prieš pirmą neskaitytą žinutę —
+			// grįžus į kanalą aišku, kur nutrūkote (v0.4.7).
+			sep := Message{ts: time.Now(), text: "── naujos žinutės ──", msgType: MsgServer}
+			target.messages = append(target.messages, Message{})
+			copy(target.messages[target.unreadFrom+1:], target.messages[target.unreadFrom:])
+			target.messages[target.unreadFrom] = sep
+			target.renderGen++
+			// Iškirtinis: žinutė buvo įrašyta Į VIDURĮ — galo incremental
+			// cache'as (renderedMsgCount) netgalioja; išvalome eilutes,
+			// kitaip žyma atsidurtų pabaigoje, o viena žinutė dubliuotųsi.
+			target.rendered = nil
+			target.renderedMsgCount = 0
+		}
+		target.unread = 0
+		target.highlight = 0
+		target.unreadFrom = -1
 		c.nickScrollOff = 0
 		c.searchMode = false
 		// Kanalų sąrašo slinktis — aktyvus kanalas turi būti MATOMAS.
@@ -1506,6 +1539,13 @@ func (c *Client) finishWrites(timeout time.Duration) {
 		case <-time.After(timeout):
 		}
 	}
+}
+
+// hasCap — ar IRCv3 cap'as aktyvus (perskaitoma po rakinimu).
+func (c *Client) hasCap(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.activeCaps[name]
 }
 
 // startConnect nutraukia senąjį ryšį ir pakuria naują jungimo ciklą.
@@ -2045,7 +2085,16 @@ func (c *Client) parseIRC(line string) {
 			}
 		}
 		c.mu.Unlock()
-		c.addMsg(ch, Message{ts: now, nick: fromNick, msgType: MsgJoin})
+		// extended-join (v0.4.7): JOIN <kanalas> <paskyra|*> <realname> —
+		// paskyra rodoma greta prisijungimo (ne „*“ — nesuregistravęs).
+		joinMsg := ""
+		if c.hasCap("extended-join") {
+			acct := p(1)
+			if acct != "" && acct != "*" {
+				joinMsg = "(paskyra: " + sanitizeText(acct) + ")"
+			}
+		}
+		c.addMsg(ch, Message{ts: now, nick: fromNick, text: joinMsg, msgType: MsgJoin})
 
 	case "PART":
 		ch := p(0)
@@ -2130,6 +2179,26 @@ func (c *Client) parseIRC(line string) {
 				msgType: MsgServer})
 		}
 		c.queueRedraw()
+
+	case "ACCOUNT":
+		// account-notify (v0.4.7): :nick!u@h ACCOUNT <paskyra|*>
+		acct := p(0)
+		if acct == "" {
+			return
+		}
+		if acct == "*" {
+			c.serverMsg(fmt.Sprintf("%s atsijungė nuo paskyros", sanitizeText(fromNick)))
+		} else {
+			c.serverMsg(fmt.Sprintf("%s paskyra: %s", sanitizeText(fromNick), sanitizeText(acct)))
+		}
+
+	case "CHGHOST":
+		// chghost (v0.4.7): :nick!oldU@oldH CHGHOST <vartotojas> <hostas>
+		newUser, newHost := p(0), p(1)
+		if newUser == "" || newHost == "" {
+			return
+		}
+		c.serverMsg(fmt.Sprintf("%s dabar %s@%s", sanitizeText(fromNick), sanitizeText(newUser), sanitizeText(newHost)))
 
 	case "INVITE":
 		// :nick!user@host INVITE <target-nick> :#channel
@@ -2599,7 +2668,7 @@ func (c *Client) parseIRC(line string) {
 			}
 			available := c.capAvailable
 			var wanted []string
-			for _, want := range []string{"multi-prefix", "away-notify", "server-time", "echo-message"} {
+			for _, want := range ircv3WantedCaps {
 				if available[want] {
 					wanted = append(wanted, want)
 				}

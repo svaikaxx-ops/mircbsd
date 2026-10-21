@@ -28,8 +28,10 @@ type Config struct {
 	CTCPVersion    bool
 	Notifications  bool   // desktop pranešimai (notify-send) highlight atveju
 	Mouse          bool   // pelė: ratukas scroll'ui, paspaudimas kanalo juostoje
-	TimestampColor string // gray (numatyta), blue, green, cyan, none
-	HighlightColor string // highlight fono spalva: red (numatyta), blue, green, magenta, cyan, yellow, none
+	TimestampColor string // gray (numatytas), blue, green, cyan, none
+	Timestamps     bool   // laiko žymos prie žinučių (numatytai įjungta)
+	TSFormat       string // laiko žymos formatas (Go laiko taisyklė, numatas „15:04“)
+	HighlightColor string // highlight fono spalva: red (numatytas), blue, green, magenta, cyan, yellow, none
 	NickColors     bool   // nick'ų spalvinimas (numatytai įjungta)
 }
 
@@ -48,6 +50,8 @@ func defaultConfig() Config {
 		CTCPVersion:   true,
 		Notifications: true,
 		Mouse:         true,
+		Timestamps:    true,
+		TSFormat:      "15:04",
 		NickColors:    true,
 	}
 }
@@ -144,6 +148,12 @@ func loadConfig(path string) Config {
 			cfg.Mouse = v == "true" || v == "1" || v == "yes"
 		case "tscolor":
 			cfg.TimestampColor = v
+		case "timestamps":
+			cfg.Timestamps = v == "true" || v == "1" || v == "yes"
+		case "ts_format":
+			// Laiko žymos formatas — Go laiko taisyklė (pvz. „15:04:05“).
+			// Tuščias — lieka numatytas.
+			cfg.TSFormat = v
 		case "highlight_color":
 			cfg.HighlightColor = v
 		case "nick_colors":

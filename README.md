@@ -77,6 +77,7 @@ mircbsd irc.data.lt 6667 manick
 | `/part [priežastis]` | Išeiti iš kanalo |
 | `/close` | Uždaryti langą (+ PART) |
 | `/msg <nick> <žinutė>` | Privati žinutė |
+| `/query <nick>` | Atidaryti privatų langą (be žinutės) |
 | `/me <veiksmas>` | Veiksmas (/me bėga) |
 | `/nick <vardas>` | Keisti slapyvardį |
 | `/topic [tema]` | Rodyti / keisti temą |
@@ -106,7 +107,7 @@ mircbsd irc.data.lt 6667 manick
 | `↑` / `↓` | Komandų istorija |
 | `Ctrl+N` / `Ctrl+P` | Kitas / ankstesnis kanalas |
 | `F1`–`F12` | Kanalas pagal numerį |
-| `Tab` | Automatinis užbaigimas (nick, komandos) |
+| `Tab` | Automatinis užbaigimas (nick, komandos, kanalai) |
 | `Ctrl+R` | Paieška |
 | `Ctrl+←` / `Ctrl+→` | Žodžio navigacija |
 | `Ctrl+W` | Ištrinti žodį prieš kursorių |
@@ -157,6 +158,8 @@ mircbsd irc.data.lt 6667 manick
 | `highlight_color` | `red` | Highlight fono spalva (`blue`, `green`, `magenta`, `cyan`, `yellow`, `none`) |
 | `nick_colors` | `true` | Nick'ų spalvinimas |
 | `tscolor` | `gray` | Laiko žymos spalva |
+| `timestamps` | `true` | Laiko žymos prie žinučių |
+| `ts_format` | `15:04` | Laiko žymos formatas (pvz. `15:04:05`) |
 
 ## Kūrimas (FreeBSD/Linux)
 

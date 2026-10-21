@@ -60,6 +60,21 @@ func setHighlightColor(name string) {
 
 func setNickColors(b bool) { nickColoring = b }
 
+// timestamp config — globaliai (kaip tsColorCode): įrašoma vieną kartą
+// paleidimo metu, tik skaitoma renderLines (Message metodas neturi prieigos
+// prie Client). Vienagijos prieiga — tik iš braižymo gorutinų.
+var (
+	timestampsEnabled = true
+	tsFormat          = "15:04"
+)
+
+func setTimestamps(enabled bool, format string) {
+	timestampsEnabled = enabled
+	if format != "" {
+		tsFormat = format
+	}
+}
+
 func setTSColor(name string) {
 	switch strings.ToLower(name) {
 	case "blue":
@@ -432,12 +447,18 @@ func (m Message) renderLines(msgW int, myNick string) []string {
 	}
 	tsColor := tsColorCode
 	var ts string
-	if tsColor == "" {
-		ts = m.ts.Format("15:04") + " "
-	} else {
-		ts = tsColor + m.ts.Format("15:04") + ansiReset + " "
+	tsLen := 0
+	// Laiko žyma — konfigūruojama (timestamps=true|false, ts_format).
+	// Kai išjungta — be laikos: prefixLen mažesnis ir tekstas platesnis.
+	if timestampsEnabled {
+		formatted := m.ts.Format(tsFormat)
+		tsLen = stringWidth(formatted) + 1
+		if tsColor == "" {
+			ts = formatted + " "
+		} else {
+			ts = tsColor + formatted + ansiReset + " "
+		}
 	}
-	tsLen := 6
 
 	type part struct {
 		prefix    string
@@ -484,7 +505,8 @@ func (m Message) renderLines(msgW int, myNick string) []string {
 	case MsgChat, MsgAction, MsgNotice:
 		bodyPlain = stripIRCFormat(m.text)
 	case MsgJoin:
-		bodyPlain = "--> " + m.nick + " prisijungė"
+		bodyPlain = "--> " + m.nick + " prisijungė " + m.text
+		bodyPlain = strings.TrimSpace(bodyPlain)
 	case MsgPart:
 		bodyPlain = "<-- " + m.nick + " išėjo (" + m.text + ")"
 	case MsgQuit:
@@ -656,9 +678,13 @@ const defaultPrefixSigns = "~&@%+"
 const defaultPrefixModes = "qaohv"
 
 type Channel struct {
-	name          string
-	messages      []Message
-	unread        int
+	name     string
+	messages []Message
+	unread   int
+	// unreadFrom — pirmosios NEPERSKAITYTOS žinutės indeksas (imamas
+	// kai unread 0→1, addMsg). Grįžus į kanalą switchCh prieš ją
+	// įstatome „── naujos žinutės ──“ žymą (v0.4.7). -1 = neįrašytas.
+	unreadFrom    int
 	highlight     int
 	nicks         []string
 	topic         string
@@ -708,7 +734,7 @@ func newChannel(name string, maxMsg int) *Channel {
 	if maxMsg <= 0 {
 		maxMsg = defaultMaxMessages
 	}
-	return &Channel{name: name, maxMessages: maxMsg, renderedGen: -1}
+	return &Channel{name: name, maxMessages: maxMsg, renderedGen: -1, unreadFrom: -1}
 }
 
 func (ch *Channel) addMsg(m Message) {
@@ -1045,6 +1071,17 @@ func clampStatusLeft(statusLeft, statusRight string, w int) (string, int) {
 	return statusLeft, pad
 }
 
+// daySepLine — paros persiridimo žyma (v0.4.7). Ilgose sesijose be jos
+// neįskaita, kada įvyko žinutės.
+func daySepLine(t time.Time) string {
+	return ansiDarkGray + "── " + t.Format("2006-01-02") + " ──" + ansiReset
+}
+
+// changedDay — dviejų žinutės laikų PAROJA skiriasi.
+func changedDay(a, b time.Time) bool {
+	return a.Year() != b.Year() || a.YearDay() != b.YearDay()
+}
+
 func (c *Client) draw() {
 	c.mu.Lock()
 	w, h := c.width, c.height
@@ -1106,6 +1143,23 @@ func (c *Client) draw() {
 	showNicks := c.isChannel(activeName)
 	out := &strings.Builder{}
 	out.WriteString(ansiHideCur)
+
+	// Terminalo LANGO ANTRAŠTĖ (OSC 0, BEL pabaiga). Kita darbalaukio
+	// eilutė matys, kuris kanalas aktyvus ir kiek neperskaitytų žinučių
+	// kituose languose (v0.4.7). Tekstas sanitizuotas ir kirptas — OSC
+	// antraštė su valdymo simboliais kitaip taptų terminalo valdymu.
+	titleTotal := 0
+	for i, st := range states {
+		if i != activeIdx {
+			titleTotal += st.unread
+		}
+	}
+	titleName := truncateWidth(sanitizeText(activeName), 40)
+	title := "mircBSD — " + titleName
+	if titleTotal > 0 {
+		title += fmt.Sprintf(" (%d)", titleTotal)
+	}
+	out.WriteString("\033]0;" + title + "\a")
 
 	row := 1
 
@@ -1293,6 +1347,14 @@ func (c *Client) draw() {
 	// pridamos į galą (addMsg), todėl cache'o prieiga lieka tik galoje.
 	incremental := active.renderedGen != -1 && active.renderedW == msgW &&
 		active.renderedNick == myNick && active.renderedMsgCount <= len(msgs)
+	// Paskutinės perrenderiuotos žinutės laikas — dienos skirtikliui
+	// (v0.4.7): jei nauja žinutė kitoje PAROJE, prieš ją įstatome
+	// „── YYYY-MM-DD ──“ eilutę (tik rašymo metu, nenorim laikyti
+	// žinutėse, kad į žurnalą neiškeliautų dukart).
+	var prevTs time.Time
+	if incremental && active.renderedMsgCount > 0 && active.renderedMsgCount <= len(msgs) {
+		prevTs = msgs[active.renderedMsgCount-1].ts
+	}
 	var lines []string
 	if cacheOK {
 		lines = active.rendered
@@ -1315,7 +1377,14 @@ func (c *Client) draw() {
 		}
 		if len(newMsgs) > 0 {
 			fresh := make([]string, 0, len(newMsgs)+len(newMsgs))
-			for _, m := range newMsgs {
+			for i, m := range newMsgs {
+				prev := prevTs
+				if i > 0 {
+					prev = newMsgs[i-1].ts
+				}
+				if !prev.IsZero() && changedDay(prev, m.ts) {
+					fresh = append(fresh, daySepLine(m.ts))
+				}
 				fresh = append(fresh, m.renderLines(msgW, myNick)...)
 			}
 			lines = append(lines, fresh...)

@@ -4,6 +4,39 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [0.4.7] – 2026-10-21 – naujos kokybės funkcijos (paketas „a")
+
+Septynios „mažos pastangos / didelė nauda" funkcijos (peržiūros pasiūlymų
+top-sąrašas). Kiekviena — su regresijos testu (`funkcijos_v0_4_7_test.go`).
+
+### Nauja
+
+- **`/query <nick>`** — atidaro PRIVATŲ langą BE žinutės; anksčiau PM
+  langas atsiverdavo tik /msg su žinute arba kai kitas parašydavo pirmas.
+  Lango atsako: `>nick` šoniniame sąraše; pakartotas /query nedubliuoja.
+- **„── naujos žinutės ──“ ribos žyma** — grįžus į kanalą su
+  neperskaitytomis žinutėmis, prieš pirmą neskaitytą įstatoma žyma
+  (pirmosios neperskaitytos žinutės indeksas `unreadFrom` fiksuojamas
+  addMsg). Pakartotas perjungimas nedubliuoja; inkrementalus renderio
+  cache‘as nuvalomas prievartniškai (žyma įsiskverbia Į VIDURĮ — galo
+  cache‘as netinka).
+- **Terminalo lango antraštė (OSC 0)** — `mircBSD — #kanalas (N)` su
+  neperskaitytų žinučių suma kituose languose. Tekstas sanitizuotas
+  ir kirptas (40 ląstelių) — OSC antraštė su valdymo simboliais taptų
+  terminalo valdymu.
+- **`timestamps` / `ts_format` config raktai** — laiko žymas galima
+  IŠJUNGTI arba keisti formatą (pvz. `ts_format=15:04:05`); anksčiau —
+  fiksuotas „15:04“.
+- **Nauji IRCv3 cap'ai** — `extended-join` (JOIN rodys paskyrą),
+  `account-notify` ACCOUNT pranešimai, `chghost` ident@host pakeitimai,
+  `invite-notify` pakvietimai į bendrus kanalus. Bendras `ircv3WantedCaps`
+  sąrašas (CAP LS + CAP NEW nesiskiria); ACCOUNT/CHGHOST rodomi „*server*“.
+- **Paros skirtiklis** — „── 2026-10-21 ──“ eilutė tarp žinučių skirtingomis
+  paromis (rašymo metu — nenarom žinutes laikyti dviem ar daugiau
+  dienų, kad į žurnalą neiškeliautų dukart).
+- **Kanalų vardų Tab užbaigimas** — `/join #li<Tab>` papildo iš ATIDARYTŲ
+  langų pagal serverio CHANTYPES (anksčiau tik /komandos ir nick'ai).
+
 ## [0.4.6] – 2026-10-21 – pilnos atskitos peržiūros pataisos (8 radiniai)
 
 Penktoji peržiūra (pilna atskito peržiūros po merge — skaityti visi ~6 800

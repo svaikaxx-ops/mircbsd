@@ -667,6 +667,20 @@ var allCommands = []string{
 	"/help", "/keys",
 }
 
+// isChannelWord — ar žodis prasideda kanalo tipo simboliu # (CHANtypes).
+// Tuščias chanTypes — standartinis „#“.
+func isChannelWord(word, chanTypes string) bool {
+	if word == "" {
+		return false
+	}
+	for _, r := range chanTypes {
+		if strings.HasPrefix(word, string(r)) {
+			return true
+		}
+	}
+	return strings.HasPrefix(word, "#")
+}
+
 func (c *Client) doTab() {
 	c.mu.Lock()
 	inputStr := string(c.input[:c.inputPos])
@@ -677,6 +691,7 @@ func (c *Client) doTab() {
 	// duomenų lenktynė (race).
 	var nicks []string
 	var msgNicks []string
+	var chanNames []string
 	if active != nil {
 		nicks = append(nicks, active.nicks...)
 		for _, m := range active.messages {
@@ -684,6 +699,15 @@ func (c *Client) doTab() {
 				msgNicks = append(msgNicks, m.nick)
 			}
 		}
+	}
+	// Kanalų pavadinimai — Tab užbaigimui (v0.4.7): „/join #li<Tab>“.
+	chanTypes := ""
+	for _, ch := range c.channels {
+		chanNames = append(chanNames, ch.name)
+	}
+	if len(chanNames) > 0 {
+		ct, _, _, _, _ := c.isupSnapshot()
+		chanTypes = ct
 	}
 	prefixSigns := ""
 	if active != nil {
@@ -731,6 +755,17 @@ func (c *Client) doTab() {
 		for _, cmd := range allCommands {
 			if strings.HasPrefix(cmd, wordLow) {
 				candidates = append(candidates, cmd)
+			}
+		}
+	} else if isChannelWord(word, chanTypes) {
+		// Kanalų vardų užbaigimas: žodis prasideda CHANTYPES simboliu —
+		// papildo iš ATIDARYTŲ langų (v0.4.7).
+		seen := map[string]bool{}
+		for _, name := range chanNames {
+			bare := sanitizeText(name)
+			if !seen[bare] && strings.HasPrefix(strings.ToLower(bare), wordLow) {
+				seen[bare] = true
+				candidates = append(candidates, bare)
 			}
 		}
 	} else {
@@ -1323,7 +1358,59 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.send(fmt.Sprintf("PART %s :%s", chName, msg))
 		}
 
-	case "msg", "query", "m":
+	case "query":
+		// /query <nick> — atidaro PRIVATŲ langą be žinutės (v0.4.7).
+		// Anksčiau „query“ buvo tik /msg pseudonimas ir PRIVATŲ langą
+		// visą laiką buvo galima atidaryti tik /msg <nick> <žinutė> —
+		// bet be žinutės langas atsiveria tik tada, kai kitas jau
+		// parašė pirmas.
+		if args == "" {
+			c.errMsg("Naudojimas: /query <nick> — atidaro privatų langą")
+			return
+		}
+		target := strings.Fields(args)[0]
+		if !isValidTarget(target) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir .-_ ; max 100)")
+			return
+		}
+		c.mu.Lock()
+		ch := c.ensureCh(target)
+		if ch != nil {
+			// Kaip PRIVMSG gaunant PM (parseIRC): žymim privačiu —
+			// šoninėje sąraše „>nick“.
+			ch.isPrivate = true
+		}
+		// Indeksą imame PAGAL RODUKLĮ toje pačioje rakinoje — eilė gali
+		// keistis iš kitų gorutinų tik per lock.
+		idx := -1
+		for i, chc := range c.channels {
+			if chc == ch {
+				idx = i
+				break
+			}
+		}
+		var hit string
+		if ch == nil {
+			// Atmetimas (limitas ar negaliojantis vardas) — įspėjimo
+			// sunaudojimas tas pats, kaip /join (žr. ten).
+			hit = c.chanLimitHit
+			if hit != "" && hit == sanitizeChanName(target) {
+				c.chanLimitHit = ""
+			}
+		}
+		c.mu.Unlock()
+		if ch == nil {
+			if hit != "" && hit == sanitizeChanName(target) {
+				c.errMsg(fmt.Sprintf("ĮSPĖJIMAS: pasiektas kanalų limitas — langas „%s“ neatidarytas", hit))
+			}
+			return
+		}
+		if idx >= 0 {
+			c.switchCh(idx)
+		}
+		c.serverMsg(fmt.Sprintf("Privatus „%s“ langas atidarytas — rašyk „/msg %s <žinutė>“ arba „/me <veiksmas>“", target, target))
+
+	case "msg", "m":
 		parts := strings.SplitN(args, " ", 2)
 		if len(parts) < 2 {
 			c.errMsg("Naudojimas: /msg <nick> <žinutė>")
@@ -1936,6 +2023,7 @@ func (c *Client) handleCmd(cmd, args string) {
 			"/cycle [priežastis]                  išeiti ir vėl įeiti",
 			"/close [kanalas]                    uždaryti langą (+ PART)",
 			"/msg <nick> <žinutė>                 privati žinutė",
+			"/query <nick>                        atidaryti privatų langą",
 			"/notice <nick> <žinutė>              notice žinutė",
 			"/invite <nick> [#kanalas]            pakviesti į kanalą",
 			"/me <veiksmas>                       veiksmas",

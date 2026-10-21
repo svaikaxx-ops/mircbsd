@@ -187,6 +187,7 @@ func main() {
 
 	cfg := loadConfig(configPath())
 	setTSColor(cfg.TimestampColor)
+	setTimestamps(cfg.Timestamps, cfg.TSFormat)
 	setHighlightColor(cfg.HighlightColor)
 	setNickColors(cfg.NickColors)
 	configWarn := loadConfigWarnings()
@@ -300,4 +301,4 @@ func main() {
 	}
 }
 
-const version = "0.4.6"
+const version = "0.4.7"
