@@ -2424,6 +2424,171 @@ func isValidChannelFor(ch string, chantypes string) bool {
 	return len(ch) > 1
 }
 
+// isValidChannelKey tikrina kanalo raktą (JOIN komandos parametras).
+//
+// Raktas įrašomas į „JOIN #kanalas <raktas>“ — t. y. į IRC komandą kaip
+// atskirą parametrą. Tarpas yra parametrų skirtukas, todėl rakte su
+// tarpais serveris gautų „JOIN #kanalas raktas papildomas“ — papildomą
+// (netiesioginį) kanalą, kurio serveris nekvietė. Tai komandų injekcija.
+//
+// ATMETAME TIK TARPUS IR KONTROLIAUS SIMBOLIUS — visa kita leidžiame.
+//
+// Ankstesnė versija naudojo siaurą „leistinų simbolių“ sąrašą
+// (`[A-Za-z0-9.-_]` + lietuviškos raidės). Tai buvo PER SMETINGA:
+// tikri kanalų raktai dažnai turi „!“, „#“, „@“, „,“, „=“, „%“, „*“
+// — ir vartotojas negalėdavo prisijungti į tokį kanalą (funkcinė
+// regresija, ne saugumo pataisymas).
+//
+// Tikras pavojus yra VIENINTELIS: tarpas (papildomas JOIN parametras)
+// ir CRLF (komandų injekcija). Todėl atmetame:
+//   - tarpus (space, tab, CR, LF, VT, FF);
+//   - kitus valdymo simbolius (C0 ir DEL, C1 0x80–0x9F).
+//
+// (send() papildomai pašalina CR/LF — bet tai tik paskutinė linija.)
+func isValidChannelKey(key string) bool {
+	// Tuščias raktas = rakto NĖRA (tai neleidžiama forma, ne klaida) —
+	// „/join #kanalas“ be rakto yra teisinga komanda.
+	if key == "" {
+		return true
+	}
+	if len(key) > 64 {
+		return false
+	}
+	for _, r := range key {
+		// Tarpai (parametrų skirtukas) — neleidžiami.
+		if r == ' ' || r == '\t' || r == '\r' || r == '\n' || r == '\v' || r == '\f' {
+			return false
+		}
+		// Valdymo simboliai (C0, DEL, C1) — neleidžiami.
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidModeTarget tikrina MODE komandos TIKSLĄ (pirmas parametras).
+//
+// Tikslas gali būti: kanalas („#kanalas“), nick'as, arba serverio kaukė
+// („*server*“). Bet — jis įrašomas į komandą kaip atskiras parametras,
+// todėl negali turėti tarpų (papildomas parametras) ar CRLF.
+func isValidModeTarget(t string) bool {
+	if t == "" || len(t) > 100 {
+		return false
+	}
+	// Serverio kaukė „*server*“.
+	if strings.HasPrefix(t, "*") {
+		return isValidMaskName(t[1:])
+	}
+	// Kanalas arba nick'as.
+	//
+	// Nick'o simboliai — TOKI pat kaip isValidNick leidžia („_-[]\\`^{}|“)
+	// — ankstesnė versija jų atmetė, todėl /mode nick[1] +o buvo
+	// neįmanomas, nors pats nick'as galimas.
+	for _, r := range t {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '#' || r == '&' || r == '!' || r == '+':
+		case strings.ContainsRune("_-[]\\`^{}|", r):
+		case unicode.IsLetter(r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isValidMaskName tikrina serverio kaukės pavadinimą (be „*“ prefikso).
+//
+// Leistina ir „*“ (kaukės žvaigždutė): tikra serverio kaukė yra
+// „*server*“ — be vidinės „*“ ji nebūtų kaukė. Anksčiau „*“ buvo
+// atmetama, todėl /mode *server* ir /w *server* (toks pats tikslas, kurį
+// pati funkcija dokumentuoja) buvo atmesti.
+func isValidMaskName(s string) bool {
+	if s == "" || len(s) > 100 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '*':
+		case unicode.IsLetter(r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// maxModeParams – didžiausias MODE komandos parametrų skaičius.
+//
+// Serverio MODES (005) limitas riba, bet ne visuose serveriuose nurodyta.
+// Be ribos „MODE *server* +o evil +k secretkey …“ galėtų siųsti šimtus
+// parametrų — bereikalingas srautas į serverį.
+const maxModeParams = 4
+
+// isValidModeSpec tikrina MODE komandos parametrus (po tikslo).
+//
+// Parametrai įrašomi į komandą kaip atskiri laukai — tarpas yra skirtukas.
+// Tarpai jau atskirti (strings.Fields), todėl čia tikriname:
+//   - parametrų skaičių (riba);
+//   - kad parametrai neturi CRLF (komandų injekcija).
+func isValidModeSpec(fields []string) bool {
+	if len(fields) > maxModeParams {
+		return false
+	}
+	for _, f := range fields {
+		if f == "" {
+			return false
+		}
+		if strings.ContainsAny(f, "\r\n") {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidWhoTarget tikrina WHO komandos tikslą.
+//
+// Tikslas: kanalas, nick'as, „*“ (visi) arba „*server*“ kaukė. Negali
+// turėti tarpų (papildomas parametras) ar CRLF.
+func isValidWhoTarget(t string) bool {
+	if t == "" || len(t) > 100 {
+		return false
+	}
+	if t == "*" {
+		return true
+	}
+	if strings.HasPrefix(t, "*") {
+		return isValidMaskName(t[1:])
+	}
+	return isValidModeTarget(t)
+}
+
+// isValidListFilter tikrina LIST komandos filtrą.
+//
+// Filtras įrašomas į komandą kaip parametras. Gali būti kanalo pavadinimas
+// arba „*“ — negali turėti tarpų (papildomas parametras) ar CRLF.
+func isValidListFilter(f string) bool {
+	// Tuščias filtras = filtras NĖRA (teisinga forma).
+	if f == "" {
+		return true
+	}
+	if len(f) > 64 {
+		return false
+	}
+	for _, r := range f {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '#' || r == '&' || r == '!' || r == '+' || r == '*':
+		case unicode.IsLetter(r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // joinHostPort sujungia serverio adresą ir portą tinkamu formatu.
 //
 // IPv6 adresas turi būti apgaubtas laiptaisais: „[::1]:6667“ — be jų

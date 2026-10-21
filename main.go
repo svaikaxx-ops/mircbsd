@@ -89,7 +89,12 @@ func notifyDesktop(title, body string) {
 	if t := []rune(body); len(t) > 120 {
 		body = string(t[:120]) + "…"
 	}
-	cmd := exec.Command(path, "-a", "mircBSD", "-t", "5000", title, body)
+	// „--“ skyri PRIEŠ pranešimo tekstą — be jo tekstas, prasidedantis „--“,
+	// būtų interpretuojamas kaip notify-send PARINKTIS, o ne kaip
+	// pranešimo turinys. Pavadinimas ir tekstas čia — serverio kontroliuojami
+	// (kanalo pavadinimas arba PRIVMSG), todėl „--urgency=critical“ buvo
+	// galima injekcija.
+	cmd := exec.Command(path, "-a", "mircBSD", "-t", "5000", "--", title, body)
 	_ = cmd.Start()
 }
 

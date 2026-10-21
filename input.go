@@ -973,7 +973,18 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.mu.Unlock()
 		if c.isConnected() {
 			if len(parts) == 2 && parts[1] != "" {
-				c.send("JOIN " + chName + " " + parts[1])
+				// KANALO RAKTAS — jis įrašomas į JOIN komandą kaip
+				// parametras. Tarpas yra IRC parametrų skirtukas: rakte
+				// su tarpais serveris gavo „JOIN #kanalas raktas papildomas“
+				// — papildomą (netiesioginį) kanalą, kurio serveris nekvietė.
+				// Rakto NEGALI būti su tarpais, CRLF ar komandų skyrimo
+				// simboliais.
+				key := parts[1]
+				if !isValidChannelKey(key) {
+					c.errMsg("Netinkamas kanalo raktas (be tarpų ir specialių simbolių; max 64)")
+					return
+				}
+				c.send("JOIN " + chName + " " + key)
 			} else {
 				c.send("JOIN " + chName)
 			}
@@ -1032,9 +1043,22 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		nick := parts[0]
+		// Nick'as įrašomas į INVITE komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		if !isValidNick(nick) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		chName := ""
 		if len(parts) >= 2 {
 			chName = parts[1]
+			// Kanalas įrašomas į komandą kaip TIKSLAS — turi būti
+			// serverio CHANTYPES atitinkantis pavadinimas.
+			ct, _, _, _, _ := c.isupSnapshot()
+			if !isValidChannelFor(chName, ct) {
+				c.errMsg("Netinkamas kanalo pavadinimas (raidės, skaičiai ir .-_ ; max 50)")
+				return
+			}
 		} else {
 			chName = c.activeName()
 		}
@@ -1064,8 +1088,15 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		chName := c.activeName()
+		// Nick'as įrašomas į MODE komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		nick := firstField(args)
+		if !isValidNick(nick) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		if c.isConnected() {
-			c.send(fmt.Sprintf("MODE %s +o %s", chName, firstField(args)))
+			c.send(fmt.Sprintf("MODE %s +o %s", chName, nick))
 		}
 
 	case "deop":
@@ -1074,8 +1105,15 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		chName := c.activeName()
+		// Nick'as įrašomas į MODE komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		nick := firstField(args)
+		if !isValidNick(nick) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		if c.isConnected() {
-			c.send(fmt.Sprintf("MODE %s -o %s", chName, firstField(args)))
+			c.send(fmt.Sprintf("MODE %s -o %s", chName, nick))
 		}
 
 	case "voice":
@@ -1084,8 +1122,15 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		chName := c.activeName()
+		// Nick'as įrašomas į MODE komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		nick := firstField(args)
+		if !isValidNick(nick) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		if c.isConnected() {
-			c.send(fmt.Sprintf("MODE %s +v %s", chName, firstField(args)))
+			c.send(fmt.Sprintf("MODE %s +v %s", chName, nick))
 		}
 
 	case "devoice":
@@ -1094,8 +1139,15 @@ func (c *Client) handleCmd(cmd, args string) {
 			return
 		}
 		chName := c.activeName()
+		// Nick'as įrašomas į MODE komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		nick := firstField(args)
+		if !isValidNick(nick) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		if c.isConnected() {
-			c.send(fmt.Sprintf("MODE %s -v %s", chName, firstField(args)))
+			c.send(fmt.Sprintf("MODE %s -v %s", chName, nick))
 		}
 
 	case "me":
@@ -1132,6 +1184,12 @@ func (c *Client) handleCmd(cmd, args string) {
 			c.errMsg("/kick galima tik kanale")
 			return
 		}
+		// Nick'as įrašomas į KICK komandą — be validacijos jame gali būti
+		// tarpas (papildomas parametras) arba CRLF (komandų injekcija).
+		if !isValidNick(parts[0]) {
+			c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+			return
+		}
 		reason := "Kicked"
 		if len(parts) == 2 && parts[1] != "" {
 			reason = parts[1]
@@ -1156,13 +1214,38 @@ func (c *Client) handleCmd(cmd, args string) {
 		// Jei pirmasis argumentas prasideda +/-, taikome aktyviam kanalui
 		if strings.HasPrefix(fields[0], "+") || strings.HasPrefix(fields[0], "-") {
 			chName := c.activeName()
-			c.send("MODE " + chName + " " + args)
+			if !c.isChannel(chName) {
+				c.errMsg("/mode galima tik kanale")
+				return
+			}
+			if !isValidModeSpec(fields[1:]) {
+				c.errMsg("Netinkami mode parametrai (per daug parametrų arba specialūs simboliai)")
+				return
+			}
+			c.send("MODE " + chName + " " + strings.Join(fields, " "))
 		} else {
-			c.send("MODE " + args)
+			// TIKSLAS (kanalas, nick'as ar serverio kaukė) — jis įrašomas
+			// į komandą kaip pirmas parametras. Be validacijos galėjo būti
+			// „*server*“-style kaukė su papildomais parametrais.
+			if !isValidModeTarget(fields[0]) {
+				c.errMsg("Netinkamas MODE tikslas (kanalas, nick'as ar serverio kaukė)")
+				return
+			}
+			if !isValidModeSpec(fields[1:]) {
+				c.errMsg("Netinkami mode parametrai (per daug parametrų arba specialūs simboliai)")
+				return
+			}
+			c.send("MODE " + strings.Join(fields, " "))
 		}
 
 	case "whois", "wi":
 		if w := firstField(args); c.isConnected() && w != "" {
+			// Nick'as įrašomas į WHOIS komandą — be validacijos jame gali
+			// būti tarpas (papildomas parametras).
+			if !isValidNick(w) {
+				c.errMsg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)")
+				return
+			}
 			// WHOIS atsakymai rodomi aktyviame kanale (jei esame kanale) —
 			// anksčiau jie visada eidavo į *server* langą.
 			if act := c.activeName(); c.isChannel(act) {
@@ -1323,6 +1406,13 @@ func (c *Client) handleCmd(cmd, args string) {
 	case "list":
 		if c.isConnected() {
 			if args != "" {
+				// LIST filtras įrašomas į komandą kaip parametras —
+				// be validacijos jame gali būti tarpas (papildomas
+				// parametras) arba CRLF.
+				if !isValidListFilter(args) {
+					c.errMsg("Netinkamas LIST filtras (be tarpų ir specialių simbolių; max 64)")
+					return
+				}
 				c.send("LIST " + args)
 			} else {
 				c.send("LIST")
@@ -1396,10 +1486,18 @@ func (c *Client) handleCmd(cmd, args string) {
 		target := ""
 		if args != "" {
 			target = firstField(args)
+			// WHO tikslas įrašomas į komandą kaip parametras — be
+			// validacijos jame gali būti tarpas (papildomas parametras)
+			// arba CRLF.
+			if !isValidWhoTarget(target) {
+				c.errMsg("Netinkamas WHO tikslas (kanalas, nick'as arba „*“)")
+				return
+			}
 		}
 		if target == "" {
 			c.mu.Lock()
-			if ch := c.activeChan(); ch != nil {
+			// c.mu jau užrakintas — Locked variantas.
+			if ch := c.activeChanLocked(); ch != nil {
 				target = ch.name
 			}
 			c.mu.Unlock()
