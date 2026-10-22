@@ -287,7 +287,7 @@ func (c *Client) saveMonitor() {
 	_ = os.Rename(tmp, path)
 }
 
-// loadMonitor — /notify sąrašas iš diskо (sustabdyti nevalidūs).
+// loadMonitor — /notify sąrašas iš disko (nevalidūs — praleidžiami).
 func (c *Client) loadMonitor() {
 	path := monitorPath()
 	if path == "" {
@@ -344,8 +344,7 @@ func keyActionNames() []string {
 	return names
 }
 
-// keysPath — klavišų failas: configDir/keys ("veiksmas = sekа" eilutės).
-// keysPath — klavišų failas: configDir/keys ("veiksmas = seka" eilutės).
+// keysPath — klavišų failas: configDir/keys („veiksmas = seka“ eilutės).
 func keysPath() string {
 	dir := configDir()
 	if dir == "" {
@@ -488,7 +487,14 @@ func saveConfigSetting(key, value string) error {
 	keyLow := strings.ToLower(key)
 	var lines []string
 	replaced := false
-	if b, err := os.ReadFile(path); err == nil {
+	b, readErr := os.ReadFile(path)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		// KLAIDA (ne „failo nėra“): failo NEKEIČIAME — be perskaityto
+		// turinio naujas failas turėtų VIENĄ eilutę (slaptažodis,
+		// serveris, autojoin dingtų be atgalinio atstatymo).
+		return errors.New("config neperskaitytas, nekeičiamas: " + readErr.Error())
+	}
+	if readErr == nil {
 		sc := bufio.NewScanner(strings.NewReader(string(b)))
 		for sc.Scan() {
 			line := sc.Text()
@@ -534,10 +540,18 @@ func saveConfigSetting(key, value string) error {
 	return os.Rename(tmp, path)
 }
 
-// parseBoolCfg — /set logikos reikšmė (true/1/yes = teigiama).
-// atitinka loadConfig tikrinimą.
-func parseBoolCfg(v string) bool {
-	return v == "true" || v == "1" || v == "yes"
+// parseBoolValue — /set bool rakto reikšmė: žinomas žodis — reikšmė,
+// nežinomas (pvz. „taip“) — ok=false → komanda praneša apie klaidą ir
+// NEĮRAŠO melagingos reikšmės į failą (anksčiau bet koks neatpažintas
+// žodis tyliai reikšdavo false ir taip būdavo rašomas į config).
+func parseBoolValue(v string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		return true, true
+	case "false", "0", "no", "off":
+		return false, true
+	}
+	return false, false
 }
 
 func (c *Client) saveIgnore() {

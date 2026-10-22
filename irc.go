@@ -230,6 +230,44 @@ var ircv3WantedCaps = []string{
 	"extended-join", "account-notify", "chghost", "invite-notify",
 }
 
+// saslExtUsable — ar SASL EXTERNAL TIKRAI galimas: konfigūruotas IR
+// nustatyti sertifikatai IR jungiamasi su TLS (c.mu LAIKOMAS).
+func (c *Client) saslExtUsable() bool {
+	return c.saslExternal && c.tlsCertPath != "" && c.useTLS
+}
+
+// saslDecide — bendra SASL prašymo logika abiejose CAP LS vietose
+// (handleCapNew ir inline CAP LS): iki to buvo DUBLIUOTA logika su
+// drift'u (vienoje vietoje buvo įspėjimas, kitoje — ne; vienoje —
+// saslOk reikšmė, kitoje — ne). c.mu LAIKOMAS.
+//
+// Įspėjimas (sasl_external be sertifikato/TLS) NEŠTA čia — serverMsg
+// ima c.mu, o jis jau laikomas: grąžiname warn, o kvietėjas praneša PO
+// atsirakinimo (priešingu atveju — self-deadlock).
+//
+// EXTERNAL galimas tik su sertifikatu per TLS; kitaip PLAIN
+// (slaptažodis); be jokios kredencialos (t.y. nei EXTERNAL, nei
+// slaptažodžio) — SASL neprašoma (serveris gautų tuščią PLAIN
+// payload'ą).
+func (c *Client) saslDecide(available map[string]bool) (request, warn bool) {
+	extUsable := c.saslExtUsable()
+	if c.saslExternal && !extUsable {
+		warn = true
+	}
+	request = available["sasl"] && (c.saslPass != "" || extUsable) && !c.saslOk
+	if request {
+		c.capSASL = true
+		// Mechanizmas renkamas derybų pradžioje: EXTERNAL (kliento
+		// sertifikatas) — kai sukonfigūruotas, kitaip PLAIN.
+		if extUsable {
+			c.saslMech = "EXTERNAL"
+		} else {
+			c.saslMech = "PLAIN"
+		}
+	}
+	return
+}
+
 func (c *Client) handleCapNew(capsStr string) {
 	c.mu.Lock()
 	if c.capAvailable == nil {
@@ -249,20 +287,17 @@ func (c *Client) handleCapNew(capsStr string) {
 			}
 		}
 	}
-	needSASL := available["sasl"] && (c.saslPass != "" || c.saslExternal) && !c.saslOk
-	if needSASL {
+	// SASL EXTERNAL sąlygos/mechanizmas — saslDecide (bendra su inline
+	// CAP LS). Įspėjimas — PO atsirakinimo (serverMsg ima c.mu).
+	req, saslWarn := c.saslDecide(available)
+	if req {
 		wanted = append(wanted, "sasl")
-		c.capSASL = true
-		// Mechanizmas renkamas ČIA (derybos pradžioje): EXTERNAL (kliento
-		// sertifikatas) — kai sukonfigūruotas, kitaip PLAIN.
-		if c.saslExternal && c.tlsCertPath != "" {
-			c.saslMech = "EXTERNAL"
-		} else {
-			c.saslMech = "PLAIN"
-		}
 	}
 	c.capAvailable = make(map[string]bool)
 	c.mu.Unlock()
+	if saslWarn {
+		c.serverMsg("sasl_external=true, bet nenurodyti sertifikatai (tls_cert/tls_key) arba TLS išjungtas — SASL EXTERNAL nenaudojamas")
+	}
 
 	if len(wanted) > 0 {
 		c.send("CAP REQ :" + strings.Join(wanted, " "))
@@ -324,6 +359,15 @@ func asciiFold(s string) string {
 func (c *Client) nickEqual(a, b string) bool {
 	_, _, _, cm, _ := c.isupSnapshot()
 	return nickEqual(a, b, cm)
+}
+
+// monKey — monitorOnline žemėlapio RAKTAS: nick'as fold'inamas pagal
+// serverio casemapping. Serveris 730/731 gali grąžinti kitas raides
+// nei įrašėme („Bob“ vs „bob“) — be fold'o vartotojas gautų DU įrašus
+// (online „Bob“ + offline „bob“) arba amžiną „nežinoma“.
+func (c *Client) monKey(nick string) string {
+	_, _, _, cm, _ := c.isupSnapshot()
+	return normNick(nick, "", cm)
 }
 
 // nickEqual — laisva versija su casemapping parametru (naudojama
@@ -1182,6 +1226,11 @@ func (c *Client) switchCh(idx int) {
 		target.unreadFrom = -1
 		c.nickScrollOff = 0
 		c.searchMode = false
+		// Paieškos būsena — KIEKVIENAM langui savo kontekste: pereinant
+		// į kitą kanalą indeksas/query išvalomi (seniau indeksas likdavo
+		// iš kito lango — „n“/„p“ pralėkdavo per NE TĄ žinutes).
+		c.searchResultIdx = -1
+		c.lastSearchQuery = ""
 		// Kanalų sąrašo slinktis — aktyvus kanalas turi būti MATOMAS.
 		//
 		// Eilučių skaičius skaičiuojamas TAIP PAT, kaip draw() (žr.
@@ -1801,6 +1850,17 @@ func (c *Client) doConnect(gen int) {
 		tlsCfg := &tls.Config{
 			ServerName: srvName,
 			MinVersion: tls.VersionTLS12,
+		}
+		c.mu.Lock()
+		pinningOn := c.tlsPinning || c.tlsPin != ""
+		c.mu.Unlock()
+		if pinningOn {
+			// TLS PINNING (TOFU): standartinė patikra per CA su saviraščiu
+			// serverio sertifikatu nepereina — jungtis nutrūktų dar iki
+			// atspaudo tikrinimo ir TOFU niekada nesuveiktų. Todėl su
+			// pinning'u standartinę patikrą IŠJUNGIAME: tapatybės ženklas
+			// čia yra IŠSAUGOTAS atspaudas (SPKI), o ne CA parduotuvė.
+			tlsCfg.InsecureSkipVerify = true
 		}
 		// SASL EXTERNAL (v0.4.8): kliento sertifikatas/raktas TLS
 		// rankos paspaudime. Neteisingi keliai — jungtis NEVYKDOMA (aiški
@@ -2850,18 +2910,17 @@ func (c *Client) parseIRC(line string) {
 					wanted = append(wanted, want)
 				}
 			}
-			needSASL := available["sasl"] && (c.saslPass != "" || c.saslExternal)
-			if needSASL {
+			// SASL sąlygos/mechanizmas — saslDecide (bendra su
+			// handleCapNew). Įspėjimas — PO atsirakinimo.
+			req, saslWarn := c.saslDecide(available)
+			if req {
 				wanted = append(wanted, "sasl")
-				c.capSASL = true
-				if c.saslExternal && c.tlsCertPath != "" {
-					c.saslMech = "EXTERNAL"
-				} else {
-					c.saslMech = "PLAIN"
-				}
 			}
 			c.capAvailable = make(map[string]bool)
 			c.mu.Unlock()
+			if saslWarn {
+				c.serverMsg("sasl_external=true, bet nenurodyti sertifikatai (tls_cert/tls_key) arba TLS išjungtas — SASL EXTERNAL nenaudojamas")
+			}
 			if len(wanted) > 0 {
 				c.send("CAP REQ :" + strings.Join(wanted, " "))
 			} else {
@@ -2999,7 +3058,8 @@ func (c *Client) parseIRC(line string) {
 		c.send("CAP END")
 
 	// MONITOR numerikai (v0.4.8): 730 online, 731 offline. Maskos
-	// („nick!user@host“) — į nick'ą (prieš „!“).
+	// („nick!user@host“) — į nick'ą (prieš „!“). Žemėlapio raktas —
+	// FOLDINTAS nick'as (monKey): nickEqual lygybė be įrašo dubliavimo.
 	case "730": // RPL_MONONLINE
 		for _, mask := range strings.Split(p(1), ",") {
 			nick := strings.SplitN(mask, "!", 2)[0]
@@ -3008,7 +3068,7 @@ func (c *Client) parseIRC(line string) {
 				continue
 			}
 			c.mu.Lock()
-			c.monitorOnline[nick] = true
+			c.monitorOnline[c.monKey(nick)] = true
 			c.mu.Unlock()
 			c.serverMsg("● " + nick + " prisijungė (žiūrimas)")
 		}
@@ -3020,7 +3080,7 @@ func (c *Client) parseIRC(line string) {
 				continue
 			}
 			c.mu.Lock()
-			delete(c.monitorOnline, nick)
+			delete(c.monitorOnline, c.monKey(nick))
 			c.mu.Unlock()
 			c.serverMsg("○ " + nick + " atsijungė (žiūrimas)")
 		}
@@ -3033,7 +3093,10 @@ func (c *Client) parseIRC(line string) {
 	case "733": // RPL_MONLISTEND
 		c.serverMsg("MONITOR sąrašo pabaiga")
 	case "734": // RPL_MONLISTFULL — sąrašo limitas viršija
-		msg := p(1)
+		// Formatas: <limit> <maskos,kableliais> :<priežastis> — nick'ų
+		// sąrašas yra p(2), o p(1) yra tik limito SKAIČIUS (seniau paėmę
+		// p(1) atmetinėjome skaičių „300“ — nieko neatmetėme).
+		msg := p(2)
 		// Ko nepriėmė — iš c.monitorList ištriname (v0.4.8: kitaip
 		// sąraše liktų „stebimi“ nick'ai, kurių serveris NIEKADA
 		// nepraneš apie online/offline).

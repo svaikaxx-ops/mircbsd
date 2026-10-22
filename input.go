@@ -195,8 +195,12 @@ func (c *Client) handleKey(b []byte) {
 	// vartotojo perrašyta (configDir/keys), ją PAKEIČIAME į kanoninę
 	// veiksmo seką (keyActions) ir toliau įprastai apdorojame.
 	// Ciklas (seka→veiksmas→ta pati seka) apsaugotas iki 3 iteracijų.
+	// customBinds — po c.mu: jį RAŠO loadKeys (per /keys arba
+	// perform'e) kita gorutina — be spynos tai buvo data race.
 	for depth := 0; depth < 3; depth++ {
+		c.mu.Lock()
 		act, ok := c.customBinds[string(b)]
+		c.mu.Unlock()
 		if !ok {
 			break
 		}
@@ -737,9 +741,14 @@ func (c *Client) logSearch(chanFilter, query string) {
 	}
 	q := strings.ToLower(query)
 
+	// c.server — po c.mu (jį rašo /connect kitu momentu).
+	c.mu.Lock()
+	srv := c.server
+	c.mu.Unlock()
+
 	dir := c.logDir
-	if c.server != "" {
-		dir = filepath.Join(c.logDir, sanitizePath(c.server))
+	if srv != "" {
+		dir = filepath.Join(c.logDir, sanitizePath(srv))
 	}
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		c.errMsg("Žurnalų katalogas „" + sanitizeText(dir) + "“ nerastas")
@@ -749,9 +758,13 @@ func (c *Client) logSearch(chanFilter, query string) {
 	// Failų rinkinys: su kanalo filtru — tik to kanalo failai; be — visi.
 	var files []string
 	if chanFilter != "" {
-		// Sanitizuojame KAIP ir šeimo rašyme — kitu atveju „#“/„..“
+		// Sanitizuojame KAIP ir žurnale rašoma — kitu atveju „#“/„..“
 		// glob'e nesutaptų su tikrais failais arba kelias būtų pavojingas.
-		prefix := sanitizePath(chanFilter)
+		// Dar globQuote'ame: sanitizePath nevalo „[“/„]“ (ir nereikia —
+		// kanalas tokių turi mažai), o filepath.Glob juose matytų
+		// SIMBOLIŲ RINKINIUS („[chan]“ → vienas iš c/h/a/n) ir tyliai
+		// nerastų nieko.
+		prefix := globQuote(sanitizePath(chanFilter))
 		matches, err := filepath.Glob(filepath.Join(dir, prefix+"-*.log"))
 		if err != nil || len(matches) == 0 {
 			c.errMsg("Žurnalų failų kanalui „" + sanitizeText(chanFilter) + "“ nerasta")
@@ -767,25 +780,46 @@ func (c *Client) logSearch(chanFilter, query string) {
 		files = matches
 	}
 
-	total, skippedFiles := 0, 0
+	// searchedFiles — kiek failų TIKRAI ieškoėme (su limito nutrūkimu
+	// „%d failuose“ anksčiau skaičiavo VISO glob'e esančius).
+	total, searchedFiles, skippedFiles := 0, 0, 0
 	for _, path := range files {
 		if total >= 500 {
 			break
 		}
 		if err := c.logSearchFile(path, q, &total); err != nil {
 			skippedFiles++
+			continue
 		}
+		searchedFiles++
 	}
 	if total == 0 && skippedFiles == 0 {
 		c.errMsg("Žurnaluose nieko nerasta: " + sanitizeText(query))
 		return
 	}
 	if total > 0 {
-		c.serverMsg(fmt.Sprintf("Žurnalų paieška: %d atitikmenų (maks. 500), %d failuose", total, len(files)))
+		c.serverMsg(fmt.Sprintf("Žurnalų paieška: %d atitikmenų (maks. 500), %d failuose", total, searchedFiles))
 	}
 	if skippedFiles > 0 {
 		c.errMsg(fmt.Sprintf("%d failų net įskaitoma — praleista", skippedFiles))
 	}
+}
+
+// globQuote — eilutėje atslinkti filepath.Glob'o metasimbolius
+// („\\ [ ] * ?“) atgaliniu brūkšniu, kad glob'e eilutė atitiktų TIK
+// save. Svarbiausia „[“/„]“ — kitaip „[chan]“ būtų simbolių rinkinys
+// ir tyliai nerastų nieko (filepath.QuoteMeta daro tą patį, bet čia
+// trumpiau ir aiškiau, kokius simbolius saugome).
+func globQuote(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\', '[', ']', '*', '?':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // logSearchFile — vieno žurnalo failo nuskaitymas ir atitikmenų spausdinimas.
@@ -811,12 +845,14 @@ func (c *Client) logSearchFile(path string, q string, total *int) error {
 			break
 		}
 		line := sc.Text()
-		if strings.Contains(strings.ToLower(line), q) {
-			// Be laiko žymos — ji ilgai ir mažai naudoinga.
-			body := line
-			if i := strings.IndexByte(line, ']'); i > 0 && len(line) > i+2 {
-				body = strings.TrimSpace(line[i+1:])
-			}
+		// Atitikmenys TIK ŽINUTĖS TEKSTE (po „[HH:MM:SS] “): kitaip paieška
+		// "10:0" arba "2026:10" atitiktų LAIKO ŽYMA, o ne žinutę.
+		body := line
+		if i := strings.IndexByte(line, ']'); i > 0 && len(line) > i+2 {
+			body = strings.TrimSpace(line[i+1:])
+		}
+		if strings.Contains(strings.ToLower(body), q) {
+			// Rodome be laiko žymos — ji ilgai ir mažai naudoinga.
 			c.serverMsg(base + "> " + body)
 			*total++
 		}
@@ -889,7 +925,9 @@ func escapeKeySeq(seq string) string {
 		case b == '\\':
 			out += "\\\\"
 		case b == ' ':
-			out += " "
+			// Tarpas — \x20: parseKeysFile naudoja TrimSpace, kuris
+			// „pliką“ tarpą sekos gale nukirptų (ir jis dingtų iš failo).
+			out += "\\x20"
 		case b >= 32 && b < 127:
 			out += string(rune(b))
 		default:
@@ -956,9 +994,22 @@ func boolCfg(b bool) string {
 // reikšmės NEĮrašoma į failą, jeigu ji neatitinka.
 func (c *Client) applySetting(key, value string) {
 	okMsg := ""
+	// bool reikšmės žinomumas TRIJŲ būsenų: nežinomas žodis (pvz. „taip“)
+	// — KLAIDA, ne tylus false (seniau „on“ būdavo pritaikytas kaip false
+	// ir dar įrašytas į config failą). Grąžina true, kai reikšmė bloga.
+	boolError := func(v string) bool {
+		if _, known := parseBoolValue(v); !known {
+			c.errMsg("Reikšmė turi būti true/false (on, off, yes, no, 1, 0): " + sanitizeText(v))
+			return true
+		}
+		return false
+	}
 	switch key {
 	case "mouse":
-		b := parseBoolCfg(value)
+		if boolError(value) {
+			return
+		}
+		b, _ := parseBoolValue(value)
 		c.mu.Lock()
 		c.mouse = b
 		c.mu.Unlock()
@@ -968,22 +1019,34 @@ func (c *Client) applySetting(key, value string) {
 			fmt.Print("\033[?1002l\033[?1000l\033[?1006l")
 		}
 	case "notifications":
-		b := parseBoolCfg(value)
+		if boolError(value) {
+			return
+		}
+		b, _ := parseBoolValue(value)
 		c.mu.Lock()
 		c.notify = b
 		c.mu.Unlock()
 	case "ctcpversion":
-		b := parseBoolCfg(value)
+		if boolError(value) {
+			return
+		}
+		b, _ := parseBoolValue(value)
 		c.mu.Lock()
 		c.ctcpVersion = b
 		c.mu.Unlock()
 	case "reconnect":
-		b := parseBoolCfg(value)
+		if boolError(value) {
+			return
+		}
+		b, _ := parseBoolValue(value)
 		c.mu.Lock()
 		c.reconnect = b
 		c.mu.Unlock()
 	case "timestamps":
-		b := parseBoolCfg(value)
+		if boolError(value) {
+			return
+		}
+		b, _ := parseBoolValue(value)
 		setTimestamps(b, "")
 	case "ts_format":
 		if !isValidTSFormat(value) {
@@ -1004,7 +1067,11 @@ func (c *Client) applySetting(key, value string) {
 		}
 		setHighlightColor(value)
 	case "nick_colors":
-		setNickColors(parseBoolCfg(value))
+		if boolError(value) {
+			return
+		}
+		b, _ := parseBoolValue(value)
+		setNickColors(b)
 	case "theme":
 		if !validTheme(value) {
 			c.errMsg("Nežinoma tema (dark, light): " + sanitizeText(value))
@@ -1108,15 +1175,16 @@ func (c *Client) exportJSON(chanName string) {
 	copyMsgs := make([]Message, len(ch.messages))
 	copy(copyMsgs, ch.messages)
 	name := sanitizePath(ch.name)
+	srv := c.server
 	c.mu.Unlock()
 
 	// Katalogas: logDir/<serveris> (kaip ir žurnalams).
 	dir := c.logDir
-	if c.server != "" {
-		dir = filepath.Join(c.logDir, sanitizePath(c.server))
+	if srv != "" {
+		dir = filepath.Join(c.logDir, sanitizePath(srv))
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		c.errMsg("Neišeina sukurti katalogo: " + err.Error())
+		c.errMsg("Nepavyko sukurti katalogo: " + err.Error())
 		return
 	}
 	path := filepath.Join(dir, name+"-"+time.Now().Format("2006-01-02")+".json")
@@ -2362,11 +2430,15 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 
 	case "search":
-		if args == "all" || strings.HasPrefix(args, "all ") {
+		// „/search all <žodis>“ — mažosiomis/be didžiųjų („ALL“, „All“);
+		// ir „/search all“ BE tarpo paskui — toliau įprasta paieška žodžiui
+		// „all“ (seniau jo ieškoti NEgalėjai — „all“ buvo atsvertas).
+		low := strings.ToLower(args)
+		if low == "all " || strings.HasPrefix(low, "all ") {
 			// /search all <žodis> — paieška VISUOSE languose, rezultatai
 			// į *server* langą (v0.4.8).
 			q := ""
-			if len(args) > 3 {
+			if len(args) > 4 {
 				q = strings.TrimSpace(args[4:])
 			}
 			if q == "" {
@@ -2432,10 +2504,13 @@ func (c *Client) handleCmd(cmd, args string) {
 				c.serverMsg("/notify sąrašas tuščias. Naudojimas: /notify add <nick>  |  /notify del <nick>")
 				return
 			}
+			// Būsenos žemėlapis raktas — FOLDINTAS nick'as (monKey):
+			// serverio „Bob“ ir sąraše esantis „bob“ — tas patis.
 			for _, n := range list {
-				if online[n] {
+				key := c.monKey(n)
+				if online[key] {
 					c.serverMsg("notify: " + n + " — online")
-				} else if seen[n] {
+				} else if seen[key] {
 					c.serverMsg("notify: " + n + " — offline")
 				} else {
 					// Kol dar nėra MONITOR atsakymų (tik po prisijungimo
@@ -2467,6 +2542,17 @@ func (c *Client) handleCmd(cmd, args string) {
 						break
 					}
 				}
+				// Serverio MONITOR limitas (005 „MONITOR=N“): anksčiau jis
+				// buvo skaitomas, bet NIEKADA nenaudotas — serveris likučius
+				// tyliai atmetė per 734. Dabar ribojame patys.
+				c.isupMu.RLock()
+				monLimit := c.limits.Monitor
+				c.isupMu.RUnlock()
+				if !exists && monLimit > 0 && len(c.monitorList) >= monLimit {
+					c.mu.Unlock()
+					c.errMsg("MONITOR sąrašas pilnas (limitas " + strconv.Itoa(monLimit) + ") — „" + sanitizeText(nick) + "“ nepridėtas")
+					continue
+				}
 				if !exists {
 					c.monitorList = append(c.monitorList, nick)
 				}
@@ -2494,7 +2580,9 @@ func (c *Client) handleCmd(cmd, args string) {
 						break
 					}
 				}
-				delete(c.monitorOnline, nick)
+				// monitorOnline raktas — FOLDINTAS (monKey), kitaip
+				// „Bob“ dingęs iš sąrašo, bet liktų „online“.
+				delete(c.monitorOnline, c.monKey(nick))
 				c.mu.Unlock()
 			}
 			if len(removed) == 0 {
@@ -2707,8 +2795,8 @@ func (c *Client) handleCmd(cmd, args string) {
 
 	case "keys":
 		// /keys (v0.4.8): be argumentų — per naujo skaitome keys failą
-		// (v0.4.8 faila turi būti skaitoma gyvybe) ir rodyti klavišų sąrašą.
-		// /keys debug — valdymo sekų debug režimas.
+		// (taip pakeitimai įgauna galvai neperstataus paleidimo) ir
+		// rodomi aktyvūs perrašymai. /keys debug — sekų debug režimas.
 		if strings.TrimSpace(args) == "debug" {
 			c.mu.Lock()
 			c.keysDebug = true

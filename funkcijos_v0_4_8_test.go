@@ -56,6 +56,7 @@ func TestSaslExternalMechanismChosen(t *testing.T) {
 	c.saslExternal = true
 	c.tlsCertPath = "/tmp/cert.pem"
 	c.tlsKeyPath = "/tmp/key.pem"
+	c.useTLS = true // EXTERNAL be TLS nesuveikia (be sertifikato)
 	c.mu.Unlock()
 
 	c.parseIRC(":srv CAP * LS :sasl")
@@ -122,6 +123,27 @@ func TestSaslPlainStillSendsPayload(t *testing.T) {
 		if strings.Contains(lines[0], "slaptazodis") {
 			t.Errorf("BUG: payload'as NEbase64 (slaptažodis atviroje eilutėje)")
 		}
+	}
+}
+
+// T1c — sasl_external BE TLS/serificiato: SASL neprašomas (tuščias PLAIN
+// payload'as serveriui nieko neduoda — geriau visai be SASL).
+func TestSaslExternalWithoutTLSNotRequested(t *testing.T) {
+	c := newTestClient()
+	c.writeCh = make(chan string, 16)
+	c.mu.Lock()
+	c.saslExternal = true // be tls_cert, be useTLS, be saslPass
+	c.mu.Unlock()
+
+	c.parseIRC(":srv CAP * LS :sasl")
+	select {
+	case l := <-c.writeCh:
+		if strings.Contains(strings.TrimSuffix(l, "\n"), "sasl") {
+			t.Errorf("BUG: sasl prašytas ir be sertifikato/TLS: %q", l)
+		}
+	case <-time.After(500 * time.Millisecond):
+		// Nieko negauta galima (CAP END su siuntimu — ir tai gerai), čia
+		// tik patikriname, kad NĖRA sasl prašymo.
 	}
 }
 
@@ -440,18 +462,31 @@ func TestMonitorFlow(t *testing.T) {
 	}
 
 	// 734 — nepriimti nick'ai šalinami sąraše (kitu atveju jie liktų
-	// „stebimi“ nieko nepranešant):
-	c.parseIRC(":srv 734 nick :* 300 :toonas!u@h")
+	// „stebimi“ nieko nepranešant). Formatas: <limit> <maskos> :<priežastis>
+	// → nick'ų sąrašas yra p(2) (p(1) yra skaičius 300 — seniau
+	// atmetinėjome jį ir NIEKAS nebūtų pašalinta).
+	c.mu.Lock()
+	c.monitorList = []string{"liko", "toonas"}
+	c.mu.Unlock()
+	c.parseIRC(":srv 734 nick 300 toonas!u@h :priezastis")
 	c.mu.Lock()
 	keptToonas := false
+	keptLiko := false
 	for _, n := range c.monitorList {
 		if strings.EqualFold(n, "toonas") {
 			keptToonas = true
 		}
+		if strings.EqualFold(n, "liko") {
+			keptLiko = true
+		}
 	}
 	c.mu.Unlock()
 	if keptToonas {
-		t.Error("BUG: 734 nepašalino nick (liko sąraše)")
+		t.Error("BUG: 734 nepašalino nicko (p(2) nick'ai)")
+	}
+	// „liko“ neturi būti pašalintas — 734 šalina tik nepriimtus.
+	if !keptLiko {
+		t.Error("BUG: 734 pašalino kitą nick'ą („liko“) iš sąrašo")
 	}
 }
 
@@ -561,5 +596,231 @@ func TestKeyBindingsOverride(t *testing.T) {
 	}
 	if len(warns) != 2 {
 		t.Errorf("BUG: įspėjimai = %d (norėta 2: nežinomas veiksmas + nevalidus \\x): %v", len(warns), warns)
+	}
+}
+
+// P1 — peržiūra 2026-10-22: monitorOnline raktas FOLDINTAS (serveris gali
+// grąžinti "BOBAS", o sąraše — "bobas").
+func TestMonitorOnlineFolded(t *testing.T) {
+	c := newTestClient()
+	c.mu.Lock()
+	c.monitorList = []string{"bobas"}
+	c.mu.Unlock()
+	c.parseIRC(":srv 730 nick :BOBAS!u@host")
+	c.mu.Lock()
+	on := c.monitorOnline["bobas"]
+	c.mu.Unlock()
+	if !on {
+		t.Error("BUG: 730 su kita raide (BOBAS) nepažymėjo bobas online (raktas nefoldintas)")
+	}
+}
+
+// P2 — /notify add apsiriboja serverio MONITOR=N limitu (005).
+func TestNotifyMonitorLimitCap(t *testing.T) {
+	c := newTestClient()
+	c.writeCh = make(chan string, 16)
+	c.parseIRC(":srv 005 nick MONITOR=2 :are supported")
+	c.handleCmd("notify", "add a b c")
+	c.mu.Lock()
+	n := len(c.monitorList)
+	c.mu.Unlock()
+	if n != 2 {
+		t.Errorf("BUG: limitas MONITOR=2 neveikia (sąraše %d)", n)
+	}
+}
+
+// P3 — /search all su kitom raidėm („ALL“) ir „/search all“ be tarpo =
+// įprasta paieška žodžiui „all“.
+func TestSearchAllWordParsing(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":testnick!u@h JOIN #k")
+	c.addMsg("#k", Message{ts: time.Now(), nick: "bob", text: "visi yra all čia"})
+
+	// „ALL“ didžiosiomis — vis tiek visų langų paieška.
+	c.handleCmd("search", "ALL visi")
+	sh := c.findCh("*server*")
+	c.mu.Lock()
+	found := false
+	for _, m := range sh.messages {
+		if strings.Contains(m.text, "visi") {
+			found = true
+		}
+	}
+	c.mu.Unlock()
+	if !found {
+		t.Error("BUG: /search ALL (didžiosiomis) neveikia")
+	}
+
+	// „/search all“ be tarpo — ĮPRASTA paieška žodžio „all“ aktyviame
+	// kanale (seniau „all“ buvo sugertas kaip „all“ rėžimas ir žodžio
+	// „all“ ieškoti negalėta). doSearch pranešimo nerašo — tikrina būseną.
+	c.handleCmd("search", "all")
+	c.mu.Lock()
+	idx := c.searchResultIdx
+	c.mu.Unlock()
+	if idx < 0 {
+		t.Errorf("BUG: /search all (be tarpo) nerado žodžio „all“ (idx %+d)", idx)
+	}
+}
+
+// P4 — logsearch: atitikmenys TIK žinutės tekste (be laiko žymos).
+func TestLogSearchBodyOnly(t *testing.T) {
+	dir, err := os.MkdirTemp("", "mircbsd-logbody")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	srvdir := filepath.Join(dir, "test.server")
+	os.MkdirAll(srvdir, 0700)
+	content := "[12:34:56] <bob> labas pasauli\n"
+	if err := os.WriteFile(filepath.Join(srvdir, "#k-2026-10-22.log"), []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := newTestClient()
+	c.logDir = dir
+	c.server = "test.server"
+
+	// „12:34“ yra LAIKO ŽYMOJE — neturi atitikti (seniau atitiko:
+	// ieškojome visoje eilutėje).
+	c.handleCmd("logsearch", "12:34")
+	sh := c.findCh("*server*")
+	c.mu.Lock()
+	timestampHit := false
+	for _, m := range sh.messages {
+		if strings.Contains(m.text, ".log> ") {
+			timestampHit = true
+		}
+	}
+	c.mu.Unlock()
+	if timestampHit {
+		t.Error("BUG: laiko žyma („12:34“) atitiko paiešką")
+	}
+
+	// Pats tekstas — atitinka.
+	c.handleCmd("logsearch", "pasauli")
+	c.mu.Lock()
+	found := false
+	for _, m := range sh.messages {
+		if strings.Contains(m.text, ".log> ") && strings.Contains(m.text, "labas pasauli") {
+			found = true
+		}
+	}
+	c.mu.Unlock()
+	if !found {
+		t.Error("BUG: logsearch nebetiko žinutės teksto")
+	}
+}
+
+// P5 — logsearch filtre glob'o simbolių rinkinių atslinkimas: kanalas
+// „#[t]est“ turi atitikti SAVO failą, o ne naudoti „[t]“ kaip rinkinį
+// (seniau glob'e „[t]“ reiškė vieną iš t/e/... — failas „#[t]est-...“
+// tyliai nesurandamas, o „#test-...“ atsiranda be savavališkos priežasties).
+func TestLogSearchGlobQuote(t *testing.T) {
+	dir, err := os.MkdirTemp("", "mircbsd-logglob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	srvdir := filepath.Join(dir, "test.server")
+	os.MkdirAll(srvdir, 0700)
+	os.WriteFile(filepath.Join(srvdir, "#[t]est-2026-10-22.log"), []byte("[10:00:00] <bob> globas"), 0600)
+	os.WriteFile(filepath.Join(srvdir, "#test-2026-10-22.log"), []byte("[10:00:00] <bob> kitas"), 0600)
+	c := newTestClient()
+	c.logDir = dir
+	c.server = "test.server"
+
+	c.handleCmd("logsearch", "#[t]est globas")
+	sh := c.findCh("*server*")
+	c.mu.Lock()
+	// TIK tikri atitikmenys („.log> “ eilutė) — klaidos pranešimas
+	// „nieko nerasta: globas“ irgi turi tą žodį.
+	found, wrong := false, false
+	for _, m := range sh.messages {
+		if strings.Contains(m.text, ".log> ") && strings.Contains(m.text, "globas") {
+			found = true
+		}
+		if strings.Contains(m.text, ".log> ") && strings.Contains(m.text, "kitas") {
+			wrong = true
+		}
+	}
+	c.mu.Unlock()
+	if !found {
+		t.Error("BUG: „#[t]est“ savo failo nesurasta (glob rinkinys „[t]“)")
+	}
+	if wrong {
+		t.Error("BUG: „#[t]est“ filtras paėmė „#test“ failą (glob rinkinys)")
+	}
+}
+
+// P6 — /set bool su nežinoma reikšme („taip“) — KLAIDA, be įrašo į
+// config (seniau bet koks neatpažintas žodis tyliai reikšdavo false ir
+// tą melą įrašydavo į failą).
+func TestSetBoolUnknownValue(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
+
+	c := newTestClient()
+	// „on“ — dabar PRIIMTAS (true bool'as, kaip loadConfig senovėje buvo
+	// priimamas tik true/1/yes — čia platesnis žodynas /set'ui).
+	c.handleCmd("set", "timestamps on")
+	if !timestampsEnabled {
+		t.Error("BUG: /set timestamps on nepritaikė true")
+	}
+
+	// Nežinomas žodis — klaida: reikšmė NEKEIČIAMA ir NEĮRAŠOMA į failą.
+	c.handleCmd("set", "timestamps taip")
+	if !timestampsEnabled {
+		t.Error("BUG: nežinoma reikšmė pakeitė nustatymą į false")
+	}
+
+	// Į failą „taip“ NĖRA įrašyta (ir „timestamps=on“ ten gyvena tik iš
+	// pirmosios komandos rašymo).
+	p := configPath()
+	if buf, err := os.ReadFile(p); err != nil {
+		t.Fatalf("config failo nėra: %v", err)
+	} else if strings.Contains(string(buf), "taip") {
+		t.Error("BUG: nežinoma reikšmė („taip“) įrašyta į config failą")
+	}
+}
+
+// P7 — escapeKeySeq: tarpas → \\x20 (keys failo apvalinimui TrimSpace
+// nepašalintų jo).
+func TestEscapeKeySeqSpace(t *testing.T) {
+	if got := escapeKeySeq("a "); got != `a\x20` {
+		t.Errorf("BUG: escapeKeySeq(tarpas) = %q (norėta \\x20)", got)
+	}
+	// Būgnas: unescape(escape(x)) == x.
+	b, err := unescapeKeySeq(`a\x20`)
+	if err == nil && len(b) == 2 && b[0] == 'a' && b[1] == ' ' {
+		// ok
+	} else if err == nil {
+		t.Errorf("BUG: unescape(\\x20) = %v", b)
+	} else {
+		t.Errorf("BUG: unescape(\\x20) neveikia: %v", err)
+	}
+}
+
+// P8 — switchCh išvalo paieškos būseną: indeksas/query buvo VISO KLIENTO
+// (ne lango) — kitaip „n“/„p“ kito kanale ieškojo pagal seno lango žinutes.
+func TestSwitchChResetsSearchState(t *testing.T) {
+	c := newTestClient()
+	c.parseIRC(":testnick!u@h JOIN #pirmas")
+	c.parseIRC(":testnick!u@h JOIN #antras")
+	c.addMsg("#pirmas", Message{ts: time.Now(), nick: "bob", text: "labas pirmame"})
+
+	c.doSearch(c.findCh("#pirmas"), "labas")
+	c.mu.Lock()
+	if c.searchResultIdx < 0 || c.lastSearchQuery == "" {
+		c.mu.Unlock()
+		t.Fatal("sąranka: paieškos būsenos nėra")
+	}
+	c.mu.Unlock()
+
+	c.switchCh(1) // #antras
+	c.mu.Lock()
+	idx, q := c.searchResultIdx, c.lastSearchQuery
+	c.mu.Unlock()
+	if idx != -1 || q != "" {
+		t.Errorf("BUG: switchCh neišvalė paieškos būsenos (idx=%d, q=%q)", idx, q)
 	}
 }

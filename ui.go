@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -69,7 +70,12 @@ func setHighlightColor(name string) {
 	}
 }
 
-func setNickColors(b bool) { nickColoring = b }
+func setNickColors(b bool) {
+	// themeMu — nickColoring skaito nickColor (draw gorutina).
+	themeMu.Lock()
+	nickColoring = b
+	themeMu.Unlock()
+}
 
 // timestamp config — globaliai (kaip tsColorCode): įrašoma vieną kartą
 // paleidimo metu, tik skaitoma renderLines (Message metodas neturi prieigos
@@ -127,8 +133,14 @@ var nickColorsLight = []string{
 	"\033[38;5;133m", "\033[38;5;24m", "\033[38;5;95m", "\033[38;5;62m",
 }
 
-// nickColors — aktyvi paletė (keičiama setTheme).
+// nickColors — aktyvi paletė (keičiama setTheme). Prieiga TIK per
+// themeMu (RWMutex): setTheme kviečia /set (klaviatūros gorutina), o
+// nickColor — draw gorutina; be spynos tai buvo data race (dvejetainis
+// slice'o antraštės rašymas vienam skaitant).
 var nickColors = nickColorsDark
+
+// themeMu — nickColors ir themeDarkMode apsauga.
+var themeMu sync.RWMutex
 
 // themeDarkMode — tema (dark — numatyta; light — šviesi).
 var themeDarkMode = true
@@ -136,6 +148,8 @@ var themeDarkMode = true
 // setTheme — tema (v0.4.8): dark (numatyta) arba light. Light theme
 // pakeičia nick paletes į tamsias (šviesios nieks nematoma balta fone).
 func setTheme(name string) {
+	themeMu.Lock()
+	defer themeMu.Unlock()
 	switch strings.ToLower(name) {
 	case "light":
 		themeDarkMode = false
@@ -146,13 +160,19 @@ func setTheme(name string) {
 	}
 }
 
+// setNickColors — nick'ų spalvinimas įjungtas (themeMu drauge su
+// setTheme — abu keičia ką rodo draw).
 func nickColor(nick string) string {
-	if !nickColoring {
+	themeMu.RLock()
+	active := nickColoring
+	palette := nickColors
+	themeMu.RUnlock()
+	if !active {
 		return ""
 	}
 	h := fnv.New32a()
 	h.Write([]byte(strings.ToLower(nick)))
-	return nickColors[h.Sum32()%uint32(len(nickColors))]
+	return palette[h.Sum32()%uint32(len(palette))]
 }
 
 func moveTo(row, col int) string { return fmt.Sprintf("\033[%d;%dH", row, col) }

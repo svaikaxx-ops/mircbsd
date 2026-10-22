@@ -56,6 +56,45 @@ regresijos testais `funkcijos_v0_4_8_test.go`).
   nepasiekia serverio). `tls_pin=` — rankinis atspaudas (pirmenybė
   prieš TOFU failą).
 
+### Ištaisyta (pilna v0.4.8 funkcijų peržiūra)
+
+- **MONITOR 734 (RPL_MONLISTFULL)** nick'ų sąrašas perskaitomas iš
+  p(2) pagal specifikaciją (`<limit> <maskos> :<priežastis>`) — p(1)
+  yra tik limito skaičius — anksčiau NĖ VIENAS nick'as nebūdavo
+  šalinamas iš sąrašo (o testas buvo tuščias — peržiūrėtas ir perrašytas).
+- **monitorOnline raktai FOLDINTI pagal casemapping** (`monKey`) —
+  serverio „Bob“ ir sąraše esantis „bob“ nebebus du atskiri įrašai
+  (arba amžina „nežinoma“ /notify sąraše); /notify list/del naudoja
+  tą patį fold'ą. Taip pat /notify add apsiriboja serverio MONITOR=N
+  limitu (anksčiau 005 informacija buvo skaitoma, bet NEVARTOTA —
+  serveris likučius tyliai atmetė 734).
+- **TLS pinning (TOFU) išjungia standartinę CA patikrą** — su
+  saviraščiu serverio sertifikatu standartinė patikra nepereina iki
+  atspaudo tikrinimo (ir TOFU niekada nesuveiktų): su
+  `tls_pinning`/`tls_pin` nustatoma `InsecureSkipVerify`; tapatybės
+  ženklas čia — IŠSAUGOTAS atspaudas.
+- **saveConfigSetting nepraranda konfigūracijos** — perskaitymo
+  klaida (NE „failo nėra“) → atsisakome be perrašymo (anksčiau
+  neperskaitytas failas būtų atsirašęs po vienu /set).
+- **/set bool nežinoma reikšmė — klaida** (trieigis `parseBoolValue`:
+  true/false/1/0/yes/no/on/off); anksčiau bet koks neatpažintas žodis
+  tyliai reikšdavo false ir tą melą įrašydavo į failą.
+- **customBinds** skaitomas po `c.mu` (loadKeys rašo iš kito gorutino);
+  **nickColors/tema** — `themeMu` (RWMutex), kitaip data race su draw.
+- **/logsearch**: atitikmenys TIK žinutės tekste (seniau atitiktų ir
+  laiko žyma „12:34“); kanalo filtro glob'o simbolių rinkinys
+  atslinktas (`globQuote` — „#[t]est“ nebenaudojamas kaip „#test“);
+  „%d failuose“ dabar rodo kiek TIKRAI ieškome (anksčiau — visus
+  glob'e esančius, įskaitant praleistus dėl dydžio).
+- **/search all** — mažųjų-raidžių atitikimas („ALL“ taip pat veikia)
+  ir „/search all“ (be tarpo) ieško žodžio „all“ aktyviame kanale
+  (anksčiau žodžio „all“ ieškoti NEgalima); **switchCh** išvalo
+  paieškos būseną (indeksas/query — be kito lango „n“/„p“ drift'o).
+- **/keys escapeKeySeq** tarpas rašomas kaip `\x20` (seniau tarpas faile
+  apsiskristų įvairiomis aplinkybėmis ir dingtų iš sekos); **saslDecide** —
+  vieninga SASL sąlyga/mechanizmas abiejose CAP LS vietose (drift'o
+  prevencija).
+
 ## [0.4.7] – 2026-10-21 – naujos kokybės funkcijos (paketas „a")
 
 Septynios „mažos pastangos / didelė nauda" funkcijos (peržiūros pasiūlymų
