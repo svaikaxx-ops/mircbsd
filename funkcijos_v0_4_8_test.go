@@ -824,3 +824,44 @@ func TestSwitchChResetsSearchState(t *testing.T) {
 		t.Errorf("BUG: switchCh neišvalė paieškos būsenos (idx=%d, q=%q)", idx, q)
 	}
 }
+
+// Tema (theme light/dark) ir nick'ų spalvų keitimas TURI invaliduoti
+// renderio cache'ą: jau renderiuotos eilutės laiko SENUS SGR kodus ir
+// draw'as juos naudodavo toliau — šviesioje temoje senos žinutės būtų
+// tamsios paletės spalvomis (91–96, 226…), t. y. neįskaitomos balta fone.
+func TestThemeInvalidatesRenderCache(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", t.TempDir())
+	// Globali būsena kitiems testams: grąžinam tamsią temą + spalvas ON.
+	defer setNickColors(true)
+	defer setTheme("dark")
+
+	c := newTestClient()
+	ch := c.ensureCh("#tema")
+
+	fillCache := func() {
+		c.mu.Lock()
+		ch.rendered = []string{"\x1b[94msena eilutė"}
+		ch.renderedMsgCount = 1
+		c.mu.Unlock()
+	}
+	cacheEmpty := func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		// renderedGen taip pat -1: be jo (cacheOK = renderedGen == gen)
+		// draw iš tuščio cache'o išves nulines eilutes.
+		return ch.rendered == nil && ch.renderedMsgCount == 0 && ch.renderedGen == -1
+	}
+
+	fillCache()
+	c.applySetting("theme", "light")
+	if !cacheEmpty() {
+		t.Error("BUG: /set theme light nepakeitė renderio cache'o — senos eilutės su tamsios paletės spalvomis")
+	}
+
+	fillCache()
+	c.applySetting("nick_colors", "false")
+	if !cacheEmpty() {
+		t.Error("BUG: /set nick_colors false nepakeitė renderio cache'o")
+	}
+}

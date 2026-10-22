@@ -1072,12 +1072,14 @@ func (c *Client) applySetting(key, value string) {
 		}
 		b, _ := parseBoolValue(value)
 		setNickColors(b)
+		c.invalidateRenderCaches()
 	case "theme":
 		if !validTheme(value) {
 			c.errMsg("Nežinoma tema (dark, light): " + sanitizeText(value))
 			return
 		}
 		setTheme(value)
+		c.invalidateRenderCaches()
 	case "maxmessages":
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 100 || n > 100000 {

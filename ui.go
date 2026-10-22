@@ -175,6 +175,24 @@ func nickColor(nick string) string {
 	return palette[h.Sum32()%uint32(len(palette))]
 }
 
+// invalidateRenderCaches — po temos ar nick'ų spalvų keitimo (v0.4.8):
+// jau renderiuotų eilučių cache yra su SENIAIS SGR kodais, o draw jį
+// naudoja toliau — senos žinutės liktų tamsios paletės spalvomis
+// (91–96, 226…), kurios šviesioje temoje baltame fone neįskaitomos.
+// Invaliduojam visų kanalų cache'ą — kitas draw perrenderiuos viską.
+// renderedGen taip pat -1: kitaip cacheOK (= renderedGen == gen)
+// liks tikras ir draw iš tuščio cache'o išves NULINES eilutes.
+func (c *Client) invalidateRenderCaches() {
+	c.mu.Lock()
+	for _, ch := range c.channels {
+		ch.rendered = nil
+		ch.renderedMsgCount = 0
+		ch.renderedGen = -1
+	}
+	c.mu.Unlock()
+	c.queueRedraw()
+}
+
 func moveTo(row, col int) string { return fmt.Sprintf("\033[%d;%dH", row, col) }
 
 // ---- mIRC spalvų ir formatavimo kodai ----
