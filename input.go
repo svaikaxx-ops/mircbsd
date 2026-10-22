@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -184,6 +188,43 @@ func (c *Client) handleKey(b []byte) {
 	c.mu.Unlock()
 	if searchMode {
 		c.handleSearchKey(b)
+		return
+	}
+
+	// Klavišų perrašymas (keys failas, v0.4.8): jei gauta seka yra
+	// vartotojo perrašyta (configDir/keys), ją PAKEIČIAME į kanoninę
+	// veiksmo seką (keyActions) ir toliau įprastai apdorojame.
+	// Ciklas (seka→veiksmas→ta pati seka) apsaugotas iki 3 iteracijų.
+	for depth := 0; depth < 3; depth++ {
+		act, ok := c.customBinds[string(b)]
+		if !ok {
+			break
+		}
+		canon, known := keyActions[act]
+		if !known || string(canon) == string(b) {
+			break
+		}
+		b = canon
+	}
+
+	// Paieškos rezultatų navigacija (v0.4.8): „n“ — kitas rezultatas
+	// žemyn, „p“ — ankstesnis. TIK su TUŠČIA įvestimi (su tekstu eilutės
+	// „n“/„p“ liko raide), kitaip būtų neįmanoma rašyti.
+	c.mu.Lock()
+	emptyInput := len(c.input) == 0
+	lastQuery := c.lastSearchQuery
+	c.mu.Unlock()
+	if emptyInput && lastQuery != "" && len(b) == 1 && (b[0] == 'n' || b[0] == 'p') {
+		if b[0] == 'n' {
+			c.searchForward()
+		} else {
+			c.mu.Lock()
+			active := c.activeChanLocked()
+			c.mu.Unlock()
+			if active != nil {
+				c.doSearch(active, lastQuery)
+			}
+		}
 		return
 	}
 
@@ -576,35 +617,7 @@ func (c *Client) doSearch(ch *Channel, query string) {
 		m := ch.messages[i]
 		textLow := strings.ToLower(stripIRCFormat(m.text) + " " + m.nick)
 		if strings.Contains(textLow, queryLow) {
-			// scrollOff matuojamas BRAIŽOMOMIS eilutėmis, ne žinutėmis —
-			// ilga žinutė užima kelias eilutes, todėl ankstyvesnis
-			// „totalMsgs - i - 1“ rodė ne ten, kur rasta žinutė yra.
-			// Astatom langą taip, kad rastos žinutės paskutinė eilutė
-			// atsidurtų matomo lango apačioje.
-			msgW := c.width - chanListWidth - 2
-			if c.isChannel(ch.name) {
-				msgW -= nickListWidth + 1
-			}
-			if msgW < 10 {
-				msgW = 10
-			}
-			myNick := c.nick
-
-			foundCount := len(ch.messages[i].renderLines(msgW, myNick))
-			firstLine := 0
-			for j := 0; j < i; j++ {
-				firstLine += len(ch.messages[j].renderLines(msgW, myNick))
-			}
-			totalLines := firstLine + foundCount
-			for j := i + 1; j < len(ch.messages); j++ {
-				totalLines += len(ch.messages[j].renderLines(msgW, myNick))
-			}
-			// langas žemiau matomų eilučių, paskutinė rastos žinutės eilutė apačioje:
-			// paskutinės eilutės indeksas = firstLine + foundCount - 1
-			c.scrollOff = totalLines - (firstLine + foundCount)
-			if c.scrollOff < 0 {
-				c.scrollOff = 0
-			}
+			c.scrollToMessageLocked(ch, i)
 			c.searchResultIdx = i
 			c.lastSearchQuery = query
 			c.searchMode = false
@@ -613,6 +626,512 @@ func (c *Client) doSearch(ch *Channel, query string) {
 	}
 	// Nerasta - palikti paieškos režimą (gal pradžia pasiekta)
 	c.searchResultIdx = -1
+}
+
+// searchForward — „n“ (su TUŠČIA įvestimi): kitas paieškos rezultatas
+// ŽEMYN (naujentes) — doSearch ieško atgal (aukštyn), šis eina prieki.
+// „p“ atveju doSearch įprasta tęsiama tos pačios užklausos atgal.
+func (c *Client) searchForward() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	active := c.activeChanLocked()
+	if active == nil || c.lastSearchQuery == "" || c.searchMode {
+		return
+	}
+	q := strings.ToLower(c.lastSearchQuery)
+	start := 0
+	if c.searchResultIdx >= 0 {
+		start = c.searchResultIdx + 1
+	}
+	if start >= len(active.messages) {
+		return
+	}
+	for i := start; i < len(active.messages); i++ {
+		m := active.messages[i]
+		textLow := strings.ToLower(stripIRCFormat(m.text) + " " + m.nick)
+		if strings.Contains(textLow, q) {
+			c.scrollToMessageLocked(active, i)
+			c.searchResultIdx = i
+			return
+		}
+	}
+	// Pabaiga pasiekta — nieko nerasta.
+}
+
+// scrollToMessageLocked astatę langą taip, kad rastos žinutės paskutinė
+// eilutė atsirastų matomo lango apačioje. TIK SU c.mu užrakintu — naudota
+// doSearch ir searchForward (du kartai buvo identinės eilutės).
+func (c *Client) scrollToMessageLocked(ch *Channel, i int) {
+	msgW := c.width - chanListWidth - 2
+	if c.isChannel(ch.name) {
+		msgW -= nickListWidth + 1
+	}
+	if msgW < 10 {
+		msgW = 10
+	}
+	myNick := c.nick
+
+	foundCount := len(ch.messages[i].renderLines(msgW, myNick))
+	firstLine := 0
+	for j := 0; j < i; j++ {
+		firstLine += len(ch.messages[j].renderLines(msgW, myNick))
+	}
+	totalLines := firstLine + foundCount
+	for j := i + 1; j < len(ch.messages); j++ {
+		totalLines += len(ch.messages[j].renderLines(msgW, myNick))
+	}
+	c.scrollOff = totalLines - (firstLine + foundCount)
+	if c.scrollOff < 0 {
+		c.scrollOff = 0
+	}
+}
+
+// searchAllChannels — „/search all <žodis>“ (v0.4.8): paieška VISUOSE
+// languose, rezultatai į *server* langą. Ribojama iki 50 atitikmenų, kad
+// milžiniški istorijos kiekiai neužtvindyti langą.
+func (c *Client) searchAllChannels(query string) {
+	type hit struct{ chanName, line string }
+	q := strings.ToLower(query)
+	var results []hit
+
+	c.mu.Lock()
+	for _, ch := range c.channels {
+		for _, m := range ch.messages {
+			textLow := strings.ToLower(stripIRCFormat(m.text))
+			if strings.Contains(textLow, q) || strings.Contains(strings.ToLower(m.nick), q) {
+				line := strings.TrimSpace(sanitizeText(stripIRCFormat(m.text)))
+				results = append(results, hit{ch.name, "<" + sanitizeText(m.nick) + "> " + line})
+				if len(results) >= 50 {
+					break
+				}
+			}
+		}
+		if len(results) >= 50 {
+			break
+		}
+	}
+	c.mu.Unlock()
+
+	if len(results) == 0 {
+		c.errMsg("Paieška „" + sanitizeText(query) + "“: nieko nerasta")
+		return
+	}
+	for _, h := range results {
+		c.serverMsg(h.chanName + " " + h.line)
+	}
+	c.serverMsg(fmt.Sprintf("Paieška „%s“: %d atitikmenų%s", sanitizeText(query), len(results),
+		map[bool]string{true: " (rodoma pirmi 50)", false: ""}[len(results) >= 50]))
+}
+
+// logSearch — „/logsearch [kanalas] <žodis>“ (v0.4.8): paieška ĮRAŠO
+// žurnalo failuose (logDir/<serveris>/<kanalas>-YYYY-MM-DD.log).
+// Rezultatai į *server* langą. Skaitymas apribotas (10 MB faile, 500
+// atitikmenų), kad milžiniški failai nesustogtų UI.
+//
+// Be aktyvaus serverio — ieškome tiesiogiai pagrindiniame logDir
+// (naudotojas gali žurnalus laikyti ir be serverių hierarchijos).
+func (c *Client) logSearch(chanFilter, query string) {
+	if c.logDir == "" {
+		c.errMsg("Žurnalai išjungti (nėra log katalogo)")
+		return
+	}
+	q := strings.ToLower(query)
+
+	dir := c.logDir
+	if c.server != "" {
+		dir = filepath.Join(c.logDir, sanitizePath(c.server))
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		c.errMsg("Žurnalų katalogas „" + sanitizeText(dir) + "“ nerastas")
+		return
+	}
+
+	// Failų rinkinys: su kanalo filtru — tik to kanalo failai; be — visi.
+	var files []string
+	if chanFilter != "" {
+		// Sanitizuojame KAIP ir šeimo rašyme — kitu atveju „#“/„..“
+		// glob'e nesutaptų su tikrais failais arba kelias būtų pavojingas.
+		prefix := sanitizePath(chanFilter)
+		matches, err := filepath.Glob(filepath.Join(dir, prefix+"-*.log"))
+		if err != nil || len(matches) == 0 {
+			c.errMsg("Žurnalų failų kanalui „" + sanitizeText(chanFilter) + "“ nerasta")
+			return
+		}
+		files = matches
+	} else {
+		matches, err := filepath.Glob(filepath.Join(dir, "*.log"))
+		if err != nil || len(matches) == 0 {
+			c.errMsg("Žurnalų failų nerasta")
+			return
+		}
+		files = matches
+	}
+
+	total, skippedFiles := 0, 0
+	for _, path := range files {
+		if total >= 500 {
+			break
+		}
+		if err := c.logSearchFile(path, q, &total); err != nil {
+			skippedFiles++
+		}
+	}
+	if total == 0 && skippedFiles == 0 {
+		c.errMsg("Žurnaluose nieko nerasta: " + sanitizeText(query))
+		return
+	}
+	if total > 0 {
+		c.serverMsg(fmt.Sprintf("Žurnalų paieška: %d atitikmenų (maks. 500), %d failuose", total, len(files)))
+	}
+	if skippedFiles > 0 {
+		c.errMsg(fmt.Sprintf("%d failų net įskaitoma — praleista", skippedFiles))
+	}
+}
+
+// logSearchFile — vieno žurnalo failo nuskaitymas ir atitikmenų spausdinimas.
+// Failas apribotas iki 10 MB (lieka praleidus); atitikmenys per total.
+func (c *Client) logSearchFile(path string, q string, total *int) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if st.Size() > 10*1024*1024 {
+		return errLogSearchSkipped
+	}
+	base := filepath.Base(path)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 64*1024)
+	for sc.Scan() {
+		if *total >= 500 {
+			break
+		}
+		line := sc.Text()
+		if strings.Contains(strings.ToLower(line), q) {
+			// Be laiko žymos — ji ilgai ir mažai naudoinga.
+			body := line
+			if i := strings.IndexByte(line, ']'); i > 0 && len(line) > i+2 {
+				body = strings.TrimSpace(line[i+1:])
+			}
+			c.serverMsg(base + "> " + body)
+			*total++
+		}
+	}
+	return sc.Err()
+}
+
+// errLogSearchSkipped — per didelis failas (10 MB riba) praleidžiamas.
+var errLogSearchSkipped = errors.New("failas per didelis")
+
+// listSettings — /set be argumentų: sąrašas su dabartinėmis reikšmėmis.
+func (c *Client) listSettings() {
+	for _, k := range settableKeys {
+		c.showSetting(k)
+	}
+	c.serverMsg("/set <raktas> <reikšmė> — keisti (perrašoma į config failą)")
+}
+
+// loadKeys — keys failas (configDir/keys, v0.4.8): klavišų perrašymas.
+// Įspėjimai (nevalidos eilutos) rodomi paleidime.
+func (c *Client) loadKeys() []string {
+	binds, warns := parseKeysFile(keysPath())
+	c.mu.Lock()
+	if c.customBinds == nil {
+		c.customBinds = map[string]string{}
+	}
+	c.customBinds = binds
+	c.mu.Unlock()
+	return warns
+}
+
+// showKeyBindings — /keys be argumentų: aktyvūs perrašymai + veiksmų vardai.
+func (c *Client) showKeyBindings() {
+	c.mu.Lock()
+	binds := make(map[string]string, len(c.customBinds))
+	for seq, act := range c.customBinds {
+		binds[seq] = act
+	}
+	c.mu.Unlock()
+	if len(binds) == 0 {
+		c.serverMsg("Nėra perrašytų klavišų. Failas: " + orDefault(keysPath(), "(nėra config katalogo)"))
+	} else {
+		c.serverMsg("— Perrašyti klavišai (configDir/keys) —")
+		for _, name := range keyActionNames() {
+			for seq, act := range binds {
+				if name == string(act) {
+					c.serverMsg("  " + name + " = " + escapeKeySeq(seq))
+				}
+			}
+		}
+	}
+	known := strings.Join(keyActionNames(), ", ")
+	c.serverMsg("Veiksmų vardai: " + known)
+	c.serverMsg("Sekos sintaksė: \\e (ESC), \\xHH, \\n, \\r, \\t, \\\\ — pvz.: search = \\eS")
+}
+
+// escapeKeySeq — sekos atvaizdavimas keys failo sintaksėje.
+func escapeKeySeq(seq string) string {
+	out := ""
+	for i := 0; i < len(seq); i++ {
+		switch b := seq[i]; {
+		case b == 0x1b:
+			out += "\\e"
+		case b == '\n':
+			out += "\\n"
+		case b == '\r':
+			out += "\\r"
+		case b == '\t':
+			out += "\\t"
+		case b == '\\':
+			out += "\\\\"
+		case b == ' ':
+			out += " "
+		case b >= 32 && b < 127:
+			out += string(rune(b))
+		default:
+			out += fmt.Sprintf("\\x%02x", b)
+		}
+	}
+	return out
+}
+
+// orDefault — testo pagalbinė tuščios eilutės substitucijai.
+func orDefault(s string, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+// showSetting — /set <key>: vieno rakto dabartinė reikšmė.
+func (c *Client) showSetting(key string) {
+	c.mu.Lock()
+	v := ""
+	switch key {
+	case "mouse":
+		v = boolCfg(c.mouse)
+	case "notifications":
+		v = boolCfg(c.notify)
+	case "ctcpversion":
+		v = boolCfg(c.ctcpVersion)
+	case "reconnect":
+		v = boolCfg(c.reconnect)
+	case "timestamps":
+		v = boolCfg(timestampsEnabled)
+	case "ts_format":
+		v = tsFormat
+	case "tscolor":
+		v = tsColorName
+	case "highlight_color":
+		v = hlColorName
+	case "nick_colors":
+		v = boolCfg(nickColoring)
+	case "maxmessages":
+		v = strconv.Itoa(c.maxMessages)
+	case "theme":
+		if themeDarkMode {
+			v = "dark"
+		} else {
+			v = "light"
+		}
+	}
+	c.mu.Unlock()
+	c.serverMsg(key + " = " + v)
+}
+
+// boolCfg — bool reikšmės žodinis atvaizdavimas (config failo stiliumi).
+func boolCfg(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// applySetting — /set <key> <value>: patikrinimas, GYVAS pritaikymas ir
+// įrašymas atgal į config failą. Gyvas pritaikymas VAPRAŠOMAS — blogos
+// reikšmės NEĮrašoma į failą, jeigu ji neatitinka.
+func (c *Client) applySetting(key, value string) {
+	okMsg := ""
+	switch key {
+	case "mouse":
+		b := parseBoolCfg(value)
+		c.mu.Lock()
+		c.mouse = b
+		c.mu.Unlock()
+		if b {
+			fmt.Print("\033[?1000h\033[?1002h\033[?1006h")
+		} else {
+			fmt.Print("\033[?1002l\033[?1000l\033[?1006l")
+		}
+	case "notifications":
+		b := parseBoolCfg(value)
+		c.mu.Lock()
+		c.notify = b
+		c.mu.Unlock()
+	case "ctcpversion":
+		b := parseBoolCfg(value)
+		c.mu.Lock()
+		c.ctcpVersion = b
+		c.mu.Unlock()
+	case "reconnect":
+		b := parseBoolCfg(value)
+		c.mu.Lock()
+		c.reconnect = b
+		c.mu.Unlock()
+	case "timestamps":
+		b := parseBoolCfg(value)
+		setTimestamps(b, "")
+	case "ts_format":
+		if !isValidTSFormat(value) {
+			c.errMsg("Nevalidus laikmatis (pvz. „15:04“, „15:04:05“): " + sanitizeText(value))
+			return
+		}
+		setTimestamps(timestampsEnabled, value)
+	case "tscolor":
+		if !validNamedColor(value) {
+			c.errMsg("Nežinoma spalva (gray, blue, green, cyan, none): " + sanitizeText(value))
+			return
+		}
+		setTSColor(value)
+	case "highlight_color":
+		if !validHighlightColor(value) {
+			c.errMsg("Nežinoma spalva (red, blue, green, magenta, cyan, yellow, none): " + sanitizeText(value))
+			return
+		}
+		setHighlightColor(value)
+	case "nick_colors":
+		setNickColors(parseBoolCfg(value))
+	case "theme":
+		if !validTheme(value) {
+			c.errMsg("Nežinoma tema (dark, light): " + sanitizeText(value))
+			return
+		}
+		setTheme(value)
+	case "maxmessages":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 100 || n > 100000 {
+			c.errMsg("Reikšmė turi būti sveikas skaičius 100–100000: " + sanitizeText(value))
+			return
+		}
+		c.mu.Lock()
+		c.maxMessages = n
+		for _, ch := range c.channels {
+			ch.maxMessages = n
+		}
+		c.mu.Unlock()
+		okMsg = " (esamiems langams)"
+	default:
+		return
+	}
+	// Įrašome ATGAL į config failą (atominis perrašymas).
+	if err := saveConfigSetting(key, value); err != nil {
+		c.errMsg("Pritaikyta gyvai, bet į failą NEĮRAŠYTA: " + err.Error())
+		return
+	}
+	c.serverMsg("nustatymas: " + key + " = " + sanitizeText(value) + okMsg)
+}
+
+// validNamedColor — vardinės spalvos (ts_color rinkinis).
+func validNamedColor(v string) bool {
+	switch strings.ToLower(v) {
+	case "gray", "blue", "green", "cyan", "none":
+		return true
+	}
+	return false
+}
+
+// validHighlightColor — highlight fono spalvos rinkinys (platesnis).
+func validHighlightColor(v string) bool {
+	switch strings.ToLower(v) {
+	case "red", "blue", "green", "magenta", "cyan", "yellow", "none":
+		return true
+	}
+	return false
+}
+
+// validTheme — temų rinkinys (v0.4.8).
+func validTheme(v string) bool {
+	switch strings.ToLower(v) {
+	case "dark", "light":
+		return true
+	}
+	return false
+}
+
+// isValidTSFormat — laiko žymos formatas: tik skaitmenys, „:“, „.“, „-“
+// ir vienas tarpas (pvz. „15:04“, „15:04:05“, „2006-01-02 15:04“).
+// Konservatyvus leidimas — bet kas kita (kabliataškiai, ESC simboliai,
+// anotacijos „MST“) atmetama: formatas eina tiesiai į m.ts.Format().
+func isValidTSFormat(v string) bool {
+	if v == "" || len(v) > 16 {
+		return false
+	}
+	if strings.Contains(v, "  ") {
+		return false
+	}
+	for _, r := range v {
+		if !(r >= '0' && r <= '9') && r != ':' && r != '.' && r != '-' && r != ' ' {
+			return false
+		}
+	}
+	return true
+}
+
+// exportJSON — /exportjson <langas> (v0.4.8): visos lango žinutės į JSON
+// failą (logDir/<serveris>/<kanalas>-YYYY-MM-DD.json). Kelią valome
+// sanitizePath (ta taisyklė, kaip žurnalams) — katalogų kelio išėjimas
+// („../“) neįmanomas.
+func (c *Client) exportJSON(chanName string) {
+	if c.logDir == "" {
+		c.errMsg("Nėra log katalogo (logdir)")
+		return
+	}
+	c.mu.Lock()
+	var ch *Channel
+	for _, chc := range c.channels {
+		if c.nickEqual(chc.name, chanName) {
+			ch = chc
+			break
+		}
+	}
+	c.mu.Unlock()
+	if ch == nil {
+		c.errMsg("Langas „" + sanitizeText(chanName) + "“ nerastas")
+		return
+	}
+
+	c.mu.Lock()
+	copyMsgs := make([]Message, len(ch.messages))
+	copy(copyMsgs, ch.messages)
+	name := sanitizePath(ch.name)
+	c.mu.Unlock()
+
+	// Katalogas: logDir/<serveris> (kaip ir žurnalams).
+	dir := c.logDir
+	if c.server != "" {
+		dir = filepath.Join(c.logDir, sanitizePath(c.server))
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		c.errMsg("Neišeina sukurti katalogo: " + err.Error())
+		return
+	}
+	path := filepath.Join(dir, name+"-"+time.Now().Format("2006-01-02")+".json")
+	buf, err := json.MarshalIndent(copyMsgs, "", "  ")
+	if err != nil {
+		c.errMsg("JSON klaida: " + err.Error())
+		return
+	}
+	// encoding/json visada HTML-escape'ina („<“ → „<“) —
+	// HTML injekcija per eksportą neįmanoma.
+	if err := os.WriteFile(path, buf, 0600); err != nil {
+		c.errMsg("Nebepavyko išsaugoti: " + err.Error())
+		return
+	}
+	c.serverMsg(fmt.Sprintf("Eksportas: %d žinučių → %s", len(copyMsgs), path))
 }
 
 func (c *Client) historyUp() {
@@ -1843,6 +2362,20 @@ func (c *Client) handleCmd(cmd, args string) {
 		}
 
 	case "search":
+		if args == "all" || strings.HasPrefix(args, "all ") {
+			// /search all <žodis> — paieška VISUOSE languose, rezultatai
+			// į *server* langą (v0.4.8).
+			q := ""
+			if len(args) > 3 {
+				q = strings.TrimSpace(args[4:])
+			}
+			if q == "" {
+				c.errMsg("Naudojimas: /search all <žodis>")
+				return
+			}
+			c.searchAllChannels(q)
+			return
+		}
 		if args == "" {
 			c.mu.Lock()
 			c.searchMode = true
@@ -1858,6 +2391,171 @@ func (c *Client) handleCmd(cmd, args string) {
 			}
 		}
 		c.queueRedraw()
+
+	case "set":
+		// /set <key> [value] (v0.4.8): žiūrėti / keisti nustatymą gyvai,
+		// reikšmė įrašoma ATGAL į konfigūracijos failą (atominis perrašymas).
+		if args == "" {
+			c.listSettings()
+			return
+		}
+		parts := strings.Fields(args)
+		key := strings.ToLower(parts[0])
+		if !isSettable(key) {
+			c.errMsg("Nežinomas arba nekeičiamas raktas: " + sanitizeText(parts[0]))
+			return
+		}
+		if len(parts) == 1 {
+			c.showSetting(key)
+			return
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(args, parts[0]))
+		c.applySetting(key, value)
+		return
+
+	case "notify":
+		// /notify add|del|list|be-args (v0.4.8) — MONITOR stebimų nick'ų
+		// sąrašas. Serveriui MONITOR ± (nick1,nick2). Būsena rodoma
+		// po 730 (online) / 731 (offline).
+		if args == "" || strings.EqualFold(strings.TrimSpace(args), "list") {
+			c.mu.Lock()
+			list := make([]string, len(c.monitorList))
+			copy(list, c.monitorList)
+			online := make(map[string]bool, len(c.monitorOnline))
+			seen := make(map[string]bool, len(c.monitorOnline))
+			for k, v := range c.monitorOnline {
+				online[k] = v
+				seen[k] = true
+			}
+			c.mu.Unlock()
+			if len(list) == 0 {
+				c.serverMsg("/notify sąrašas tuščias. Naudojimas: /notify add <nick>  |  /notify del <nick>")
+				return
+			}
+			for _, n := range list {
+				if online[n] {
+					c.serverMsg("notify: " + n + " — online")
+				} else if seen[n] {
+					c.serverMsg("notify: " + n + " — offline")
+				} else {
+					// Kol dar nėra MONITOR atsakymų (tik po prisijungimo
+					// 730/731) būsena nežinoma.
+					c.serverMsg("notify: " + n + " — nežinoma")
+				}
+			}
+			return
+		}
+		sub := strings.Fields(args)
+		if len(sub) < 2 {
+			c.errMsg("Naudojimas: /notify add <nick>  |  /notify del <nick>  |  /notify list")
+			return
+		}
+		switch strings.ToLower(sub[0]) {
+		case "add":
+			added := make([]string, 0)
+			for _, nick := range sub[1:] {
+				nick = strings.TrimSuffix(nick, ",")
+				if !isValidNick(nick) {
+					c.errMsg("Nevalidus nick: " + sanitizeText(nick))
+					continue
+				}
+				c.mu.Lock()
+				exists := false
+				for _, n := range c.monitorList {
+					if c.nickEqual(n, nick) {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					c.monitorList = append(c.monitorList, nick)
+				}
+				c.mu.Unlock()
+				if exists {
+					c.serverMsg("notify: " + nick + " jau sąraše")
+				} else {
+					c.serverMsg("notify: " + nick + " pridėtas")
+					added = append(added, nick)
+				}
+			}
+			if len(added) > 0 {
+				c.send("MONITOR + " + strings.Join(added, ","))
+			}
+			c.saveMonitor()
+		case "del", "del_", "delete", "remove":
+			removed := make([]string, 0)
+			for _, nick := range sub[1:] {
+				nick = strings.TrimSuffix(nick, ",")
+				c.mu.Lock()
+				for i, n := range c.monitorList {
+					if c.nickEqual(n, nick) {
+						c.monitorList = append(c.monitorList[:i], c.monitorList[i+1:]...)
+						removed = append(removed, n)
+						break
+					}
+				}
+				delete(c.monitorOnline, nick)
+				c.mu.Unlock()
+			}
+			if len(removed) == 0 {
+				c.serverMsg("notify: niekos iš „" + sanitizeText(strings.Join(sub[1:], ", ")) + "“ nerasta sąraše")
+			} else {
+				c.send("MONITOR - " + strings.Join(removed, ","))
+				c.saveMonitor()
+			}
+		default:
+			c.errMsg("Naudojimas: /notify add <nick>  |  /notify del <nick>  |  /notify list")
+		}
+
+	case "exportjson":
+		// /exportjson [kanalas] (v0.4.8): eksportuoti lango žinutes į JSON
+		// (logDir/<serveris>/<kanalas>-YYYY-MM-DD.json). Failas 0600,
+		// katalogas 0700. Be argumento — aktyvus langas (jei tai *server*);
+		// „*server*“ eksportui leidžiama).
+		target := strings.TrimSpace(args)
+		if target == "" {
+			c.mu.Lock()
+			active := c.activeChanLocked()
+			c.mu.Unlock()
+			if active == nil {
+				c.errMsg("Nėra aktyvaus lango")
+				return
+			}
+			target = active.name
+		}
+		c.exportJSON(target)
+		return
+
+	case "logsearch":
+		// /logsearch [kanalas] <žodis> — paieška ĮŠAKOMUOSE žurnalo failuose
+		// (v0.4.8). Rezultatai į *server* langą.
+		if args == "" {
+			c.errMsg("Naudojimas: /logsearch [kanalas] <žodis>")
+			return
+		}
+		fields := strings.Fields(args)
+		query := ""
+		chanFilter := ""
+		if len(fields) == 1 {
+			query = fields[0]
+		} else {
+			// Pirmas laukas — kanalas, jei atrodo kaip kanalas, kitaip visas
+			// tekstas yra užklausa.
+			chanFilter = fields[0]
+			q2 := strings.TrimSpace(strings.TrimPrefix(args, fields[0]))
+			if !c.isChannel(chanFilter) {
+				chanFilter = ""
+				query = args
+			} else {
+				query = q2
+			}
+		}
+		if query == "" {
+			c.errMsg("Naudojimas: /logsearch [kanalas] <žodis>")
+			return
+		}
+		c.logSearch(chanFilter, query)
+		return
 
 	case "open":
 		c.mu.Lock()
@@ -2008,10 +2706,20 @@ func (c *Client) handleCmd(cmd, args string) {
 		c.stop()
 
 	case "keys":
-		c.mu.Lock()
-		c.keysDebug = true
-		c.mu.Unlock()
-		c.serverMsg("[KEYS] debug įjungtas. 'q' - išjungti")
+		// /keys (v0.4.8): be argumentų — per naujo skaitome keys failą
+		// (v0.4.8 faila turi būti skaitoma gyvybe) ir rodyti klavišų sąrašą.
+		// /keys debug — valdymo sekų debug režimas.
+		if strings.TrimSpace(args) == "debug" {
+			c.mu.Lock()
+			c.keysDebug = true
+			c.mu.Unlock()
+			c.serverMsg("[KEYS] debug įjungtas. 'q' - išjungti")
+			return
+		}
+		for _, w := range c.loadKeys() {
+			c.errMsg(w)
+		}
+		c.showKeyBindings()
 
 	case "help":
 		lines := []string{
@@ -2043,6 +2751,12 @@ func (c *Client) handleCmd(cmd, args string) {
 			"/list [filtras]                      kanalų sąrašas",
 			"/names                               atnaujinti nick sąrašą",
 			"/search [žodis]                      paieška (Ctrl+R)",
+			"/search all <žodis>                  paieška visose langoje",
+			"/logsearch [kanalas] <žodis>         paieška žurnaluose (failuose)",
+			"/set <raktas> [reikšmė]              nustatymas (+ į config)",
+			"/exportjson [kanalas]                eksportas JSON",
+			"/notify add|del|list <nick>          MONITOR žiūrimi nick'ai",
+			"/keys                                klavišų perrašymas (keys failas)",
 			"/time                                serverio laikas",
 			"/whois <nick>                        informacija",
 			"/raw <IRC komanda>                   tiesioginė",

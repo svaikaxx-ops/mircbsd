@@ -53,3 +53,28 @@ reconnect=true
 
 # Nick'ų spalvinimas (kada kiekvienas nick turi savo spalvą)
 # nick_colors=true
+
+# Laiko žymos prie žinučių (15:04 formatu, numatytai įjungta)
+# timestamps=true
+# ts_format=15:04
+
+# Laiko žymos spalva: gray (numatyta), blue, green, cyan, none
+# tscolor=gray
+
+# Tema: dark (numatyta — ryški paletė) arba light (šviesiems fonams —
+# tamsesnė nick'ų paletė)
+# theme=dark
+
+# SASL EXTERNAL — autentifikacija kliento sertifikatu (be slaptažodžio).
+# Reikia TLS (tls=true) ir abiejų failų; sasl= nebereikia.
+# tls_cert=~/.config/mircbsd/cert.pem
+# tls_key=~/.config/mircbsd/key.pem
+# sasl_external=true
+
+# TLS serverio sertifikato atspaudo (fingerprint) pinning (v0.4.8).
+# TOFU (Trust On First Use): pirmo jungimo atspaudas išsaugomas
+# configDir/fingerprints; vėlesniais jungimais nerodant kita atspaudą —
+# ryšys NUTRAUKIAMAS (galimas MITM). tls_pin — rankinis atspaudas:
+# sha256 hex (SPKI), jis turi pirmenybę.
+# tls_pinning=false
+# tls_pin=

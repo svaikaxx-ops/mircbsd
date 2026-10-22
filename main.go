@@ -190,6 +190,7 @@ func main() {
 	setTimestamps(cfg.Timestamps, cfg.TSFormat)
 	setHighlightColor(cfg.HighlightColor)
 	setNickColors(cfg.NickColors)
+	setTheme(cfg.Theme)
 	configWarn := loadConfigWarnings()
 
 	args := os.Args[1:]
@@ -230,6 +231,9 @@ func main() {
 
 	c.loadHistory()
 	c.loadIgnore()
+	c.loadMonitor()
+	keyWarns := c.loadKeys()
+	configWarn = append(configWarn, keyWarns...)
 	// Žurnalų gorutina — vieta eilės tvarkai (viena rašytoja).
 	c.startLogWorker()
 
@@ -301,4 +305,4 @@ func main() {
 	}
 }
 
-const version = "0.4.7"
+const version = "0.4.8"

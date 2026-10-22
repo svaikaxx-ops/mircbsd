@@ -2,8 +2,11 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -114,6 +117,8 @@ func (c *Client) applyISUPPORT(tokens []string) {
 			c.limits.KickLen = atoiDefault(tok[len("KICKLEN="):], c.limits.KickLen)
 		case strings.HasPrefix(tok, "MODES="):
 			c.limits.Modes = atoiDefault(tok[len("MODES="):], c.limits.Modes)
+		case strings.HasPrefix(tok, "MONITOR="):
+			c.limits.Monitor = atoiDefault(tok[len("MONITOR="):], 0)
 		}
 	}
 }
@@ -126,6 +131,7 @@ type isupLimits struct {
 	TopicLen   int
 	KickLen    int
 	Modes      int
+	Monitor    int // MONITOR= — didžiausias stebimų nick'ų kiekis (0 — nepalaikomas)
 }
 
 // atoiDefault konvertuoja skaičių; neteisinga reikšmė → numatytoji.
@@ -243,10 +249,17 @@ func (c *Client) handleCapNew(capsStr string) {
 			}
 		}
 	}
-	needSASL := available["sasl"] && c.saslPass != "" && !c.saslOk
+	needSASL := available["sasl"] && (c.saslPass != "" || c.saslExternal) && !c.saslOk
 	if needSASL {
 		wanted = append(wanted, "sasl")
 		c.capSASL = true
+		// Mechanizmas renkamas ČIA (derybos pradžioje): EXTERNAL (kliento
+		// sertifikatas) — kai sukonfigūruotas, kitaip PLAIN.
+		if c.saslExternal && c.tlsCertPath != "" {
+			c.saslMech = "EXTERNAL"
+		} else {
+			c.saslMech = "PLAIN"
+		}
 	}
 	c.capAvailable = make(map[string]bool)
 	c.mu.Unlock()
@@ -427,6 +440,12 @@ type Client struct {
 	realName     string
 	nickservPass string
 	saslPass     string
+	saslExternal bool
+	tlsCertPath  string // kliento sertifikatas (SASL EXTERNAL)
+	tlsKeyPath   string
+	tlsPinning   bool   // PINNing (TOFU) — sertifikato atspaudo tikrinimas
+	tlsPin       string // rankinis atspaudas (sha256 hex) — pirmenybė prieš TOFU
+	saslMech     string // "PLAIN" / "EXTERNAL" — koks mechanizmas STARTED
 	serverPass   string // serverio slaptažodis (PASS komanda)
 	autoJoin     []string
 	away         string
@@ -453,6 +472,16 @@ type Client struct {
 
 	// URL istorija
 	lastURLs []string
+
+	// MONITOR (/notify, v0.4.8): stebimų nick'ų sąrašas + būsena.
+	monitorList   []string
+	monitorOnline map[string]bool
+
+	// Klavišų perrašymas (keys failas, v0.4.8): valdymo seka →
+	// veiksmo VARDAS (keyActions raktas). Kraunama VIENĄ KARTĄ paleidime
+	// (loadKeys) ir toliau tik SKAITOMA — klaviatūros goroutine yra
+	// vienintelis skaitytojas.
+	customBinds map[string]string
 
 	highlightWords []string // papildomi highlight žodžiai
 
@@ -593,6 +622,11 @@ func newClient(cfg Config) *Client {
 		realName:        cfg.RealName,
 		nickservPass:    cfg.NickServ,
 		saslPass:        cfg.SASLPass,
+		saslExternal:    cfg.SASLExternal,
+		tlsCertPath:     expandHomePath(cfg.TLSCert),
+		tlsKeyPath:      expandHomePath(cfg.TLSKey),
+		tlsPinning:      cfg.TLSPinning,
+		tlsPin:          cfg.TLSPin,
 		serverPass:      cfg.ServerPass,
 		autoJoin:        cfg.AutoJoin,
 		perform:         cfg.Perform,
@@ -614,6 +648,8 @@ func newClient(cfg Config) *Client {
 		logStop:         make(chan struct{}),
 		activeCaps:      make(map[string]bool),
 		awayNotified:    make(map[string]time.Time),
+		monitorOnline:   make(map[string]bool),
+		customBinds:     make(map[string]string),
 		lastPong:        time.Now(),
 		// ISUPPORT numatytosios reikšmės (RFC) — per serverį
 		chantypes:   "#&",
@@ -1640,6 +1676,110 @@ func (c *Client) sleepReconnect(delay time.Duration, gen int) bool {
 	}
 }
 
+// fingerprintsPath — atspaudų failas (TOFU pinning, v0.4.8):
+// configDir/fingerprints (eina su 0600 teisėmis kūrimo metu).
+func fingerprintsPath() string {
+	dir := configDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "fingerprints")
+}
+
+// loadTLSPins — atspaudai iš failo: kiekviena eilutė „host:sha256hex“.
+// Sugedusios eilutės praleidžiamos (failą gali būt pažeidęs vartotojas).
+func loadTLSPins() map[string]string {
+	pins := make(map[string]string)
+	path := fingerprintsPath()
+	if path == "" {
+		return pins
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return pins
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		i := strings.IndexByte(line, ':')
+		if i <= 0 || i == len(line)-1 {
+			continue
+		}
+		pins[strings.ToLower(line[:i])] = strings.ToLower(line[i+1:])
+	}
+	return pins
+}
+
+// saveTLSPin — pirmo jungimo atspaudas išsaugomas (TOFU „Trust On First
+// Use“): failo prieda „host:sha256hex“, failas/katalogas 0600/0700.
+func saveTLSPin(host, fp string) {
+	path := fingerprintsPath()
+	if path == "" {
+		return
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = fmt.Fprintf(f, "%s:%s\n", strings.ToLower(host), fp)
+}
+
+// certFingerprint — TLS subjekto VIEŠAJO RAKTO informacija (SPKI —
+// RawSubjectPublicKeyInfo) sha256 atspaudas hex'u. SPKI — pinning'o
+// praktika (sertifikato atnaujinimas su ta pačiu rakto pora atspaudą
+// IŠLAIKO); kertame TOS pačios rakto poros, todėl nepiktam atnaujinimui
+// niekur nereikia rankinio įsikišimo.
+func certFingerprint(conn *tls.Conn) string {
+	st := conn.ConnectionState()
+	if len(st.PeerCertificates) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(st.PeerCertificates[0].RawSubjectPublicKeyInfo)
+	return hex.EncodeToString(sum[:])
+}
+
+// checkTLSPin (v0.4.8) — TLS atspaudas PINNING'as. Šiems atvejams NIEKO
+// nedarome (pinning'išjungta): nesukonfigūruotas.
+//  1. tls_pin rankinis — būtinai tas pats atspaudas (nesutapimo atveju klaida).
+//  2. tls_pinning=on ir atpaudo failo įrašo nera — TOFU: saugomas.
+//  3. tls_pinning=on ir įrašas yra — tikslus tapatumo tikrinimas.
+func (c *Client) checkTLSPin(conn *tls.Conn, host string) error {
+	if !c.tlsPinning && c.tlsPin == "" {
+		return nil
+	}
+	hostLow := strings.ToLower(host)
+	fp := certFingerprint(conn)
+	if fp == "" {
+		return errors.New("atspaudo negalima gauti (serveris be sertifikato?)")
+	}
+	if c.tlsPin != "" {
+		if strings.ToLower(c.tlsPin) != fp {
+			return fmt.Errorf("tls_pin nesutampa: nustatytas %s, gautas %s", strings.ToLower(c.tlsPin), fp)
+		}
+		return nil
+	}
+	pins := loadTLSPins()
+	old, ok := pins[hostLow]
+	if ok {
+		if old != fp {
+			return fmt.Errorf("saugotas %s, priešingas %s", old, fp)
+		}
+		return nil
+	}
+	saveTLSPin(hostLow, fp)
+	c.serverMsg("TLS: serverio atspaudas pirmą kartą išsaugotas (" + fp[:16] + "…)")
+	return nil
+}
+
 func (c *Client) doConnect(gen int) {
 	c.mu.Lock()
 	srvName := c.server
@@ -1662,7 +1802,35 @@ func (c *Client) doConnect(gen int) {
 			ServerName: srvName,
 			MinVersion: tls.VersionTLS12,
 		}
-		conn, err = tls.DialWithDialer(&net.Dialer{Timeout: 15 * time.Second}, "tcp", srv, tlsCfg)
+		// SASL EXTERNAL (v0.4.8): kliento sertifikatas/raktas TLS
+		// rankos paspaudime. Neteisingi keliai — jungtis NEVYKDOMA (aiški
+		// klaida, o ne tyla: kitaip EXTERNAL'as tyliai griūtų į PLAIN).
+		if c.tlsCertPath != "" {
+			cert, certErr := tls.LoadX509KeyPair(c.tlsCertPath, c.tlsKeyPath)
+			if certErr != nil {
+				c.errMsg("TLS kliento sertifikatas neišsiskaitoma: " + certErr.Error())
+				return
+			}
+			tlsCfg.Certificates = []tls.Certificate{cert}
+		}
+		tlsConn, tlsErr := tls.DialWithDialer(&net.Dialer{Timeout: 15 * time.Second}, "tcp", srv, tlsCfg)
+		conn, err = tlsConn, tlsErr
+		if tlsErr == nil {
+			// TLS PINNING (TOFU, v0.4.8): tikriname pirmąjį serverio
+			// sertifikatą (viešojo rakto SPKI sha256). Nesutapimas —
+			// jungtis NUTRAUKIAMA iki NICK/USER (identitas ir
+			// slaptažodžiai nepasiekia serverio).
+			//
+			// TOFU: pirmas jungimas — atspaudas IŠSAUGOMAS į
+			// fingerprints failą; sekantys jungimai tikrinami
+			// (nesutapimas = galimas MITM).
+			if fpErr := c.checkTLSPin(tlsConn, srvName); fpErr != nil {
+				c.errMsg("TLS atspaudo nesutapimas: " + fpErr.Error())
+				c.errMsg("Serverio sertifikatas pasikeitė! Galimas MITM. (tls_pinning=off išjungti tikrinti, žinodami ką darote)")
+				conn.Close()
+				return
+			}
+		}
 	} else {
 		conn, err = net.DialTimeout("tcp", srv, 15*time.Second)
 	}
@@ -2007,6 +2175,8 @@ func (c *Client) parseIRC(line string) {
 		copy(autoJoin, c.autoJoin)
 		perform := make([]string, len(c.perform))
 		copy(perform, c.perform)
+		monitor := make([]string, len(c.monitorList))
+		copy(monitor, c.monitorList)
 		c.mu.Unlock()
 		// NickServ IDENTIFY — TIK su explicitia NickServ slaptažodžiu.
 		//
@@ -2025,6 +2195,13 @@ func (c *Client) parseIRC(line string) {
 		}
 		for _, cmd := range perform {
 			c.handleInput(cmd)
+		}
+		// MONITOR (v0.4.8) — sąrašas apie visiems naujiems prisijungimams:
+		// 730 (online) / 731 (offline). Po registracijos — MONITOR +.
+		// Limitas MONITOR=N: viršijus serveris grąžina 734 (rodomas) —
+		// netyliai išsaugojame tik pirmus N.
+		if len(monitor) > 0 {
+			c.send("MONITOR + " + strings.Join(monitor, ","))
 		}
 
 	case "002", "003":
@@ -2673,10 +2850,15 @@ func (c *Client) parseIRC(line string) {
 					wanted = append(wanted, want)
 				}
 			}
-			needSASL := available["sasl"] && c.saslPass != ""
+			needSASL := available["sasl"] && (c.saslPass != "" || c.saslExternal)
 			if needSASL {
 				wanted = append(wanted, "sasl")
 				c.capSASL = true
+				if c.saslExternal && c.tlsCertPath != "" {
+					c.saslMech = "EXTERNAL"
+				} else {
+					c.saslMech = "PLAIN"
+				}
 			}
 			c.capAvailable = make(map[string]bool)
 			c.mu.Unlock()
@@ -2704,11 +2886,13 @@ func (c *Client) parseIRC(line string) {
 					saslAcked = true
 				}
 			}
-			// AUTHENTICATE PLAIN pradedame TIK jei PATYS užsižymėjome sasl'ą
+			// AUTHENTICATE pradedame TIK jei PATYS užsižymėjome sasl'ą
 			// (capSASL būdavo nustatomas tik reikalaujant sasl'o su
-			// slaptažodžiu) — serverio savavališkas „ACK sasl“ be mūsų
-			// prašymo SASL negali pradėti slaptažodžio dialogo.
-			if !c.capSASL || c.saslPass == "" {
+			// slaptažodžiu arba sasl_external) — serverio savavališkas
+			// „ACK sasl“ be mūsų prašymo SASL negali pradėti slaptažodžio
+			// dialogo. Mechanizmas: EXTERNAL (sertifikatas) arba PLAIN
+			// (slaptažodis) — renkamas derybų pradžioje (saslMech).
+			if !c.capSASL || (c.saslMech != "EXTERNAL" && c.saslPass == "") {
 				saslAcked = false
 			}
 			c.mu.Unlock()
@@ -2717,9 +2901,10 @@ func (c *Client) parseIRC(line string) {
 			}
 			if saslAcked {
 				c.mu.Lock()
+				mech := c.saslMech
 				c.saslPending = true
 				c.mu.Unlock()
-				c.send("AUTHENTICATE PLAIN")
+				c.send("AUTHENTICATE " + mech)
 			} else {
 				c.send("CAP END")
 			}
@@ -2768,10 +2953,20 @@ func (c *Client) parseIRC(line string) {
 			pending := c.saslPending
 			nick := c.nick
 			pass := c.saslPass
+			mech := c.saslMech
 			c.mu.Unlock()
 			if !pending {
 				// Atsakome tuščiu slaptažodžiu — neatsakymas liktų
 				// serverį laukiančioje būsenoje.
+				c.send("AUTHENTICATE +")
+				return
+			}
+			if mech == "EXTERNAL" {
+				// SASL EXTERNAL (v0.4.8): autentifikacija KIENTO
+				// sertifikatu — be slaptažodžio payload'o. Tuščias „+“ =
+				// „sertifikatas jau pateiktas TLS rankos paspaudime“.
+				// Sertifikatas NETURI payload'o, kai mechanizmas EXTERNAL —
+				// jokios atsarginės PLAIN kaitos čia nebūna.
 				c.send("AUTHENTICATE +")
 				return
 			}
@@ -2802,6 +2997,62 @@ func (c *Client) parseIRC(line string) {
 		c.saslOk = false
 		c.mu.Unlock()
 		c.send("CAP END")
+
+	// MONITOR numerikai (v0.4.8): 730 online, 731 offline. Maskos
+	// („nick!user@host“) — į nick'ą (prieš „!“).
+	case "730": // RPL_MONONLINE
+		for _, mask := range strings.Split(p(1), ",") {
+			nick := strings.SplitN(mask, "!", 2)[0]
+			nick = sanitizeText(strings.TrimSpace(nick))
+			if nick == "" {
+				continue
+			}
+			c.mu.Lock()
+			c.monitorOnline[nick] = true
+			c.mu.Unlock()
+			c.serverMsg("● " + nick + " prisijungė (žiūrimas)")
+		}
+	case "731": // RPL_MONOFFLINE
+		for _, mask := range strings.Split(p(1), ",") {
+			nick := strings.SplitN(mask, "!", 2)[0]
+			nick = sanitizeText(strings.TrimSpace(nick))
+			if nick == "" {
+				continue
+			}
+			c.mu.Lock()
+			delete(c.monitorOnline, nick)
+			c.mu.Unlock()
+			c.serverMsg("○ " + nick + " atsijungė (žiūrimas)")
+		}
+	case "732": // RPL_MONLIST
+		for _, m := range strings.Split(p(1), ",") {
+			if m = sanitizeText(strings.TrimSpace(m)); m != "" {
+				c.serverMsg("MONITOR sąrašas: " + m)
+			}
+		}
+	case "733": // RPL_MONLISTEND
+		c.serverMsg("MONITOR sąrašo pabaiga")
+	case "734": // RPL_MONLISTFULL — sąrašo limitas viršija
+		msg := p(1)
+		// Ko nepriėmė — iš c.monitorList ištriname (v0.4.8: kitaip
+		// sąraše liktų „stebimi“ nick'ai, kurių serveris NIEKADA
+		// nepraneš apie online/offline).
+		for _, m := range strings.Split(msg, ",") {
+			nick := strings.SplitN(sanitizeText(strings.TrimSpace(m)), "!", 2)[0]
+			if nick == "" {
+				continue
+			}
+			c.mu.Lock()
+			for i, exist := range c.monitorList {
+				if c.nickEqual(exist, nick) {
+					c.monitorList = append(c.monitorList[:i], c.monitorList[i+1:]...)
+					break
+				}
+			}
+			c.mu.Unlock()
+			c.errMsg("MONITOR sąrašas pilnas — „" + nick + "“ nepridėtas")
+		}
+		c.saveMonitor()
 
 	case "AWAY": // away-notify cap
 		if fromNick != "" {

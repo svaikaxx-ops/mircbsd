@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"sort"
@@ -37,7 +38,16 @@ var (
 	nickColoring = true         // konfigūruojamas nick'ų spalvinimas
 )
 
+// tsColorName / hlColorName — paskutinės sukonfigūruotos SPALVŲ VARDOS
+// (ne kodai): /set sąrašui, kuris turi rodyti tą raktažodį, kurį vartotojas
+// įrašė („gray“), o ne iš jo gautą ANSI kodą.
+var (
+	tsColorName = "gray"
+	hlColorName = "red"
+)
+
 func setHighlightColor(name string) {
+	hlColorName = strings.ToLower(name)
 	switch strings.ToLower(name) {
 	case "red":
 		hlBgCode = ansiBgRed
@@ -54,6 +64,7 @@ func setHighlightColor(name string) {
 	case "none":
 		hlBgCode = ansiReverse // be fono — pažymejimas reverse video
 	default:
+		hlColorName = "red"
 		hlBgCode = ansiBgRed
 	}
 }
@@ -76,6 +87,7 @@ func setTimestamps(enabled bool, format string) {
 }
 
 func setTSColor(name string) {
+	tsColorName = strings.ToLower(name)
 	switch strings.ToLower(name) {
 	case "blue":
 		tsColorCode = ansiBlue
@@ -84,13 +96,16 @@ func setTSColor(name string) {
 	case "cyan":
 		tsColorCode = ansiCyan
 	case "none", "":
+		tsColorName = "none"
 		tsColorCode = ""
 	default: // "gray" arba neatpažinta
+		tsColorName = "gray"
 		tsColorCode = ansiDarkGray
 	}
 }
 
-var nickColors = []string{
+// nickColorsDark — numatytoji (tamsaus fono) paletė.
+var nickColorsDark = []string{
 	"\033[31m", "\033[32m", "\033[33m", "\033[34m",
 	"\033[35m", "\033[36m", "\033[91m", "\033[92m",
 	"\033[93m", "\033[94m", "\033[95m", "\033[96m",
@@ -98,6 +113,37 @@ var nickColors = []string{
 	"\033[38;5;51m", "\033[38;5;201m", "\033[38;5;226m",
 	"\033[38;5;39m", "\033[38;5;165m", "\033[38;5;82m",
 	"\033[38;5;214m", "\033[38;5;105m", "\033[38;5;45m",
+}
+
+// nickColorsLight — šviesaus fono tema (theme=light, v0.4.8):
+// šviesios spalvos (91–96, 226 ir pan.) BALTAME fone neišsiskiria —
+// paletė pakečiama TAMSOMIS (16/256-color) spalvomis.
+var nickColorsLight = []string{
+	"\033[38;5;124m", "\033[38;5;28m", "\033[38;5;94m", "\033[38;5;26m",
+	"\033[38;5;126m", "\033[38;5;30m", "\033[38;5;88m", "\033[38;5;22m",
+	"\033[38;5;97m", "\033[38;5;18m", "\033[38;5;61m", "\033[38;5;52m",
+	"\033[38;5;131m", "\033[38;5;59m", "\033[38;5;23m", "\033[38;5;132m",
+	"\033[38;5;127m", "\033[38;5;67m", "\033[38;5;101m", "\033[38;5;63m",
+	"\033[38;5;133m", "\033[38;5;24m", "\033[38;5;95m", "\033[38;5;62m",
+}
+
+// nickColors — aktyvi paletė (keičiama setTheme).
+var nickColors = nickColorsDark
+
+// themeDarkMode — tema (dark — numatyta; light — šviesi).
+var themeDarkMode = true
+
+// setTheme — tema (v0.4.8): dark (numatyta) arba light. Light theme
+// pakeičia nick paletes į tamsias (šviesios nieks nematoma balta fone).
+func setTheme(name string) {
+	switch strings.ToLower(name) {
+	case "light":
+		themeDarkMode = false
+		nickColors = nickColorsLight
+	default: // "dark" arba neatpažinta
+		themeDarkMode = true
+		nickColors = nickColorsDark
+	}
 }
 
 func nickColor(nick string) string {
@@ -275,12 +321,55 @@ const (
 	MsgError
 )
 
+// String — JSON eksportui (/exportjson): žmogui skaitomi tipai.
+func (t MsgType) String() string {
+	switch t {
+	case MsgChat:
+		return "chat"
+	case MsgAction:
+		return "action"
+	case MsgJoin:
+		return "join"
+	case MsgPart:
+		return "part"
+	case MsgQuit:
+		return "quit"
+	case MsgNick:
+		return "nick"
+	case MsgNotice:
+		return "notice"
+	case MsgServer:
+		return "server"
+	}
+	return "error"
+}
+
 type Message struct {
 	ts        time.Time
 	nick      string
 	text      string
 	msgType   MsgType
 	highlight bool
+}
+
+// MarshalJSON — /exportjson (v0.4.8): neskelbtiniems Message laukams.
+// ts — RFC3339; text — SANITIZUOTAS (be IRC formatavimo kodų, be terminalo
+// valdiklių): failas, atidarytas kitur, neskleidžia valdyti terminalo.
+func (m Message) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Ts        string `json:"ts"`
+		Nick      string `json:"nick,omitempty"`
+		Type      string `json:"type"`
+		Text      string `json:"text,omitempty"`
+		Highlight bool   `json:"highlight,omitempty"`
+	}
+	return json.Marshal(wire{
+		Ts:        m.ts.UTC().Format(time.RFC3339),
+		Nick:      sanitizeText(m.nick),
+		Type:      m.msgType.String(),
+		Text:      sanitizeText(stripIRCFormat(m.text)),
+		Highlight: m.highlight,
+	})
 }
 
 // wrapText apvynio tekstą pagal plotį LĄSTELĖMIS (ne rune'ais).

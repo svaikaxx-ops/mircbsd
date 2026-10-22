@@ -4,6 +4,58 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [0.4.8] – 2026-10-22 – naujos funkcijos (paketas „b“)
+
+Likusios peržiūros pasiūlytų funkcijos (vienos per kiekvieną — su
+regresijos testais `funkcijos_v0_4_8_test.go`).
+
+### Nauja
+
+- **SASL EXTERNAL** (`sasl_external=true` + `tls_cert`/`tls_key`) —
+  autentifikacija kliento sertifikatu: TLS jungimui pridedamas sertifikatas;
+  derybose renkamas mechanizmas EXTERNAL (kitu atveju PLAIN); `AUTHENTICATE`
+  atsakymui siunčiamas tuščias „+“ (be slaptažodžio payload'o). Neteisingi
+  sertifikato keliai — jungtis neatliekama (aiški klaida).
+- **Paieškos navigacija** — `n` / `p` (su TUŠČIA įvestimi): kitas /
+  ankstesnis rezultatas; `/search all <žodis>` — paieška VISUOSE languose
+  (rezultatai `*server*` lange, iki 50); `/logsearch [kanalas] <žodis>` —
+  paieška ĮRAŠO žurnalo failuose (`~/irclogs/<serveris>/`, iki 500
+  atitikmenų, faile skaitoma iki 10 MB).
+- **`/set <raktas> [reikšmė]`** — gyvas nustatymų keitimas: ekrane
+  perrašo (mouse SGR sekas, nick'ų spalvas, laiko žymas ir kt.) ir
+  ATOMINIŠKAI įrašo į config failą (esama eilutė perrašoma, likęs failas
+  nekeičiamas, 0600, tmp+rename). Jautrūs raktai (`sasl=`, `password=`,
+  `server`, `tls` ir kt.) — nekeičiami per /set (apibrėžta `settableKeys`).
+- **`/exportjson [kanalas]`** — visos lango žinutės į JSON
+  (`~/irclogs/<serveris>/<kanalas>-YYYY-MM-DD.json`): ts (RFC3339 UTC),
+  nick, tipas (`Message.type.String()`), tekstas (SANITIZUOTAS — be IRC
+  formatavimo ir terminalo valdiklių). Failas 0600, katalogas 0700; kelias
+  per `sanitizePath` — katalogų kelio išėjimas neįmanomas.
+- **Tema (`theme=dark|light`)** — šviesiame fone šviesios nick spalvos
+  (91–96, 226 ir kt.) yra neskaitymos; light tema pakeičia paletę į tamsias
+  xterm-256 spalvas. Keičiama gyvai per `/set theme light`.
+- **MONITOR + `/notify add|del|list`** — stebimų nick'ų sąrašas
+  (persistes: configDir/notify, 0600): po prisijungimo siunčiamas
+  `MONITOR + nick1,nick2`; numerikai 730/731 rodo online/offline
+  („● nick prisijungė (žiūrimas)“ / „○ nick atsijungė“), 732–734 sąrašą
+  ir limito 734 (nepridėti nick'ai pašalinami iš sąrašo, kitaip jie
+  liktų „stebimi“ nieko nepranešdami). ISUPPORT 005 `MONITOR=N` atpažintas.
+- **Klavišų perrašymai (`configDir/keys`)** — eilutės
+  `veiksmas = seka`; veiksmams: `chan-next`, `chan-prev`, `nick-up`,
+  `nick-down`, `word-left`, `word-right`, `word-del`, `msg-up`,
+  `msg-down`, `msg-bottom`, `search`, `hist-up`, `hist-down`,
+  `complete`. Sekas rašomos `\e` (ESC), `\xHH`, `\n`, `\r`, `\t`, `\\` —
+  kitaip literai (pvz. `search = \eS`). handleKey gautą seką perrašo
+  kanonine (ciklas apsaugotas nuo 3 iteracijų); nevalidūs veiksmo vardai
+  arba sekos — praleidžiami su įspėjimu. `/keys` — aktyvių perrašymų
+  sąrašas ir failo per-skaitymas (gyvai).
+- **TLS atspaudo pinning (TOFU)** (`tls_pinning=true` / `tls_pin=`) —
+  serverio sertifikato SPKI sha256 atspaudas: pirmą kartą išsaugomas
+  (`configDir/fingerprints`, eilutė `host:hex`, 0600), vėliau tikrinamas —
+  nesutapimas nutraukia jungtį iki NICK/USER (identitas ir slaptažodis
+  nepasiekia serverio). `tls_pin=` — rankinis atspaudas (pirmenybė
+  prieš TOFU failą).
+
 ## [0.4.7] – 2026-10-21 – naujos kokybės funkcijos (paketas „a")
 
 Septynios „mažos pastangos / didelė nauda" funkcijos (peržiūros pasiūlymų

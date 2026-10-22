@@ -90,7 +90,13 @@ mircbsd irc.data.lt 6667 manick
 | `/unignore <nick>` | Atšaukti ignoravimą |
 | `/ignores` | Ignoruojamų sąrašas |
 | `/list [filtras]` | Kanalų sąrašas |
-| `/search [žodis]` | Paieška (arba Ctrl+R) |
+| `/search [žodis]` | Paieška (arba Ctrl+R); `n`/`p` (su tuščia įvestimi) — kitas/ankstesnis rezultatas |
+| `/search all <žodis>` | Paieška visuose languose (rezultatai `*server*`) |
+| `/logsearch [kanalas] <žodis>` | Paieška žurnalo failuose (iki 500 atitikmenų) |
+| `/set <raktas> [reikšmė]` | Nustatymo peržiūra/keitimas gyvai (įrašoma į config failą) |
+| `/exportjson [kanalas]` | Eksportuoti lango žinutes į JSON failą (`~/irclogs/`) |
+| `/notify add\|del\|list <nick>` | MONITOR stebimų nick'ų sąrašas (online/offline pranešimai) |
+| `/keys [debug]` | Klavišų perrašymus iš `keys` failo + valdymo sekų debug režimas |
 | `/clearlogs [kanalas]` | Ištrinti log failus (numatytai: visi šiame serveryje) |
 | `/raw <IRC komanda>` | Tiesioginė IRC komanda |
 | `/w [nick\|kanalas]` | WHO užklausa — kas yra kanale arba internete (atsakymas rodomas užklaustame kanale) |
@@ -121,7 +127,11 @@ mircbsd irc.data.lt 6667 manick
 | `$XDG_CONFIG_HOME/mircbsd/config` (numatytai `~/.config/mircbsd/config`) | Konfigūracija |
 | `$XDG_CONFIG_HOME/mircbsd/history` | Komandų istorija |
 | `$XDG_CONFIG_HOME/mircbsd/ignore` | Ignoruojamų sąrašas |
+| `$XDG_CONFIG_HOME/mircbsd/notify` | MONITOR stebimų nick'ų sąrašas (/notify) |
+| `$XDG_CONFIG_HOME/mircbsd/keys` | Klavišų perrašymai (`veiksmas = seka`, v0.4.8) |
+| `$XDG_CONFIG_HOME/mircbsd/fingerprints` | TLS serverių atspaudai (pinning, TOFU) |
 | `~/irclogs/<serveris>/<kanalas>-YYYY-MM-DD.log` | Žurnalai (rotacija per dieną) |
+| `~/irclogs/<serveris>/<kanalas>-YYYY-MM-DD.json` | JSON eksportas (/exportjson) |
 
 ## Saugumas
 
@@ -145,6 +155,15 @@ mircbsd irc.data.lt 6667 manick
   sertifikatas tikrinamas (`MinVersion: TLS 1.2`). Slaptažodžiams rinkitės
   SASL (`sasl=`), kuris vyksta šifruotu kanalu – be TLS IDENTIFY per Plaintext
   eina atviru tekstu.
+- **SASL EXTERNAL** (`sasl_external=true` + `tls_cert`/`tls_key`) –
+  autentifikacija kliento sertifikatu, be slaptažodžio.
+- **TLS pinning** (`tls_pinning=true`) – serverio sertifikato viešojo rakto
+  sha256 atspaudas (TOFU): pirmo jungimo atspaudas išsaugomas
+  `fingerprints` faile; radus kita atspaudą, ryšys nutraukiamas dar prieš
+  NICK/USER (galimas MITM). `tls_pin=` – rankinis atspaudas.
+- **`/set`** perrašo tik nešlamčius raktus (`timestamps`, `theme` ir kt.) –
+  nesaugios reikšmės (`sasl`, `password`, `server`, `tls`) per /set
+  nekeičiamos.
 - **Naudotojo nick/kanalų pavadinimai** tikrinami pagal RFC simbolių rinkinį,
   todėl valdymo simboliai negali patekti net į serverio komandas.
 - `/open` atidaro tik `http://`, `https://`, `ftp://` prasidedančius URL.
@@ -160,6 +179,14 @@ mircbsd irc.data.lt 6667 manick
 | `tscolor` | `gray` | Laiko žymos spalva |
 | `timestamps` | `true` | Laiko žymos prie žinučių |
 | `ts_format` | `15:04` | Laiko žymos formatas (pvz. `15:04:05`) |
+| `theme` | `dark` | Tema: `light` — šviesiems fonams (tamsesnė nick'ų paletė) |
+| `tls_cert` / `tls_key` | – | Kliento sertifikatas SASL EXTERNAL |
+| `sasl_external` | `false` | SASL EXTERNAL (autentifikacija sertifikatu) |
+| `tls_pinning` | `false` | TLS sertifikato atspaudo pinning (TOFU) |
+| `tls_pin` | – | Rankinis atspaudas (sha256 hex, SPKI) |
+
+Visi šie raktai keičiami gyvai per `/set <raktas> <reikšmė>` — reikšmė
+iš karto pratąkoma ir įrašoma atgal į config failą.
 
 ## Kūrimas (FreeBSD/Linux)
 
@@ -179,4 +206,7 @@ GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o mircbsd-linux .
 
 ## Versija
 
-v0.4.6 – pilnos peržiūros pataisos: `findChunk` baitų/rune indeksų neatitikimas (apvyniotos lietuviškos žinutės prarasdavo raides), CAP ACK atsisakymo prefikso saugumo plyšis (SASL slaptažodžio nutekimas be prašymo), echo-message `/me` dubliavimas, `/quit` QUIT flush garantija, MODE kanalų kūrimo užplūdis, 251/322 formatavimas, statuso juostos kirpimas (žr. CHANGELOG.md)
+v0.4.8 – naujos funkcijos (žr. CHANGELOG.md): SASL EXTERNAL, paieškos
+navigacija (`n`/`p` + /search all + /logsearch), `/set` su įrašymu į config,
+`/exportjson` (JSON eksportas), tema (dark/light), MONITOR + `/notify`,
+klavišų perrašymai (`keys` failas), TLS atspaudo pinning (TOFU).
