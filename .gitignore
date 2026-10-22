@@ -2,3 +2,4 @@ mircbsd
 mircbsd-freebsd
 mircbsd-linux
 *.log
+__pycache__/

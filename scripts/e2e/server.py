@@ -1,0 +1,134 @@
+# -*- coding: utf-8 -*-
+# Fake IRC serveris: TCP 127.0.0.1, CAP LS→REQ→ACK→END→001-376 flow,
+# JOIN echo + 353/366, MONITOR +/− įrašymas, 730/731, PONG.
+import socket
+import threading
+import time
+
+
+class FakeServer:
+    def __init__(self, mynick=b'testas'):
+        self.srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind(('127.0.0.1', 0))
+        self.srv.listen(1)
+        self.port = self.srv.getsockname()[1]
+        self.mynick = mynick
+        self.received = []
+        self.monitor_ops = []          # MONITOR + / − eilutės
+        self.monitor = set()           # stebimi mask'ai
+        self.lock = threading.Lock()
+        self.live = False
+        self.conn = None
+        self.reg = threading.Thread(target=self._accept, daemon=True)
+        self.reg.start()
+
+    def start(self):
+        # Skaitymo gija jau įjungta __init__ (self.reg) — tai tuščia.
+        pass
+
+    def _accept(self):
+        c, _ = self.srv.accept()
+        self.conn = c
+        self.live = True
+        buf = b''
+        while True:
+            try:
+                d = c.recv(65536)
+            except OSError:
+                break
+            if not d:
+                break
+            buf += d
+            while b'\n' in buf:
+                line, buf = buf.split(b'\n', 1)
+                line = line.rstrip(b'\r').decode('utf-8', 'replace')
+                with self.lock:
+                    self.received.append((time.time(), line))
+                self.on_line(line)
+
+    def on_line(self, line):
+        parts = line.split(' ')
+        cmd = parts[0].upper() if parts else ''
+        if cmd == 'CAP':
+            if len(parts) > 1 and parts[1].upper() == 'LS':
+                self.send_line('CAP * LS :multi-prefix')
+            elif len(parts) > 1 and parts[1].upper() == 'REQ':
+                req = ' '.join(parts[2:]).lstrip(':')
+                self.send_line('CAP * ACK :' + req)
+            elif len(parts) > 1 and parts[1].upper() == 'END':
+                self.register()
+            return
+        if cmd == 'NICK' and len(parts) > 1:
+            self.mynick = parts[1].encode()
+            return
+        if cmd == 'JOIN' and len(parts) > 1 and parts[1].startswith('#'):
+            ch = parts[1]
+            n = self.mynick.decode('utf-8', 'replace')
+            self.send_line(':' + n + '!e2e@fake JOIN :' + ch)
+            self.send_line(':fakas 353 ' + n + ' = ' + ch + ' :' + n + ' +botas @viesas')
+            self.send_line(':fakas 366 ' + n + ' ' + ch + ' :End of NAMES list')
+            return
+        if cmd == 'PRIVMSG':
+            return
+        if cmd == 'PING':
+            # Kliento periodinis PING — be PONG'o klientas po timeout'o
+            # laiko jungtį mirusia (E2E: žinutės nustoja ateiti ~60s+).
+            self.send_line('PONG :' + (parts[1].lstrip(':') if len(parts) > 1 else 'fakas'))
+            return
+        if cmd == 'MONITOR' and len(parts) > 1:
+            op = parts[1]
+            targets = ' '.join(parts[2:])
+            with self.lock:
+                self.monitor_ops.append(line)
+            if op == '+':
+                for t in targets.split(','):
+                    self.monitor.add(t.strip())
+            elif op == '-':
+                for t in targets.split(','):
+                    self.monitor.discard(t.strip())
+            elif op == 'CLEAR':
+                self.monitor.clear()
+            return
+        if cmd in ('PART', 'QUIT', 'TOPIC', 'MODE', 'AWAY'):
+            return
+
+    def register(self):
+        n = self.mynick.decode('utf-8', 'replace')
+        self.send_line(':fakas 001 ' + n + ' :Welcome to the fake server')
+        self.send_line(':fakas 002 ' + n + ' :Via host fakas')
+        self.send_line(':fakas 005 ' + n + ' CHANTYPES=#& PREFIX=(ov)@+ '
+                       'CHANMODES=beI,k,l,imnpst CASEMAPPING=rfc1459 '
+                       'NETWORK=Fakas MONITOR=60 NICKLEN=30 :are supported')
+        self.send_line(':fakas 375 ' + n + ' :- MOTD -')
+        self.send_line(':fakas 372 ' + n + ' :E2E aplinkos fake MOTD eilutė')
+        self.send_line(':fakas 376 ' + n + ' :MOTD pabaiga')
+        self.send_line('PING :regbaiga')
+
+    def send_line(self, line):
+        if self.conn is None:
+            return
+        try:
+            self.conn.sendall((line + '\r\n').encode('utf-8'))
+        except OSError:
+            pass
+
+    def wait_received(self, sub, timeout=10):
+        end = time.time() + timeout
+        while time.time() < end:
+            with self.lock:
+                for _ts, l in self.received:
+                    if sub in l:
+                        return l
+            time.sleep(0.05)
+        return None
+
+    def wait_monitor_op(self, sub, timeout=10):
+        end = time.time() + timeout
+        while time.time() < end:
+            with self.lock:
+                for l in self.monitor_ops:
+                    if sub in l:
+                        return l
+            time.sleep(0.05)
+        return None
