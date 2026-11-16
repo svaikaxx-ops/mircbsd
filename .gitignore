@@ -1,5 +1,4 @@
-mircbsd
-mircbsd-freebsd
-mircbsd-linux
+/target
+/mircbsd
 *.log
 __pycache__/

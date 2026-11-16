@@ -10,8 +10,11 @@ ekrano kadrą, ne žaliavą; kur svarbu spalvos — d.raw_since().
 
 Arba rankiniu būdu:
 
-    go build -o /tmp/mircbsd-e2e/bin/mircbsd .
-    MIRCBSD_E2E_DIR=/tmp/mircbsd-e2e python3 scripts/e2e/check.py
+    cargo build --release
+    mkdir -p /tmp/mircbsd-e2e/bin
+    cp target/release/mircbsd /tmp/mircbsd-e2e/bin/mircbsd
+    MIRCBSD_E2E_DIR=/tmp/mircbsd-e2e MIRCBSD_BIN=/tmp/mircbsd-e2e/bin/mircbsd \
+      python3 scripts/e2e/check.py
 
 Artefaktai (home/, drive.log, baigties pranešimai) einasi į
 `/tmp/mircbsd-e2e` — repo NIEKADA nešvarkanamas. Tikras `~/.config/mircbsd`

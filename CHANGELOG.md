@@ -4,6 +4,20 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [0.4.8] – 2026-11-16 – perrašymas į Rust
+
+Tas pats funkcijų rinkinys (v0.4.8), bet visas klientas dabar Rust.
+
+### Pakeista
+
+- **Kalba** — Go → Rust (`cargo` / `rustc`); priklausomybės: `crossterm`,
+  `rustls`, `parking_lot`, `chrono`, `serde_json`, `sha2`.
+- **Struktūra** — `src/` moduliai: `config`, `width`, `validate`, `sanitize`,
+  `proto`, `client`, `input`, `ui`, `persist`; binary `mircbsd`.
+- **CI / kūrimas** — `cargo test --lib`, `cargo build --release`; E2E
+  `scripts/e2e/start.sh` kompiliuoja per `cargo`.
+- Go šaltiniai (`*.go`, `go.mod`, `go.sum`) pašalinti.
+
 ## [0.4.8] – 2026-10-22 – naujos funkcijos (paketas „b“)
 
 Likusios peržiūros pasiūlytų funkcijos (vienos per kiekvieną — su

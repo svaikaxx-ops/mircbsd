@@ -1,27 +1,27 @@
 # mircBSD
 
-Terminalo IRC klientas, parašytas Go. Veikia **Debian** (Linux) ir FreeBSD.
+Terminalo IRC klientas, parašytas Rust. Veikia **Debian** (Linux) ir FreeBSD.
 
 ## Reikalavimai
 
 - Debian 12/13 (trixie) arba FreeBSD 14+
-- Go 1.24 arba naujesnis (Debian 13 turi `golang-go` = 1.24)
+- Rust (stable): `rustc` ir `cargo` (Debian: paketai `rustc` ir `cargo`, arba `rustup`)
 - Tikrasis terminalas (TTY) – paleidžiant be TTY klientas nepasileidžia
 
 ## Diegimas – Debian
 
 ```sh
 sudo apt update
-sudo apt install -y golang-go ca-certificates xdg-utils
+sudo apt install -y cargo rustc ca-certificates xdg-utils
 
 cd mircbsd
-go build -o mircbsd .
+cargo build --release
 
 # Įdiegimas sau (be root teisių, rekomenduojama)
-install -Dm755 mircbsd ~/.local/bin/mircbsd
+install -Dm755 target/release/mircbsd ~/.local/bin/mircbsd
 
 # Arba visai sistemai
-sudo install -m755 mircbsd /usr/local/bin/mircbsd
+sudo install -m755 target/release/mircbsd /usr/local/bin/mircbsd
 ```
 
 Pastabos:
@@ -29,14 +29,14 @@ Pastabos:
 - `ca-certificates` – reikalingas TLS prisijungimui (portas 6697)
 - `xdg-utils` – komandai `/open` (atidaryti URL naršyklėje); jei nėra, ieškoma
   `gio`, `sensible-browser`, `x-www-browser`, `firefox`
-- Pirmas `go build` atsiųsdinėja modulius iš interneto (`golang.org/x/term`)
+- Pirmas `cargo build` atsiunčia priklausomybes iš crates.io
 - Paleiskite **ne kaip root** – konfigūracija saugoma `$HOME`
 
 ## Diegimas – FreeBSD
 
 ```sh
-go build -o mircbsd .
-cp mircbsd /usr/local/bin/
+cargo build --release
+cp target/release/mircbsd /usr/local/bin/
 ```
 
 ## Konfigūracija
@@ -191,18 +191,12 @@ iš karto pratąkoma ir įrašoma atgal į config failą.
 ## Kūrimas (FreeBSD/Linux)
 
 ```sh
-gofmt -w *.go          # formatavimas
-go vet ./...           # static analizė
-go test ./...          # testai
-CGO_ENABLED=0 go build -o mircbsd .   # statinis binary
+cargo fmt              # formatavimas
+cargo test --lib       # testai
+cargo build --release  # dvejetainis: target/release/mircbsd
 ```
 
-Kryžminis kūrimas (pvz. iš Debian į FreeBSD):
-
-```sh
-GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o mircbsd-freebsd .
-GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o mircbsd-linux .
-```
+Pavyzdinė konfigūracija: `config.example`.
 
 ## Versija
 

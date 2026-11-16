@@ -6,7 +6,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DIR=/tmp/mircbsd-e2e
 mkdir -p "$DIR/bin"
 echo ">> Kompiliuojam mircBSD → $DIR/bin/mircbsd"
-go build -o "$DIR/bin/mircbsd" "$REPO_ROOT"
+(cd "$REPO_ROOT" && cargo build --release --quiet)
+cp "$REPO_ROOT/target/release/mircbsd" "$DIR/bin/mircbsd"
 export MIRCBSD_E2E_DIR="$DIR"
 export MIRCBSD_BIN="$DIR/bin/mircbsd"
 exec python3 "$REPO_ROOT/scripts/e2e/check.py"

@@ -1,0 +1,31 @@
+[package]
+name = "mircbsd"
+version = "0.4.8"
+edition = "2021"
+description = "Terminalo IRC klientas (Debian/FreeBSD)"
+license = "MIT"
+authors = ["mircBSD contributors"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "mircbsd"
+path = "src/main.rs"
+
+[dependencies]
+crossterm = "0.28"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+sha2 = "0.10"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+unicode-general-category = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
