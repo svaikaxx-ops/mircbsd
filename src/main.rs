@@ -167,6 +167,13 @@ fn welcome(client: &Client, cfg: &Config, warns: &[String]) {
 /// (same as the Go client).
 fn apply_cli(cfg: &mut Config, warns: &mut Vec<String>) {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    apply_cli_args(cfg, warns, &args);
+}
+
+/// [`apply_cli`] on explicit arguments. A server other than the configured
+/// one does NOT inherit the config passwords (PASS, SASL, NickServ,
+/// `perform`): they were written for the configured network.
+fn apply_cli_args(cfg: &mut Config, warns: &mut Vec<String>, args: &[String]) {
     if args.len() < 2 {
         return;
     }
@@ -179,6 +186,22 @@ fn apply_cli(cfg: &mut Config, warns: &mut Vec<String>) {
     if !is_valid_port(&port) {
         warns.push(format!("Neteisingas portas: {port}"));
         port.clear();
+    }
+    if !cfg.server.is_empty() && !server.eq_ignore_ascii_case(&cfg.server) {
+        let had = !cfg.server_pass.is_empty()
+            || !cfg.sasl_pass.is_empty()
+            || !cfg.nick_serv.is_empty()
+            || !cfg.perform.is_empty();
+        cfg.server_pass.clear();
+        cfg.sasl_pass.clear();
+        cfg.nick_serv.clear();
+        cfg.perform.clear();
+        if had {
+            warns.push(format!(
+                "Serveris {server} ≠ konfigūracijos {} — config slaptažodžiai ir perform nenaudojami",
+                cfg.server
+            ));
+        }
     }
     cfg.server = server;
     cfg.port = port;
@@ -551,6 +574,35 @@ fn signal_loop(_client: Arc<Client>, _set: ()) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_server_other_than_config_drops_config_credentials() {
+        let mut cfg = mircbsd::config::default_config();
+        cfg.server = "irc.libera.chat".into();
+        cfg.server_pass = "srv".into();
+        cfg.sasl_pass = "sasl".into();
+        cfg.nick_serv = "ns".into();
+        cfg.perform = vec!["PRIVMSG NickServ :IDENTIFY x".into()];
+        let mut same = cfg.clone();
+        let mut warns = Vec::new();
+        apply_cli_args(
+            &mut same,
+            &mut warns,
+            &["IRC.Libera.Chat".into(), "6697".into()],
+        );
+        assert_eq!(same.sasl_pass, "sasl", "same server keeps credentials");
+        assert!(warns.is_empty());
+
+        apply_cli_args(
+            &mut cfg,
+            &mut warns,
+            &["irc.evil.net".into(), "6667".into()],
+        );
+        assert_eq!(cfg.server, "irc.evil.net");
+        assert!(cfg.server_pass.is_empty() && cfg.sasl_pass.is_empty());
+        assert!(cfg.nick_serv.is_empty() && cfg.perform.is_empty());
+        assert_eq!(warns.len(), 1);
+    }
 
     #[test]
     fn log_open_error_identifies_directory() {

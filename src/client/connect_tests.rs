@@ -268,6 +268,36 @@ fn warns_before_password_on_plain_connection() {
     assert!(rx.try_iter().any(|line| line == "PASS secret"));
 }
 
+#[test]
+fn connect_to_other_server_does_not_send_config_password() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let srv = std::thread::spawn(move || {
+        let (socket, _) = listener.accept().unwrap();
+        serve_irc(socket, tx);
+    });
+    let mut cfg = default_config();
+    cfg.server = "irc.example.org".into();
+    cfg.server_pass = "secret".into();
+    cfg.reconnect = false;
+    cfg.log_dir = String::new();
+    let client = Client::new(&cfg);
+    // The user connects somewhere else than the configured network.
+    client.handle_cmd("connect", &format!("127.0.0.1 {port} tester"));
+    wait_until("registration", || {
+        server_texts(&client).iter().any(|t| t == "Welcome")
+    });
+    client.send("QUIT :bye");
+    client.finish_writes(Duration::from_secs(3));
+    srv.join().unwrap();
+    let seen: Vec<String> = rx.try_iter().collect();
+    assert!(!seen.iter().any(|l| l.starts_with("PASS")), "{seen:?}");
+    assert!(server_texts(&client)
+        .iter()
+        .any(|t| t.contains("nesiunčiami")));
+}
+
 fn tls_server(
     listener: TcpListener,
     seen: std::sync::mpsc::Sender<String>,

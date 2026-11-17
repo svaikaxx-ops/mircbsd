@@ -283,3 +283,82 @@ fn helpers() {
     );
     assert_eq!(cut_utf8("ééé", 3), "é");
 }
+
+#[test]
+fn urls_with_hidden_characters_are_not_collected() {
+    // /urls shows the sanitized text, /open would hand the RAW string to the
+    // browser: a URL with ESC/C1/bidi/zero-width characters opens something
+    // other than what the user saw.
+    for evil in [
+        "https://example.org/\u{202E}gpj.exe",
+        "https://exa\u{200B}mple.org/",
+        "https://example.org/\x1b]52;c;eA==\x07",
+        "https://example.org/\u{9b}31m",
+        "https://example.org/\u{FEFF}",
+    ] {
+        assert!(
+            extract_urls(&format!("see {evil} now")).is_empty(),
+            "{evil:?} must be rejected"
+        );
+    }
+    // Ordinary (also IDN) URLs still work.
+    assert_eq!(
+        extract_urls("https://žalgiris.lt/a?b=c#d"),
+        vec!["https://žalgiris.lt/a?b=c#d"]
+    );
+}
+
+#[test]
+fn ctcp_flood_replies_are_rate_limited() {
+    // Every CTCP VERSION/PING used to get a NOTICE: a CTCP flood from many
+    // nicks filled the 256-line send queue (5 lines/s), dropping the user's
+    // own messages, and could get us killed for excess flood.
+    let (c, q) = setup();
+    for i in 0..30 {
+        c.parse_irc(&format!(":bot{i}!u@h PRIVMSG #c :\x01VERSION\x01"));
+        c.parse_irc(&format!(":bot{i}!u@h PRIVMSG #c :\x01PING {i}\x01"));
+    }
+    let n = sent(&q).len();
+    assert!(n > 0, "the first CTCPs are still answered");
+    assert!(n <= 5, "{n} CTCP replies queued");
+}
+
+fn setup_other_server() -> (Arc<Client>, WriteQueue) {
+    // Config credentials belong to irc.example.org; the user then did
+    // `/connect other.example.net …`.
+    let (c, q) = setup();
+    {
+        let mut st = c.mu.lock();
+        st.server = "other.example.net".into();
+        st.sasl_pass = "saslsecret".into();
+        st.nickserv_pass = "nssecret".into();
+        st.server_pass = "srvsecret".into();
+        st.perform = vec!["PRIVMSG NickServ :IDENTIFY performsecret".into()];
+    }
+    (c, q)
+}
+
+#[test]
+fn config_credentials_never_go_to_another_server() {
+    let (c, q) = setup_other_server();
+    c.parse_irc(":srv CAP * LS :sasl=PLAIN");
+    c.parse_irc(":srv CAP me ACK :sasl");
+    c.parse_irc("AUTHENTICATE +");
+    c.parse_irc(":srv 001 me :Welcome");
+    let s = sent(&q);
+    assert!(
+        !s.iter().any(|l| l.contains("secret")
+            || l.contains(&sasl_plain_payload("me", "saslsecret"))
+            || l == "AUTHENTICATE PLAIN"),
+        "{s:?}"
+    );
+    assert!(s.contains(&"CAP END".to_string()), "{s:?}");
+}
+
+#[test]
+fn config_credentials_still_used_for_the_configured_server() {
+    let (c, q) = setup_other_server();
+    c.mu.lock().server = "IRC.Example.ORG".into();
+    c.parse_irc(":srv 001 me :Welcome");
+    assert!(sent(&q).contains(&"PRIVMSG NickServ :IDENTIFY nssecret".to_string()));
+}

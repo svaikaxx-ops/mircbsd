@@ -18,6 +18,26 @@ fn is_bidi_control(u: u32) -> bool {
     (0x202A..=0x202E).contains(&u) || (0x2066..=0x2069).contains(&u)
 }
 
+/// Can this URL be handed to an external opener (`/open`) as is?
+///
+/// The user sees the SANITISED text, the opener gets the raw string, so a
+/// URL with control, bidi or invisible (zero-width, soft hyphen, BOM)
+/// characters would open something other than what was shown. A leading
+/// `-` would be parsed as an option by the opener.
+pub fn is_safe_url(url: &str) -> bool {
+    !url.is_empty()
+        && !url.starts_with('-')
+        && !url.chars().any(|r| {
+            let u = r as u32;
+            r.is_whitespace()
+                || is_control_rune(r)
+                || u == 0x00AD
+                || (0x200B..=0x200F).contains(&u)
+                || (0x2060..=0x2064).contains(&u)
+                || u == 0xFEFF
+        })
+}
+
 /// Drops C0 (except tab), DEL, and C1 (0x80–0x9f) from network/UI text (`sanitizeText`).
 pub fn sanitize_text(s: &str) -> String {
     if !s.chars().any(is_control_rune) {

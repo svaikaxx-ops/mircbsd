@@ -35,6 +35,12 @@ pub const IRC_SEND_BURST: usize = 5;
 /// Max bytes reflected in a CTCP PING reply (no amplification).
 pub const MAX_CTCP_BYTES: usize = 64;
 
+/// CTCP replies (VERSION/PING) allowed per [`CTCP_REPLY_WINDOW`]: a CTCP
+/// flood from many nicks must not fill the send queue (the user's own lines
+/// would be dropped) or get us killed for excess flood.
+pub const MAX_CTCP_REPLIES: usize = 4;
+pub const CTCP_REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Max real channels per session.
 pub const MAX_CHANNELS: usize = 100;
 

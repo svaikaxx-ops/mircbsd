@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{history_path, ignore_path, keys_path, monitor_path, parse_keys_file};
 use crate::persist;
-use crate::sanitize::sanitize_path;
+use crate::sanitize::{is_safe_url, sanitize_path};
 
 use super::types::Client;
 use super::MAX_LINE_BYTES;
@@ -302,8 +302,9 @@ fn look_path(name: &str) -> Option<std::path::PathBuf> {
 /// sensible-browser, …; the child is detached with its stdio on /dev/null so
 /// it cannot scribble over the TUI.
 pub fn open_url(url: &str) -> Result<(), String> {
-    // Never let a URL be parsed as an option by the opener.
-    if url.is_empty() || url.starts_with('-') {
+    // Never let a URL be parsed as an option by the opener, and never open
+    // one with hidden characters (it would differ from what was shown).
+    if !is_safe_url(url) {
         return Err("netinkamas URL".into());
     }
     let candidates: Vec<(&str, Vec<&str>)> = match std::env::consts::OS {

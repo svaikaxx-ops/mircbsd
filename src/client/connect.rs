@@ -735,10 +735,19 @@ impl Client {
         }
         self.server_msg(&format!("Jungiamasi prie {srv} (TLS: {use_tls})..."));
 
-        let sends_password = {
+        let (sends_password, withheld) = {
             let st = self.mu.lock();
-            !st.server_pass.is_empty() || !st.nickserv_pass.is_empty() || !st.sasl_pass.is_empty()
+            let has = !st.server_pass.is_empty()
+                || !st.nickserv_pass.is_empty()
+                || !st.sasl_pass.is_empty();
+            let allowed = st.creds_allowed();
+            (has && allowed, has && !allowed)
         };
+        if withheld {
+            self.server_msg(
+                "Konfigūracijos slaptažodžiai (PASS/SASL/NickServ, perform) šiam serveriui nesiunčiami — jie skirti konfigūracijoje nurodytam serveriui",
+            );
+        }
         if !use_tls && sends_password {
             self.err_msg("ĮSPĖJIMAS: be TLS slaptažodžiai gali būti siunčiami atviru tekstu");
         }
@@ -777,7 +786,12 @@ impl Client {
 
         let (real_name, server_pass) = {
             let st = self.mu.lock();
-            (st.real_name.clone(), st.server_pass.clone())
+            let pass = if st.creds_allowed() {
+                st.server_pass.clone()
+            } else {
+                String::new()
+            };
+            (st.real_name.clone(), pass)
         };
         let real_name = if real_name.is_empty() {
             "mircBSD IRC Client".to_string()
