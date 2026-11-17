@@ -85,6 +85,10 @@ cp target/release/mircbsd /usr/local/bin/
 # Be konfigūracijos: serveris, portas, [nick], [tls]
 mircbsd irc.libera.chat 6697 manick tls
 mircbsd irc.data.lt 6667 manick
+
+# Pagalba ir versija
+mircbsd --help     # arba -h
+mircbsd --version  # arba -V
 ```
 
 Tada klientas viduje:
