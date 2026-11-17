@@ -428,31 +428,16 @@ impl Client {
             return;
         }
         match b[2] {
+            // ↑/↓ — VISADA komandų istorija (ir tuščioje eilutėje; anksčiau
+            // tuščia eilutė slinkdavo žinutes, todėl paskutinės komandos
+            // nebuvo galima atkurti). Slinkimas — PgUp/PgDn ir pelės ratukas.
             b'A' => {
-                let mut st = self.mu.lock();
-                if st.input.is_empty() {
-                    st.scroll_off += 3;
-                    st.chase_until = None; // scrolling up freezes the view again
-                    drop(st);
-                    self.queue_redraw();
-                } else {
-                    st.history_up();
-                    drop(st);
-                    self.queue_redraw();
-                }
+                self.mu.lock().history_up();
+                self.queue_redraw();
                 return;
             }
             b'B' => {
-                let mut st = self.mu.lock();
-                if st.input.is_empty() {
-                    if st.scroll_off > 0 {
-                        st.scroll_off = (st.scroll_off - 3).max(0);
-                        st.chase_until = Some(Instant::now() + CHASE_WINDOW);
-                    }
-                } else {
-                    st.history_down();
-                }
-                drop(st);
+                self.mu.lock().history_down();
                 self.queue_redraw();
                 return;
             }

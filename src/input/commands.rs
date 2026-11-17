@@ -1325,7 +1325,7 @@ fn help_lines(avail: i32) -> Vec<String> {
             &[
                 ("PgUp / PgDn, pelės ratukas", "slinkti istoriją"),
                 ("Shift+PgDn", "grįžti į apačią"),
-                ("↑ / ↓", "komandų istorija (tuščia eilutė: slinkti)"),
+                ("↑ / ↓", "komandų istorija"),
                 ("Ctrl+N / Ctrl+P", "kitas / ankstesnis langas"),
                 ("Alt+1…9, F1…F12", "langas pagal numerį"),
                 ("Tab", "užbaigti nick, komandą, kanalą"),

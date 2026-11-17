@@ -266,7 +266,7 @@ Visos komandos taip pat matomos `/help` (skliaustuose – sinonimai).
 |----------|----------|
 | `PgUp` / `PgDn` | Slinkti žinutes |
 | `Shift+PgDn` | Grįžti į apačią (prie naujų žinučių) |
-| `↑` / `↓` | Komandų istorija; kai įvesties eilutė tuščia – slinkti |
+| `↑` / `↓` | Komandų istorija (visada; žinutės slenkamos PgUp/PgDn arba pelės ratuku) |
 | `Ctrl+N` / `Ctrl+P` | Kitas / ankstesnis langas |
 | `Alt+1`…`Alt+9`, `F1`…`F12` | Langas pagal numerį |
 | `Tab` | Užbaigti nick'ą, komandą, kanalą (kartojant – kitas variantas) |

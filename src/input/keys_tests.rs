@@ -113,15 +113,31 @@ fn history_arrows() {
 }
 
 #[test]
-fn arrows_scroll_with_empty_input() {
+fn up_arrow_on_empty_line_recalls_history_without_scrolling() {
     let c = client();
     c.mu.lock().height = 24;
+    c.mu.lock().history = vec!["/join #a".into(), "/whois bob".into()];
     c.handle_key(b"\x1b[A");
-    assert_eq!(c.mu.lock().scroll_off, 3);
+    assert_eq!(input_text(&c), "/whois bob");
+    assert_eq!(c.mu.lock().scroll_off, 0, "↑ neturi slinkti žinučių");
+    c.handle_key(b"\x1b[A");
+    assert_eq!(input_text(&c), "/join #a");
+    c.handle_key(b"\x1b[B");
+    assert_eq!(input_text(&c), "/whois bob");
+    c.handle_key(b"\x1b[B");
+    assert_eq!(input_text(&c), "");
+    assert_eq!(c.mu.lock().scroll_off, 0);
+}
+
+#[test]
+fn page_keys_scroll() {
+    let c = client();
+    c.mu.lock().height = 24;
     c.handle_key(b"\x1b[5~"); // PgUp
-    assert_eq!(c.mu.lock().scroll_off, 3 + 20);
+    assert_eq!(c.mu.lock().scroll_off, 20);
+    c.handle_key(b"\x1b[5~");
     c.handle_key(b"\x1b[6~"); // PgDn
-    assert_eq!(c.mu.lock().scroll_off, 3);
+    assert_eq!(c.mu.lock().scroll_off, 20);
     assert!(c.mu.lock().chase_until.is_some());
     c.handle_key(b"\x1b[6;2~"); // Shift+PgDn
     let st = c.mu.lock();
