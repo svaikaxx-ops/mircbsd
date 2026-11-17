@@ -3,9 +3,19 @@
 const MAX_LINE_BYTES: usize = 512;
 
 /// Terminal control codes that must not appear on screen (from `ui.go` `isControlRune`).
+///
+/// Besides C0 (except tab), DEL and C1 this also drops the Unicode bidi
+/// embeddings/overrides (U+202A–U+202E) and isolates (U+2066–U+2069): on a
+/// bidi-capable terminal an unterminated RLO from a nick or message reorders
+/// the rest of the row, so network text could disguise who said what.
 pub fn is_control_rune(r: char) -> bool {
     let u = r as u32;
-    (u < 0x20 && r != '\t') || u == 0x7f || (0x80..=0x9f).contains(&u)
+    (u < 0x20 && r != '\t') || u == 0x7f || (0x80..=0x9f).contains(&u) || is_bidi_control(u)
+}
+
+/// Bidi embedding/override/isolate controls (not the harmless LRM/RLM marks).
+fn is_bidi_control(u: u32) -> bool {
+    (0x202A..=0x202E).contains(&u) || (0x2066..=0x2069).contains(&u)
 }
 
 /// Drops C0 (except tab), DEL, and C1 (0x80–0x9f) from network/UI text (`sanitizeText`).
@@ -59,4 +69,34 @@ pub fn truncate_irc(line: &str) -> String {
         cut -= 1;
     }
     line[..cut].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bidi_overrides_and_isolates_are_dropped() {
+        // RLO/LRO/embeddings/PDF and the isolates reorder the rest of the
+        // terminal row (nick panel included) on bidi-capable terminals —
+        // display spoofing ("<admin> " that is really someone else).
+        let s =
+            "a\u{202A}b\u{202B}c\u{202C}d\u{202D}e\u{202E}f\u{2066}g\u{2067}h\u{2068}i\u{2069}j";
+        assert_eq!(sanitize_text(s), "abcdefghij");
+        assert_eq!(sanitize_chan_name("#x\u{202E}y"), "#xy");
+        // Chat text goes through render_irc_format, which shares the filter.
+        assert!(!crate::ui::render_irc_format("a\u{202E}b").contains('\u{202E}'));
+        // Plain marks (LRM/RLM) do not reorder anything outside — kept.
+        assert_eq!(sanitize_text("a\u{200E}b\u{200F}"), "a\u{200E}b\u{200F}");
+        // Regular RTL text stays intact.
+        assert_eq!(sanitize_text("שלום"), "שלום");
+    }
+
+    #[test]
+    fn c0_c1_and_del_are_dropped() {
+        assert_eq!(
+            sanitize_text("a\x1b]52;c;ZXZpbA==\x07b\u{9b}c\x7fd\te"),
+            "a]52;c;ZXZpbA==bcd\te"
+        );
+    }
 }
