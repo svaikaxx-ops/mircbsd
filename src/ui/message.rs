@@ -244,7 +244,9 @@ impl Message {
     /// text rendering itself does not depend on it.
     pub fn render_lines(&self, msg_w: i32, _my_nick: &str) -> Vec<String> {
         // Nick/channel/server text — no terminal codes.
-        let nick = sanitize_text(&self.nick);
+        // Tabuliacija: plotis 0 skaičiuojant, bet terminale šokama iki 8
+        // ląstelių — eilutė išeitų už ribų. Ekrane rodoma kaip tarpas.
+        let nick = sanitize_text(&self.nick).replace('\t', " ");
         // Chat/action/notice text goes through render_irc_format (strips
         // codes); other kinds are printed raw — clean control characters.
         let text = if !matches!(
@@ -254,7 +256,8 @@ impl Message {
             sanitize_text(&self.text)
         } else {
             self.text.clone()
-        };
+        }
+        .replace('\t', " ");
 
         let ts_color = ts_color_code();
         let mut ts = String::new();
