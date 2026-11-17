@@ -15,7 +15,7 @@ name = "mircbsd"
 path = "src/main.rs"
 
 [dependencies]
-crossterm = "0.28"
+crossterm = "0.29"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "0.26"
 sha2 = "0.10"
