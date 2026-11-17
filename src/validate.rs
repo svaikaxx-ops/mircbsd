@@ -46,6 +46,95 @@ pub fn ascii_fold(s: &str) -> String {
     String::from_utf8(b).unwrap_or_else(|_| s.to_string())
 }
 
+/// Serverio CASEMAPPING rūšis — VIENINTELĖ vieta, kur ISUPPORT reikšmė
+/// paverčiama lankstymo (fold) algoritmu. Ja naudojasi ir palyginimas
+/// ([`nick_equal`]), ir rinkinių raktai ([`norm_nick`], [`fold_name`]) —
+/// abu turi lankstyti VIENODAI, kitaip rinkinys „neranda“ to, ką palyginimas
+/// laiko lygiu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaseMap {
+    /// Tik `A`–`Z` ↔ `a`–`z`.
+    Ascii,
+    /// `A`–`Z` ir `[]\^` ↔ `{}|~` (numatytoji, taip pat nežinomoms reikšmėms).
+    Rfc1459,
+    /// `A`–`Z` ir `[]\` ↔ `{}|` (be `^`/`~`).
+    StrictRfc1459,
+    /// Unicode mažosios raidės (`char::to_lowercase`): `rfc8265` (PRECIS),
+    /// `rfc7613`, `utf8`/`utf-8`. Tai PRECIS APYTIKSLIS atitikmuo: pilnas
+    /// PRECIS dar daro pločio atvaizdavimą (pilno pločio → įprastos raidės) ir
+    /// NFC normalizavimą — to nedarome (reikėtų naujos priklausomybės).
+    /// Praktikoje „#Žalgiris“ ≡ „#žalgiris“, kaip ir serveryje.
+    Unicode,
+}
+
+impl CaseMap {
+    /// ISUPPORT `CASEMAPPING` reikšmė → rūšis. Tuščia ir nežinoma → RFC 1459.
+    pub fn parse(cm: &str) -> CaseMap {
+        let cm = cm.trim();
+        if cm.eq_ignore_ascii_case("ascii") {
+            CaseMap::Ascii
+        } else if cm.eq_ignore_ascii_case("strict-rfc1459") {
+            CaseMap::StrictRfc1459
+        } else if ["rfc8265", "rfc7613", "rfc7700", "utf8", "utf-8"]
+            .iter()
+            .any(|u| cm.eq_ignore_ascii_case(u))
+        {
+            CaseMap::Unicode
+        } else {
+            CaseMap::Rfc1459
+        }
+    }
+}
+
+/// Vieno simbolio lankstymo rezultatas: vienas simbolis arba Unicode
+/// `ToLowercase` seka (pvz. „İ“ → „i̇“, du simboliai).
+enum FoldChar {
+    One(Option<char>),
+    Many(std::char::ToLowercase),
+}
+
+impl Iterator for FoldChar {
+    type Item = char;
+    fn next(&mut self) -> Option<char> {
+        match self {
+            FoldChar::One(c) => c.take(),
+            FoldChar::Many(it) => it.next(),
+        }
+    }
+}
+
+fn fold_char(c: char, map: CaseMap) -> FoldChar {
+    match map {
+        CaseMap::Ascii => FoldChar::One(Some(c.to_ascii_lowercase())),
+        CaseMap::Rfc1459 => FoldChar::One(Some(lower_irc(c))),
+        CaseMap::StrictRfc1459 => FoldChar::One(Some(if c == '^' { c } else { lower_irc(c) })),
+        CaseMap::Unicode => FoldChar::Many(c.to_lowercase()),
+    }
+}
+
+/// Lankstytų simbolių seka (be alokacijos).
+fn folded(s: &str, map: CaseMap) -> impl Iterator<Item = char> + '_ {
+    s.chars().flat_map(move |c| fold_char(c, map))
+}
+
+/// Vardas (nick'as ar kanalas), sulankstytas pagal serverio CASEMAPPING —
+/// rinkinių / žemėlapių raktas. Tas pats algoritmas kaip [`nick_equal`]:
+/// `nick_equal(a, b, cm) == (fold_name(a, cm) == fold_name(b, cm))`.
+pub fn fold_name(s: &str, cm: &str) -> String {
+    match CaseMap::parse(cm) {
+        CaseMap::Ascii => ascii_fold(s),
+        map => folded(s, map).collect(),
+    }
+}
+
+/// ATLAIDUS lankstymas paieškai tekste (highlight, ignore kaukės, Tab
+/// prefiksas): Unicode mažosios raidės IR serverio CASEMAPPING specifika
+/// (rfc1459 `[]\^` ≡ `{}|~`). Ne rinkinių raktams — jiems [`fold_name`].
+/// Unicode casemapping'ui rezultatas sutampa su [`fold_name`].
+pub fn fold_lenient(s: &str, cm: &str) -> String {
+    fold_name(&s.to_lowercase(), cm)
+}
+
 /// Nick equality without allocating folded strings.
 pub fn fold_equal_irc(a: &str, b: &str, ascii: bool) -> bool {
     if ascii {
@@ -93,12 +182,18 @@ fn next_rune(s: &str, i: usize) -> (char, usize) {
     }
 }
 
-/// Compare nicks using server `CASEMAPPING` (`""` / `rfc1459` → RFC 1459; `ascii` → ASCII).
+/// Compare nicks / channel names using server `CASEMAPPING` (žr. [`CaseMap`]:
+/// `""` / `rfc1459` / nežinoma → RFC 1459; `ascii`; `strict-rfc1459`;
+/// `rfc8265` / `rfc7613` / `utf8` → Unicode mažosios raidės).
 pub fn nick_equal(a: &str, b: &str, cm: &str) -> bool {
     if a.is_empty() || b.is_empty() {
         return a == b;
     }
-    fold_equal_irc(a, b, cm == "ascii")
+    match CaseMap::parse(cm) {
+        CaseMap::Ascii => fold_equal_irc(a, b, true),
+        CaseMap::Rfc1459 => fold_equal_irc(a, b, false),
+        map => folded(a, map).eq(folded(b, map)),
+    }
 }
 
 /// Strip one leading status prefix sign when present (`stripMode`).
@@ -121,12 +216,7 @@ pub fn strip_mode<'a>(nick: &'a str, signs: &str) -> &'a str {
 
 /// Normalized nick key for sets (`normNick`).
 pub fn norm_nick(nick: &str, sign: &str, cm: &str) -> String {
-    let bare = strip_mode(nick, sign);
-    if cm == "ascii" {
-        ascii_fold(bare)
-    } else {
-        bare.chars().map(lower_irc).collect()
-    }
+    fold_name(strip_mode(nick, sign), cm)
 }
 
 // ---- Wildcards (`wildEq`, `wildcardMatch`) ----
@@ -164,6 +254,12 @@ pub fn wild_eq(p: &str, s: &str) -> bool {
 /// Simple `*` / `?` matching, case-insensitive (`wildcardMatch`).
 pub fn wildcard_match(pattern: &str, s: &str) -> bool {
     wild_eq(&pattern.to_lowercase(), &s.to_lowercase())
+}
+
+/// [`wildcard_match`] pagal serverio CASEMAPPING ([`fold_lenient`]): ignore
+/// kaukė „*[x]*“ rfc1459 serveryje atitinka ir „{x}“.
+pub fn wildcard_match_cm(pattern: &str, s: &str, cm: &str) -> bool {
+    wild_eq(&fold_lenient(pattern, cm), &fold_lenient(s, cm))
 }
 
 // ---- Validators (from `irc.go`) ----

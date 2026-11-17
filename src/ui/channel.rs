@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use crate::validate::{fold_equal_irc, norm_nick};
+use crate::validate::{nick_equal, norm_nick};
 
 use super::message::Message;
 
@@ -260,7 +260,8 @@ impl Channel {
     /// Index of a nick in the list, `None` when absent (`findNickIdx`).
     ///
     /// The set is a fast "exists?" check; the index is found by direct scan
-    /// (only needed for rare operations). The scan uses `fold_equal_irc` —
+    /// (only needed for rare operations). The scan uses `nick_equal` (the same
+    /// fold as the set keys) —
     /// no per-element allocations (a flood of removals would otherwise stall
     /// the client on a 5 000-nick list).
     pub fn find_nick_idx(&self, nick: &str, sign: &str) -> Option<usize> {
@@ -273,10 +274,9 @@ impl Channel {
             return None;
         }
         let target = strip_mode(nick, sign);
-        let ascii = self.casemapping == "ascii";
         self.nicks
             .iter()
-            .position(|n| fold_equal_irc(strip_mode(n, sign), target, ascii))
+            .position(|n| nick_equal(strip_mode(n, sign), target, &self.casemapping))
     }
 
     /// Adds a nick (`addNick`). `sign` — server PREFIX signs (from ISUPPORT)

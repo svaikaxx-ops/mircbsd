@@ -34,11 +34,17 @@ const MAX_CAP_NAMES: usize = 1024;
 /// Tikrinamos VISOS vietos: „bobby, bob“ turi paryškinti „bob“ (anksčiau
 /// žiūrėta tik į pirmą atitikmenį „bobby“ ir highlight dingdavo).
 pub fn contains_nick(text: &str, nick: &str) -> bool {
+    contains_nick_cm(text, nick, "")
+}
+
+/// [`contains_nick`] pagal serverio CASEMAPPING (atlaidus lankstymas
+/// [`crate::validate::fold_lenient`]: Unicode mažosios + rfc1459 `[]\^`).
+pub fn contains_nick_cm(text: &str, nick: &str, cm: &str) -> bool {
     if nick.is_empty() {
         return false;
     }
-    let text_low = text.to_lowercase();
-    let nick_low = nick.to_lowercase();
+    let text_low = crate::validate::fold_lenient(text, cm);
+    let nick_low = crate::validate::fold_lenient(nick, cm);
     let tb = text_low.as_bytes();
     let mut from = 0;
     while let Some(off) = text_low[from..].find(&nick_low) {
@@ -934,7 +940,7 @@ impl Client {
                 let plain = strip_irc_format(action);
                 let plain_low = plain.to_lowercase();
                 let hl = self.nick_equal(target, &me)
-                    || contains_nick(&plain, &me)
+                    || contains_nick_cm(&plain, &me, &self.casemapping())
                     || self
                         .mu
                         .lock()
@@ -981,7 +987,7 @@ impl Client {
             }
         }
         let plain = strip_irc_format(text);
-        let mut hl = is_pm || contains_nick(&plain, &me);
+        let mut hl = is_pm || contains_nick_cm(&plain, &me, &self.casemapping());
         if !hl {
             let plain_low = plain.to_lowercase();
             let st = self.mu.lock();
@@ -1024,7 +1030,7 @@ impl Client {
         }
         let reason = msg.param(0);
         let cm = self.casemapping();
-        let key = from.to_lowercase();
+        let key = crate::validate::fold_name(from, &cm);
         let ttl = chrono::Duration::minutes(AWAY_THROTTLE_MINUTES);
 
         // (active window name, its nicks, signs) copied under the lock.
@@ -1249,3 +1255,7 @@ mod tests;
 #[cfg(test)]
 #[path = "handlers_cap_tests.rs"]
 mod cap_tests;
+
+#[cfg(test)]
+#[path = "casemap_tests.rs"]
+mod casemap_tests;

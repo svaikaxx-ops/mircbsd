@@ -151,7 +151,7 @@ pub struct State {
     pub custom_binds: HashMap<String, String>,
     pub highlight_words: Vec<String>,
 
-    /// Away throttle: lowercased nick → last notice time (bounded).
+    /// Away throttle: nick folded by CASEMAPPING (`fold_name`) → last notice time (bounded).
     pub away_notified: HashMap<String, DateTime<Utc>>,
 
     /// Where WHO / WHOIS replies go ("" = *server*).
@@ -394,7 +394,7 @@ impl Client {
             i.apply(tokens);
             i.casemapping.clone()
         };
-        self.mu.lock().casemapping = cm;
+        self.mu.lock().set_casemapping(cm);
     }
 
     /// Current server CASEMAPPING.

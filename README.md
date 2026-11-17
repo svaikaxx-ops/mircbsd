@@ -38,6 +38,9 @@ Terminalo IRC klientas, parašytas Rust. Veikia **Debian** (Linux) ir FreeBSD.
 - TLS, SASL PLAIN / EXTERNAL, TLS atspaudo pinning (TOFU), automatinis
   jungimasis iš naujo, MONITOR (`/notify`).
 - Žurnalai pagal dieną, paieška žurnaluose, JSON eksportas.
+- Kanalų ir nick'ų palyginimas pagal serverio `CASEMAPPING`: `ascii`,
+  `rfc1459`, `strict-rfc1459` ir Unicode (`rfc8265` / `rfc7613` / `utf8` —
+  „#Žalgiris“ ≡ „#žalgiris“; apytikslis PRECIS be NFC ir pločio atvaizdavimo).
 - Apsauga nuo terminalo valdymo sekų ir IRC komandų injekcijos (žr.
   [Saugumas](#saugumas)).
 

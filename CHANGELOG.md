@@ -24,6 +24,20 @@ pagal [SemVer](https://semver.org/).
   `install.sh` (tik bazinės sistemos įrankiai, vietinis release veidrodis;
   tikroji release tikrinama nuo pirmos versijos su FreeBSD binariu).
 
+### Pataisyta
+
+- **Unicode `CASEMAPPING`** — serveriai, skelbiantys `CASEMAPPING=rfc8265`
+  (PRECIS, pvz. Ergo), `rfc7613` ar `utf8`, kanalus ir nick'us lygina pagal
+  Unicode mažąsias raides: „#Žalgiris“ ir „#žalgiris“ — tas pats kanalas, bet
+  klientas atidarydavo du langus (tokia reikšmė buvo atmetama ir likdavo
+  rfc1459). Dabar šioms reikšmėms naudojamas `char::to_lowercase` (apytikslis
+  PRECIS: be pločio atvaizdavimo ir NFC normalizavimo); palaikomas ir
+  `strict-rfc1459` (be `^`/`~`); nežinomos reikšmės — kaip anksčiau rfc1459.
+  Tas pats lankstymas visur: langų paieška, nick'ų rinkiniai, ignore (taip
+  pat kaukės), MONITOR, AWAY ribojimas, paminėjimai, Tab kandidatų
+  dublikatai. Pasikeitus casemapping'ui (005 ar naujas ryšys) jau atidarytų
+  langų nick'ų rinkiniai perstatomi.
+
 ### Žinoma
 
 - `cargo audit` ignoruoja RUSTSEC-2026-0543 („chrono is unmaintained“) —

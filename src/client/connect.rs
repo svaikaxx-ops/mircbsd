@@ -848,7 +848,7 @@ impl Client {
             *i = crate::proto::isupport::Isup::default();
             i.casemapping.clone()
         };
-        self.mu.lock().casemapping = cm;
+        self.mu.lock().set_casemapping(cm);
         self.server_msg("Prisijungta! Registruojamasi...");
         self.queue_redraw();
 

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 
 use crate::sanitize::{sanitize_chan_name, sanitize_text};
-use crate::validate::wildcard_match;
+use crate::validate::wildcard_match_cm;
 
 use crate::ui::strip_irc_format;
 
@@ -54,6 +54,22 @@ impl State {
     /// serveriui tai tas pats kanalas.
     pub fn name_eq(&self, a: &str, b: &str) -> bool {
         crate::validate::nick_equal(a, b, &self.casemapping)
+    }
+
+    /// Serverio CASEMAPPING pasikeitė (005 arba naujas ryšys): nauja reikšmė
+    /// perduodama ir JAU ATIDARYTIEMS langams, o jų nick'ų rinkiniai
+    /// perstatomi — rinkinio raktai turi būti lankstyti tuo pačiu algoritmu
+    /// kaip ir palyginimas (kitaip /join prieš 005 atidarytas langas liktų su
+    /// rfc1459 raktais, o serveris jau lygina Unicode).
+    pub fn set_casemapping(&mut self, cm: String) {
+        for ch in self.channels.iter_mut() {
+            if ch.casemapping != cm {
+                ch.casemapping = cm.clone();
+                let sign = ch.prefix_signs(None);
+                ch.rebuild_nick_set(&sign);
+            }
+        }
+        self.casemapping = cm;
     }
 
     /// Active channel, if the index is valid (`activeChanLocked`).
@@ -289,7 +305,10 @@ impl Client {
     /// Does `prefix` (`nick!user@host`) match the ignore list (`isIgnored`)?
     /// Plain entries are nicks (casemapped); `*`/`?` entries are masks.
     pub fn is_ignored(&self, prefix: &str) -> bool {
-        let list: Vec<String> = self.mu.lock().ignore_list.clone();
+        let (list, cm) = {
+            let st = self.mu.lock();
+            (st.ignore_list.clone(), st.casemapping.clone())
+        };
         if list.is_empty() {
             return false;
         }
@@ -307,7 +326,7 @@ impl Client {
                 }
                 continue;
             }
-            if wildcard_match(ig, prefix) || wildcard_match(ig, nick) {
+            if wildcard_match_cm(ig, prefix, &cm) || wildcard_match_cm(ig, nick, &cm) {
                 return true;
             }
         }

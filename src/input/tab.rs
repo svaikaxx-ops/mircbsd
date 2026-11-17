@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use crate::client::types::{Client, State};
 use crate::sanitize::sanitize_text;
 use crate::ui::strip_mode;
+use crate::validate::{fold_lenient, fold_name};
 
 /// Every command Tab can complete (`allCommands`).
 pub const ALL_COMMANDS: &[&str] = &[
@@ -170,7 +171,10 @@ impl Client {
             }
             let word_low = word.to_lowercase();
 
-            let chan_types = self.isup_snapshot().0;
+            let (chan_types, _, _, cm, _) = self.isup_snapshot();
+            // Kandidatų raktai (dublikatai) — tas pats lankstymas kaip langų ir
+            // nick'ų paieška (fold_name); prefiksas — atlaidus (fold_lenient).
+            let word_fold = fold_lenient(&word, &cm);
             let candidates: Vec<String> = if word.starts_with('/') {
                 ALL_COMMANDS
                     .iter()
@@ -183,8 +187,9 @@ impl Client {
                 let mut out = Vec::new();
                 for ch in &st.channels {
                     let bare = sanitize_text(&ch.name);
-                    if !seen.contains(&bare) && bare.to_lowercase().starts_with(&word_low) {
-                        seen.insert(bare.clone());
+                    if fold_lenient(&bare, &cm).starts_with(&word_fold)
+                        && seen.insert(fold_name(&bare, &cm))
+                    {
                         out.push(bare);
                     }
                 }
@@ -199,8 +204,9 @@ impl Client {
                     // (otherwise Tab would be a live OSC 52 clipboard sink).
                     for n in &active.nicks {
                         let bare = sanitize_text(strip_mode(n, &signs));
-                        if !seen.contains(&bare) && bare.to_lowercase().starts_with(&word_low) {
-                            seen.insert(bare.clone());
+                        if fold_lenient(&bare, &cm).starts_with(&word_fold)
+                            && seen.insert(fold_name(&bare, &cm))
+                        {
                             out.push(bare);
                         }
                     }
@@ -210,7 +216,9 @@ impl Client {
                             continue;
                         }
                         let nick = sanitize_text(&m.nick);
-                        if seen.insert(nick.clone()) && nick.to_lowercase().starts_with(&word_low) {
+                        if fold_lenient(&nick, &cm).starts_with(&word_fold)
+                            && seen.insert(fold_name(&nick, &cm))
+                        {
                             out.push(nick);
                         }
                     }
