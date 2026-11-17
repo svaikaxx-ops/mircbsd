@@ -420,7 +420,11 @@ pub fn wrap_text(text: &str, width: i32) -> Vec<String> {
                     // Break at the last space: what follows it is the next line.
                     let rest = cur.split_off(cut + 1);
                     cur.truncate(cut);
-                    lines.push(cur.concat());
+                    // Tarpas eilutės pradžioje (po kieto lūžio) — tuščios
+                    // eilutės nekuriam.
+                    if !cur.is_empty() {
+                        lines.push(cur.concat());
+                    }
                     cur = rest;
                     cur_w = cur.iter().map(|c| cluster_width(c)).sum();
                     // Likutis po tarpo + platus klasteris vis dar gali netilpti
