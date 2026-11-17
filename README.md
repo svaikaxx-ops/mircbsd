@@ -48,10 +48,40 @@ Terminalo IRC klientas, parašytas Rust. Veikia **Debian** (Linux) ir FreeBSD.
 - Tikrasis terminalas (TTY) – paleidžiant be TTY klientas nepasileidžia;
   mažiausias dydis 40×8
 
-## Diegimas iš release (paruošti binarai)
+## Diegimas ir atnaujinimas (rekomenduojama)
 
-Paprasčiausias būdas – atsisiųsti sukompiliuotą binarį iš
-[Releases](https://github.com/svaikaxx-ops/mircbsd/releases). Rust nereikia.
+Viena komanda – Debian, Ubuntu, Raspberry Pi OS ir bet kuris kitas Linux
+(x86_64, ARM 64, ARM 32). Rust nereikia:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh
+```
+
+Skriptas pats atpažįsta architektūrą, atsisiunčia naujausią
+[release](https://github.com/svaikaxx-ops/mircbsd/releases), patikrina sha256,
+įdiegia į `~/.local/bin/mircbsd` ir, jei konfigūracijos dar nėra, sukuria
+`~/.config/mircbsd/config` iš pavyzdžio (teisės 600).
+
+**Atnaujinimas** – ta pati komanda. Jei naujausia versija jau įdiegta, nieko
+nedaroma; konfigūracija niekada neperrašoma.
+
+Parinktys (po `sh -s --`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh -s -- --system          # į /usr/local/bin (sudo)
+curl -fsSL https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh -s -- --version v0.5.0  # konkreti versija (ir grąžinimas atgal)
+curl -fsSL https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh -s -- --uninstall       # pašalinti (konfigūracija lieka)
+```
+
+Taip pat `--dir KATALOGAS`, `--force` (perdiegti tą pačią versiją), `--help`.
+Vietoj `curl` tinka ir `wget -qO- … | sh`. Jei skriptas praneša, kad
+`~/.local/bin` nėra PATH'e – atsijunkite ir vėl prisijunkite (Debian ir
+Raspberry Pi OS jį prideda automatiškai, kai katalogas jau yra) arba
+`source ~/.profile`.
+
+## Diegimas rankiniu būdu iš release
+
+Jei nenorite paleisti skripto – tą patį galima padaryti ranka.
 
 | Kompiuteris | Failas (`T=`) | Veikia |
 | --- | --- | --- |

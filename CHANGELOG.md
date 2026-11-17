@@ -4,6 +4,17 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [Neišleista]
+
+### Nauja
+
+- **`scripts/install.sh`** — diegimas ir atnaujinimas viena komanda
+  (`curl … | sh`): atpažįsta architektūrą (x86_64 / aarch64 / armv7),
+  atsisiunčia naujausią release, tikrina sha256 ir ar binaris pasileidžia,
+  diegia atomiškai (`mv`), sukuria konfigūraciją tik jei jos nėra;
+  `--system`, `--version`, `--dir`, `--force`, `--uninstall`. POSIX `sh`,
+  veikia su `curl` arba `wget`.
+
 ## [0.5.1] – 2026-11-17 – ARM musl binaris, priklausomybės
 
 ### Pakeista

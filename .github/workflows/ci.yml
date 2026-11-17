@@ -41,6 +41,19 @@ jobs:
       - name: Terminal end-to-end tests
         run: bash scripts/e2e/start.sh
 
+      - name: install.sh (diegimas, atnaujinimas, šalinimas)
+        run: |
+          sudo apt-get install -y dash shellcheck
+          shellcheck -s sh scripts/install.sh
+          export HOME="$(mktemp -d)"
+          dash scripts/install.sh --version v0.5.0
+          dash scripts/install.sh | tee out.txt
+          grep -q "atnaujinta: v0.5.0" out.txt
+          dash scripts/install.sh | grep -q "jau įdiegta"
+          test "$(stat -c %a "$HOME/.config/mircbsd/config")" = 600
+          dash scripts/install.sh --uninstall
+          test ! -e "$HOME/.local/bin/mircbsd"
+
   audit:
     runs-on: ubuntu-latest
     steps:
