@@ -168,3 +168,35 @@ fn add_msg_trims_oldest_quarter() {
     assert_eq!(c.rendered_msg_count, 0);
     assert!(c.rendered.is_empty());
 }
+
+fn msg(text: &str) -> Message {
+    Message::new(
+        chrono::Utc::now(),
+        "n",
+        text,
+        crate::ui::MsgType::Chat,
+        false,
+    )
+}
+
+#[test]
+fn tiny_max_messages_still_bounds_buffer() {
+    let mut c = Channel::new("#t", 3);
+    for i in 0..20 {
+        c.add_msg(msg(&i.to_string()));
+    }
+    assert!(c.messages.len() <= 3, "{}", c.messages.len());
+    assert_eq!(c.messages.last().unwrap().text, "19");
+}
+
+#[test]
+fn trim_shifts_unread_from() {
+    let mut c = Channel::new("#t", 8);
+    for i in 0..8 {
+        c.add_msg(msg(&i.to_string()));
+    }
+    // Pirmoji neperskaityta — „6“.
+    c.unread_from = 6;
+    c.add_msg(msg("8")); // 9 > 8 → nukerpamos 2 seniausios
+    assert_eq!(c.messages[c.unread_from as usize].text, "6");
+}

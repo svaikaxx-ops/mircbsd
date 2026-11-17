@@ -29,7 +29,71 @@ use mircbsd::ui::{
 };
 use mircbsd::validate::{is_valid_nick, is_valid_port, is_valid_server};
 
+/// Ką daryti su komandinės eilutės argumentais (prieš TTY patikrą).
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    /// Paleisti klientą (`[serveris portas [nick] [tls]]`).
+    Run,
+    Help,
+    Version,
+    /// Nežinomas `-` parametras: klaidos tekstas, išeinama su kodu 2.
+    Bad(String),
+}
+
+/// `--help`/`-h`, `--version`/`-V` atpažįstami bet kurioje vietoje;
+/// kiti `-` prasidedantys argumentai — klaida (anksčiau jie tyliai
+/// virsdavo serverio vardu/portu).
+fn parse_cli_action(args: &[String]) -> CliAction {
+    for a in args {
+        match a.as_str() {
+            "-h" | "--help" => return CliAction::Help,
+            "-V" | "--version" => return CliAction::Version,
+            _ => {}
+        }
+    }
+    match args.iter().find(|a| a.starts_with('-')) {
+        Some(a) => CliAction::Bad(format!("nežinomas parametras: {a}")),
+        None => CliAction::Run,
+    }
+}
+
+fn usage_text() -> String {
+    format!(
+        "mircBSD {VERSION} — terminalo IRC klientas\n\
+         \n\
+         Naudojimas:\n  \
+         mircbsd                              jungtis pagal konfigūracijos failą\n  \
+         mircbsd <serveris> <portas> [nick] [tls]\n  \
+         mircbsd -h | --help                  šis aprašas\n  \
+         mircbsd -V | --version               versija\n\
+         \n\
+         Pavyzdžiai:\n  \
+         mircbsd irc.libera.chat 6697 manick tls\n  \
+         mircbsd irc.data.lt 6667 manick\n\
+         \n\
+         Konfigūracija: $XDG_CONFIG_HOME/mircbsd/config (numatytai ~/.config/mircbsd/config)\n\
+         Programoje: /help — komandų sąrašas\n"
+    )
+}
+
 fn main() {
+    let cli_args: Vec<String> = std::env::args().skip(1).collect();
+    match parse_cli_action(&cli_args) {
+        CliAction::Run => {}
+        CliAction::Help => {
+            print!("{}", usage_text());
+            return;
+        }
+        CliAction::Version => {
+            println!("mircbsd {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        CliAction::Bad(e) => {
+            eprintln!("mircbsd: {e}");
+            eprint!("{}", usage_text());
+            std::process::exit(2);
+        }
+    }
     if !io::stdin().is_tty() {
         eprintln!("Reikalingas terminalas (TTY)");
         std::process::exit(1);
@@ -205,6 +269,14 @@ fn apply_cli(cfg: &mut Config, warns: &mut Vec<String>) {
 /// one does NOT inherit the config passwords (PASS, SASL, NickServ,
 /// `perform`): they were written for the configured network.
 fn apply_cli_args(cfg: &mut Config, warns: &mut Vec<String>, args: &[String]) {
+    if args.len() == 1 {
+        // Anksčiau vienas argumentas tyliai ignoruotas.
+        warns.push(format!(
+            "Trūksta porto: mircbsd {} <portas> [nick] [tls] (argumentas ignoruotas)",
+            args[0]
+        ));
+        return;
+    }
     if args.len() < 2 {
         return;
     }
@@ -656,6 +728,36 @@ fn signal_loop(_client: Arc<Client>, _set: ()) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn cli_help_and_version_flags() {
+        assert_eq!(parse_cli_action(&args(&[])), CliAction::Run);
+        assert_eq!(
+            parse_cli_action(&args(&["irc.libera.chat", "6697", "nick", "tls"])),
+            CliAction::Run
+        );
+        for a in ["-h", "--help"] {
+            assert_eq!(parse_cli_action(&args(&[a])), CliAction::Help);
+            assert_eq!(
+                parse_cli_action(&args(&["srv", "6667", a])),
+                CliAction::Help
+            );
+        }
+        for a in ["-V", "--version"] {
+            assert_eq!(parse_cli_action(&args(&[a])), CliAction::Version);
+        }
+        assert!(matches!(
+            parse_cli_action(&args(&["--port", "6667"])),
+            CliAction::Bad(_)
+        ));
+        let u = usage_text();
+        assert!(u.contains(VERSION) && u.contains("--help") && u.contains("--version"));
+        assert_eq!(env!("CARGO_PKG_VERSION"), VERSION);
+    }
 
     #[test]
     fn cli_server_other_than_config_drops_config_credentials() {

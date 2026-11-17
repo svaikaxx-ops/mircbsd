@@ -32,6 +32,22 @@ impl Client {
 
     /// `/set <key> <value>`: validate, apply live, then write the config file.
     pub(super) fn apply_setting(&self, key: &str, value: &str) {
+        let Some(ok_msg) = self.apply_setting_live(key, value) else {
+            return;
+        };
+        if let Err(e) = save_config_setting(key, value) {
+            self.err_msg(&format!("Pritaikyta gyvai, bet į failą NEĮRAŠYTA: {e}"));
+            return;
+        }
+        self.server_msg(&format!(
+            "nustatymas: {key} = {}{ok_msg}",
+            sanitize_text(value)
+        ));
+    }
+
+    /// Validate and apply one setting in memory (no file write). `None` —
+    /// rejected (the error is already shown); `Some(note)` — applied.
+    pub(super) fn apply_setting_live(&self, key: &str, value: &str) -> Option<&'static str> {
         let mut ok_msg = "";
         let reject_bool = |v: &str| -> Option<bool> {
             let (b, known) = parse_bool_value(v);
@@ -46,24 +62,24 @@ impl Client {
         };
         match key {
             "mouse" => {
-                let Some(b) = reject_bool(value) else { return };
+                let b = reject_bool(value)?;
                 self.mu.lock().mouse = b;
                 term_write(if b { MOUSE_ON } else { MOUSE_OFF });
             }
             "notifications" => {
-                let Some(b) = reject_bool(value) else { return };
+                let b = reject_bool(value)?;
                 self.mu.lock().notify = b;
             }
             "ctcpversion" => {
-                let Some(b) = reject_bool(value) else { return };
+                let b = reject_bool(value)?;
                 self.mu.lock().ctcp_version = b;
             }
             "reconnect" => {
-                let Some(b) = reject_bool(value) else { return };
+                let b = reject_bool(value)?;
                 self.mu.lock().reconnect = b;
             }
             "timestamps" => {
-                let Some(b) = reject_bool(value) else { return };
+                let b = reject_bool(value)?;
                 set_timestamps(b, "");
             }
             "ts_format" => {
@@ -72,7 +88,7 @@ impl Client {
                         "Nevalidus laikmatis (pvz. „15:04“, „15:04:05“): {}",
                         sanitize_text(value)
                     ));
-                    return;
+                    return None;
                 }
                 set_timestamps(timestamps_enabled(), value);
             }
@@ -82,7 +98,7 @@ impl Client {
                         "Nežinoma spalva (gray, blue, green, cyan, none): {}",
                         sanitize_text(value)
                     ));
-                    return;
+                    return None;
                 }
                 set_ts_color(value);
             }
@@ -92,12 +108,12 @@ impl Client {
                         "Nežinoma spalva (red, blue, green, magenta, cyan, yellow, none): {}",
                         sanitize_text(value)
                     ));
-                    return;
+                    return None;
                 }
                 set_highlight_color(value);
             }
             "nick_colors" => {
-                let Some(b) = reject_bool(value) else { return };
+                let b = reject_bool(value)?;
                 set_nick_colors(b);
                 self.invalidate_render_caches();
             }
@@ -107,7 +123,7 @@ impl Client {
                         "Nežinoma tema (dark, light): {}",
                         sanitize_text(value)
                     ));
-                    return;
+                    return None;
                 }
                 set_theme(value);
                 self.invalidate_render_caches();
@@ -120,7 +136,7 @@ impl Client {
                             "Reikšmė turi būti sveikas skaičius 100–100000: {}",
                             sanitize_text(value)
                         ));
-                        return;
+                        return None;
                     }
                 };
                 {
@@ -132,15 +148,16 @@ impl Client {
                 }
                 ok_msg = " (esamiems langams)";
             }
-            _ => return,
+            _ => return None,
         }
-        if let Err(e) = save_config_setting(key, value) {
-            self.err_msg(&format!("Pritaikyta gyvai, bet į failą NEĮRAŠYTA: {e}"));
-            return;
+        // Atvaizduotos eilutės saugo laiko žymą ir spalvų SGR — be cache
+        // išvalymo senos žinutės liktų su senu formatu (kaip temos atveju).
+        if matches!(
+            key,
+            "timestamps" | "ts_format" | "tscolor" | "highlight_color"
+        ) {
+            self.invalidate_render_caches();
         }
-        self.server_msg(&format!(
-            "nustatymas: {key} = {}{ok_msg}",
-            sanitize_text(value)
-        ));
+        Some(ok_msg)
     }
 }

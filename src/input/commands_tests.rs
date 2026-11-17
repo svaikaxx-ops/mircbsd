@@ -141,8 +141,8 @@ fn validation_errors_do_not_send() {
     let (c, q) = connected();
     c.handle_cmd("connect", "not a server 1");
     c.handle_cmd("connect", "irc.example.org 0");
-    c.handle_cmd("connect", "irc.example.org 6667 bad nick");
-    c.handle_cmd("nick", "a b");
+    c.handle_cmd("connect", "irc.example.org 6667 bad!nick");
+    c.handle_cmd("nick", "bad!nick");
     c.handle_cmd("join", "");
     c.handle_cmd("msg", "onlynick");
     c.handle_cmd("kick", "");
@@ -152,7 +152,8 @@ fn validation_errors_do_not_send() {
     let t = server_texts(&c);
     assert!(t.iter().any(|l| l.contains("Nežinoma komanda: /nope")));
     assert!(t.iter().any(|l| l.contains("porto numeris")));
-    assert!(sent(&q).is_empty());
+    let out = sent(&q);
+    assert!(out.is_empty(), "{out:?}");
 }
 
 #[test]
@@ -365,4 +366,87 @@ fn help_and_command_errors_show_in_the_active_window() {
     // *server*.
     c.err_msg("tinklo klaida");
     assert!(server_texts(&c).iter().any(|t| t == "tinklo klaida"));
+}
+
+#[test]
+fn nick_change_waits_for_server_after_registration() {
+    let (c, q) = connected();
+    let me = c.my_nick();
+    c.parse_irc(&format!(":srv 001 {me} :Welcome"));
+    sent(&q);
+    c.handle_cmd("nick", "naujas");
+    assert_eq!(sent(&q), vec!["NICK naujas"]);
+    assert_eq!(c.my_nick(), me, "nick pakeistas be serverio patvirtinimo");
+    c.parse_irc(&format!(":{me}!u@h NICK naujas"));
+    assert_eq!(c.my_nick(), "naujas");
+}
+
+#[test]
+fn join_while_offline_is_joined_after_registration() {
+    let (c, q) = connected();
+    c.mu.lock().connected = false;
+    c.handle_cmd("join", "#offline");
+    c.mu.lock().connected = true;
+    let me = c.my_nick();
+    c.parse_irc(&format!(":srv 001 {me} :Welcome"));
+    assert!(sent(&q).iter().any(|l| l == "JOIN #offline"));
+}
+
+#[test]
+fn msg_while_offline_is_not_shown_as_sent() {
+    let c = client();
+    c.handle_cmd("msg", "bob labas");
+    assert!(c.find_ch("bob").is_none(), "žinutė parodyta kaip išsiųsta");
+    assert!(server_texts(&c).iter().any(|l| l.contains("Neprisijungta")));
+}
+
+#[test]
+fn display_settings_invalidate_render_cache() {
+    let c = client();
+    open_active(&c, "#chan");
+    for (key, value) in [("tscolor", "gray"), ("highlight_color", "red")] {
+        {
+            let mut st = c.mu.lock();
+            let ch = st.active_chan_mut().unwrap();
+            ch.rendered_gen = 5;
+            ch.rendered = vec!["12:00 senas".into()];
+        }
+        // Numatytosios reikšmės — globali tema nepasikeičia kitiems testams.
+        assert!(c.apply_setting_live(key, value).is_some());
+        let st = c.mu.lock();
+        let ch = st.active_chan().unwrap();
+        assert_eq!(ch.rendered_gen, -1, "{key}: cache neišvalytas");
+        assert!(ch.rendered.is_empty());
+    }
+}
+
+#[test]
+fn join_command_focuses_window_even_when_it_exists() {
+    let (c, q) = connected();
+    open_active(&c, "#kitas");
+    c.handle_cmd("join", "#naujas");
+    assert_eq!(c.active_name(), "#naujas");
+    assert!(sent(&q).iter().any(|l| l == "JOIN #naujas"));
+    open_active(&c, "#kitas");
+    // Serverio JOIN atsakas langą jau rado — fokusą vis tiek suteikė /join.
+    c.handle_cmd("join", "#naujas");
+    assert_eq!(c.active_name(), "#naujas");
+}
+
+#[test]
+fn reconnect_remembers_channels_but_connect_elsewhere_does_not() {
+    let (c, _q) = connected();
+    quiet_net(&c);
+    let me = c.my_nick();
+    c.parse_irc(&format!(":srv 001 {me} :Welcome"));
+    c.parse_irc(&format!(":{me}!u@h JOIN #a"));
+    c.handle_cmd("reconnect", "");
+    assert_eq!(c.mu.lock().rejoin, vec!["#a".to_string()]);
+    {
+        let st = c.mu.lock();
+        let i = st.find_ch("#a").unwrap();
+        assert!(st.channels[i].nicks.is_empty());
+    }
+    c.handle_cmd("connect", "127.0.0.2 1");
+    assert!(c.mu.lock().rejoin.is_empty(), "kito tinklo kanalai");
 }

@@ -85,6 +85,10 @@ cp target/release/mircbsd /usr/local/bin/
 # Be konfigūracijos: serveris, portas, [nick], [tls]
 mircbsd irc.libera.chat 6697 manick tls
 mircbsd irc.data.lt 6667 manick
+
+# Pagalba ir versija
+mircbsd --help     # arba -h
+mircbsd --version  # arba -V
 ```
 
 Tada klientas viduje:
@@ -152,7 +156,8 @@ Formatas: `raktas=reikšmė`, `#` – komentaras. Visi raktai su paaiškinimais 
 atgal į config failą) šie raktai: `theme`, `nick_colors`, `timestamps`,
 `ts_format`, `tscolor`, `highlight_color`, `notifications`, `mouse`,
 `maxmessages`, `reconnect`, `ctcpversion`. Ryšio ir slaptažodžių raktai per
-`/set` nekeičiami.
+`/set` nekeičiami. Bool reikšmės (ir config faile): `true`/`false`,
+`on`/`off`, `yes`/`no`, `1`/`0`.
 
 ### Spalvos
 

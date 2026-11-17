@@ -388,3 +388,189 @@ fn hostile_server_cannot_grow_monitor_and_cap_sets_without_bound() {
     assert!(!st.active_caps.contains("another"));
     assert!(st.active_caps.contains("server-time"));
 }
+
+#[test]
+fn nick_in_use_after_registration_does_not_rename() {
+    let (c, q) = setup();
+    c.parse_irc(":srv 001 me :Welcome");
+    sent(&q);
+    c.parse_irc(":srv 433 me taken :Nickname is already in use");
+    assert_eq!(c.my_nick(), "me");
+    assert!(sent(&q).is_empty(), "po 001 433 negali siųsti NICK me_");
+}
+
+#[test]
+fn nick_in_use_during_registration_tries_alternative() {
+    let (c, q) = setup();
+    c.parse_irc(":srv 433 * me :Nickname is already in use");
+    assert_eq!(c.my_nick(), "me_");
+    assert_eq!(sent(&q), vec!["NICK me_"]);
+}
+
+#[test]
+fn welcome_adopts_server_assigned_nick() {
+    let (c, _q) = setup();
+    c.mu.lock().nick = "verylongnick".into();
+    c.parse_irc(":srv 001 verylong :Welcome");
+    assert_eq!(c.my_nick(), "verylong");
+}
+
+#[test]
+fn reconnect_rejoins_channels_and_clears_stale_nicks() {
+    let (c, q) = setup();
+    c.parse_irc(":srv 001 me :Welcome");
+    c.parse_irc(":me!u@h JOIN #a");
+    c.parse_irc(":srv 353 me = #a :me bob");
+    c.parse_irc(":me!u@h JOIN #b");
+    c.parse_irc(":op!u@h KICK #b me :lauk");
+    c.parse_irc(":bob!u@h PRIVMSG me :labas");
+    sent(&q);
+    c.mu.lock().note_disconnect();
+    {
+        let st = c.mu.lock();
+        let i = st.find_ch("#a").unwrap();
+        assert!(st.channels[i].nicks.is_empty(), "seni nick'ai liko");
+    }
+    c.parse_irc(":srv 001 me :Welcome");
+    let out = sent(&q);
+    assert!(out.contains(&"JOIN #a".to_string()), "{out:?}");
+    assert!(
+        !out.iter().any(|l| l == "JOIN #b"),
+        "išmestas kanalas: {out:?}"
+    );
+    assert!(!out.iter().any(|l| l.contains("bob")), "{out:?}");
+    // Antras 001 be atsijungimo nekartoja JOIN.
+    c.parse_irc(":srv 001 me :Welcome");
+    assert!(!sent(&q).iter().any(|l| l.starts_with("JOIN")));
+}
+
+#[test]
+fn kick_of_self_clears_nick_list() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #k");
+    c.parse_irc(":srv 353 me = #k :me bob");
+    c.parse_irc(":op!u@h KICK #k me :lauk");
+    let st = c.mu.lock();
+    let i = st.find_ch("#k").unwrap();
+    assert!(
+        st.channels[i].nicks.is_empty(),
+        "{:?}",
+        st.channels[i].nicks
+    );
+}
+
+#[test]
+fn contains_nick_checks_every_occurrence() {
+    assert!(contains_nick("bobby, bob?", "bob"));
+    assert!(contains_nick("žžbob bob", "bob"));
+    assert!(!contains_nick("bobby bobas", "bob"));
+}
+
+#[test]
+fn channel_notice_goes_to_channel_window() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #n");
+    c.parse_irc(":ChanServ!s@s NOTICE #n :kanalo pranešimas");
+    c.parse_irc(":op!s@s NOTICE @#n :tik opams");
+    c.parse_irc(":srv NOTICE me :asmeninis");
+    c.parse_irc(":x!s@s NOTICE #kitas :be lango");
+    let t = texts(&c, "#n");
+    assert!(t.contains(&"kanalo pranešimas".to_string()), "{t:?}");
+    assert!(t.contains(&"tik opams".to_string()), "{t:?}");
+    let s = texts(&c, SERVER_WINDOW);
+    assert!(s.contains(&"asmeninis".to_string()));
+    assert!(s.contains(&"be lango".to_string()));
+    assert!(c.find_ch("#kitas").is_none());
+}
+
+#[test]
+fn nick_change_renames_private_window() {
+    let (c, _q) = setup();
+    c.parse_irc(":alice!u@h PRIVMSG me :labas");
+    c.parse_irc(":alice!u@h NICK alisa");
+    assert!(c.find_ch("alice").is_none());
+    c.parse_irc(":alisa!u@h PRIVMSG me :vėl");
+    let t = texts(&c, "alisa");
+    assert_eq!(t.len(), 3, "{t:?}"); // labas, NICK, vėl — vienas langas
+}
+
+#[test]
+fn action_highlight_uses_word_match_and_highlight_words() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #a");
+    c.mu.lock().highlight_words = vec!["rust".into()];
+    c.parse_irc(":x!u@h PRIVMSG #a :\x01ACTION meets meme\x01");
+    c.parse_irc(":x!u@h PRIVMSG #a :\x01ACTION loves Rust\x01");
+    let st = c.mu.lock();
+    let i = st.find_ch("#a").unwrap();
+    let hl: Vec<bool> = st.channels[i]
+        .messages
+        .iter()
+        .filter(|m| m.msg_type == MsgType::Action)
+        .map(|m| m.highlight)
+        .collect();
+    assert_eq!(hl, vec![false, true]);
+}
+
+#[test]
+fn join_new_window_does_not_inherit_scroll_and_rejoin_keeps_focus() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #a");
+    c.mu.lock().scroll_off = 7; // vartotojas pasislinko #a
+    c.parse_irc(":me!u@h JOIN #b");
+    assert_eq!(c.active_name(), "#b");
+    assert_eq!(c.mu.lock().scroll_off, 0, "#b paveldėjo #a slinkimą");
+    // Grįžus į #a — jo slinkimas atstatytas.
+    let a = c.find_ch("#a").unwrap();
+    c.switch_ch(a);
+    assert_eq!(c.mu.lock().scroll_off, 7);
+    // Serverio JOIN į jau atidarytą langą (rejoin) fokuso nevagia.
+    c.parse_irc(":me!u@h JOIN #b");
+    assert_eq!(c.active_name(), "#a");
+}
+
+#[test]
+fn closing_active_window_restores_next_windows_scroll() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #a");
+    c.parse_irc(":me!u@h JOIN #b");
+    let a = c.find_ch("#a").unwrap();
+    c.mu.lock().channels[a].scroll_off = 0;
+    c.mu.lock().scroll_off = 9; // #b aktyvus, pasislinkęs
+    c.parse_irc(":me!u@h PART #b");
+    assert_eq!(c.mu.lock().scroll_off, 0);
+}
+
+#[test]
+fn only_one_unread_separator_per_window() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #a");
+    c.parse_irc(":me!u@h JOIN #b"); // aktyvus #b
+    let a = c.find_ch("#a").unwrap();
+    let b = c.find_ch("#b").unwrap();
+    for round in 0..3 {
+        c.parse_irc(&format!(":x!u@h PRIVMSG #a :senas {round}"));
+        c.switch_ch(b);
+        c.parse_irc(&format!(":x!u@h PRIVMSG #a :naujas {round}"));
+        c.switch_ch(a);
+    }
+    let n = texts(&c, "#a")
+        .iter()
+        .filter(|t| t.as_str() == "── naujos žinutės ──")
+        .count();
+    assert_eq!(n, 1);
+    let t = texts(&c, "#a");
+    let pos = t.iter().position(|t| t == "── naujos žinutės ──").unwrap();
+    assert_eq!(t[pos + 1], "naujas 2");
+}
+
+#[test]
+fn statusmsg_privmsg_goes_to_channel_and_user_mode_is_shown() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #s");
+    c.parse_irc(":op!u@h PRIVMSG @#s :tik opams");
+    assert!(c.find_ch("@#s").is_none(), "atidarytas langas „@#s“");
+    assert!(texts(&c, "#s").contains(&"tik opams".to_string()));
+    c.parse_irc(":me MODE me :+iw");
+    assert!(texts(&c, SERVER_WINDOW).iter().any(|t| t == "Mode me: +iw"));
+}

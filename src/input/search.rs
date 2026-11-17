@@ -331,8 +331,15 @@ fn scroll_to_message(c: &Client, st: &mut State, ch_idx: usize, i: usize) {
         first_line += m.render_lines(msg_w, &my_nick).len() as i32;
     }
     let mut total = first_line + found_count;
+    let mut prev_ts = ch.messages[i].ts;
     for m in &ch.messages[i + 1..] {
         total += m.render_lines(msg_w, &my_nick).len() as i32;
+        // Paros skirtiklis piešiamas kaip atskira eilutė (update_render_cache)
+        // — be jo rastoji žinutė atsidurdavo tiek eilučių per žemai/už ekrano.
+        if crate::ui::changed_day(&prev_ts, &m.ts) {
+            total += 1;
+        }
+        prev_ts = m.ts;
     }
     let mut off = total - (first_line + found_count);
     if off < 0 {
@@ -384,6 +391,21 @@ mod tests {
         assert_eq!(c.mu.lock().search_result_idx, 2);
         c.do_search("missing");
         assert_eq!(c.mu.lock().search_result_idx, -1);
+    }
+
+    #[test]
+    fn search_scroll_counts_day_separators() {
+        let c = client();
+        c.mu.lock().width = 80;
+        let t0 = Utc::now() - chrono::Duration::days(10);
+        c.add_msg("*server*", new_msg(t0, "a", "rasta", MsgType::Chat));
+        for d in 1..=3 {
+            let t = t0 + chrono::Duration::days(2 * d);
+            c.add_msg("*server*", new_msg(t, "b", "kita", MsgType::Chat));
+        }
+        c.do_search("rasta");
+        // 3 žinutės po rastosios + 3 paros skirtikliai.
+        assert_eq!(c.mu.lock().scroll_off, 6);
     }
 
     #[test]

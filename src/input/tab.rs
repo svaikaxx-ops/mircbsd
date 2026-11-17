@@ -115,9 +115,17 @@ impl State {
     /// Write `prefix + chosen + suffix (+ hint)` into the input, cursor
     /// before the hint.
     fn apply_completion(&mut self, prefix: &str, chosen: &str, suffix: &str, hint: &str) {
+        // Tekstas UŽ kursoriaus išsaugomas (anksčiau Tab eilutės viduryje jį
+        // ištrindavo); jei jis prasideda tarpu, priesagos tarpas nedubliuojamas.
+        let tail = self.tab_tail.clone();
+        let suffix = if tail.starts_with(' ') {
+            suffix.trim_end_matches(' ')
+        } else {
+            suffix
+        };
         let head = format!("{prefix}{chosen}{suffix}");
         self.input_pos = head.chars().count();
-        self.input = format!("{head}{hint}").chars().collect();
+        self.input = format!("{head}{hint}{tail}").chars().collect();
     }
 }
 
@@ -218,6 +226,7 @@ impl Client {
             st.tab_candidates = candidates;
             st.tab_idx = 0;
             st.tab_prefix = input_str.clone();
+            st.tab_tail = st.input[pos..].iter().collect();
 
             let prefix = strip_last_word(&input_str);
             let suffix = suffix_for(&word, &prefix);

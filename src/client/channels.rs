@@ -81,8 +81,13 @@ impl State {
         if idx >= self.channels.len() || self.channels.len() <= 1 {
             return false;
         }
+        let was_active = idx == self.active_idx;
         self.channels.remove(idx);
         self.normalize_active_idx(Some(idx));
+        if was_active {
+            // Naujai aktyvus langas — jo paties slinkimo pozicija, ne uždaryto.
+            self.scroll_off = self.channels[self.active_idx].scroll_off;
+        }
         true
     }
 

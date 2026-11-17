@@ -69,8 +69,20 @@ pub fn default_config() -> Config {
     }
 }
 
-fn parse_config_bool(v: &str) -> bool {
-    matches!(v, "true" | "1" | "yes")
+/// Config failo bool: tos pačios reikšmės kaip `/set` (true/false/1/0/yes/
+/// no/on/off, be raidžių dydžio). Anksčiau „True“ ar „on“ tyliai reiškė
+/// false — `tls=True` jungdavosi BE TLS. Neatpažinta reikšmė palieka
+/// numatytąją ir duoda įspėjimą.
+fn parse_config_bool(key: &str, v: &str, current: bool, warnings: &mut Vec<String>) -> bool {
+    match parse_bool_value(v) {
+        (b, true) => b,
+        _ => {
+            warnings.push(format!(
+                "Neteisinga {key} reikšmė: {v} (laukta true/false; paliekama {current})"
+            ));
+            current
+        }
+    }
 }
 
 fn strip_surrounding_quotes(v: &str) -> &str {
@@ -122,7 +134,16 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
         let key = k.to_ascii_lowercase();
 
         match key.as_str() {
-            "server" => cfg.server = v.to_string(),
+            "server" => {
+                if v.is_empty() || crate::validate::is_valid_server(v) {
+                    cfg.server = v.to_string();
+                } else {
+                    // Anksčiau Client::new tyliai išvalydavo serverį, o pasveikinimas
+                    // vis tiek rodė „Serveris: …“ ir jungimasis eidavo į „:portas“.
+                    cfg.server.clear();
+                    warnings.push(format!("Neteisingas serverio vardas: {v}"));
+                }
+            }
             "port" => {
                 if is_valid_port(v) {
                     cfg.port = v.to_string();
@@ -131,7 +152,7 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
                     warnings.push(format!("Neteisingas portas: {v} (numatytas 6667)"));
                 }
             }
-            "tls" => cfg.tls = parse_config_bool(v),
+            "tls" => cfg.tls = parse_config_bool(&key, v, cfg.tls, &mut warnings),
             "nick" => {
                 if is_valid_nick(v) {
                     cfg.nick = v.to_string();
@@ -164,15 +185,23 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
                     }
                 }
             }
-            "reconnect" => cfg.reconnect = parse_config_bool(v),
-            "ctcpversion" => cfg.ctcp_version = parse_config_bool(v),
-            "notifications" => cfg.notifications = parse_config_bool(v),
-            "mouse" => cfg.mouse = parse_config_bool(v),
+            "reconnect" => cfg.reconnect = parse_config_bool(&key, v, cfg.reconnect, &mut warnings),
+            "ctcpversion" => {
+                cfg.ctcp_version = parse_config_bool(&key, v, cfg.ctcp_version, &mut warnings)
+            }
+            "notifications" => {
+                cfg.notifications = parse_config_bool(&key, v, cfg.notifications, &mut warnings)
+            }
+            "mouse" => cfg.mouse = parse_config_bool(&key, v, cfg.mouse, &mut warnings),
             "tscolor" => cfg.timestamp_color = v.to_string(),
-            "timestamps" => cfg.timestamps = parse_config_bool(v),
+            "timestamps" => {
+                cfg.timestamps = parse_config_bool(&key, v, cfg.timestamps, &mut warnings)
+            }
             "ts_format" => cfg.ts_format = v.to_string(),
             "highlight_color" => cfg.highlight_color = v.to_string(),
-            "nick_colors" => cfg.nick_colors = parse_config_bool(v),
+            "nick_colors" => {
+                cfg.nick_colors = parse_config_bool(&key, v, cfg.nick_colors, &mut warnings)
+            }
             "sasl" => cfg.sasl_pass = v.to_string(),
             "perform" => {
                 for cmd in v.split(';') {
@@ -192,8 +221,12 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
             }
             "tls_cert" => cfg.tls_cert = expand_home_path(v),
             "tls_key" => cfg.tls_key = expand_home_path(v),
-            "sasl_external" => cfg.sasl_external = parse_config_bool(v),
-            "tls_pinning" => cfg.tls_pinning = parse_config_bool(v),
+            "sasl_external" => {
+                cfg.sasl_external = parse_config_bool(&key, v, cfg.sasl_external, &mut warnings)
+            }
+            "tls_pinning" => {
+                cfg.tls_pinning = parse_config_bool(&key, v, cfg.tls_pinning, &mut warnings)
+            }
             "tls_pin" => cfg.tls_pin = v.trim().to_ascii_lowercase(),
             "theme" => cfg.theme = v.to_ascii_lowercase(),
             _ => {}
@@ -558,5 +591,39 @@ mod tests {
             assert!(unescape_key_seq(bad).is_err(), "{bad:?}");
         }
         assert_eq!(unescape_key_seq("\\x1bé").unwrap(), "\x1bé".as_bytes());
+    }
+
+    fn load_str(text: &str) -> (super::Config, Vec<String>) {
+        let path = std::env::temp_dir().join(format!(
+            "mircbsd-config-b-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, text).expect("write test config");
+        let out = load_config(&path);
+        std::fs::remove_file(&path).expect("remove test config");
+        out
+    }
+
+    #[test]
+    fn config_bools_match_set_syntax() {
+        let (c, w) = load_str("tls=True\nmouse=off\nreconnect=ON\ntimestamps=No\n");
+        assert!(c.tls, "tls=True turi įjungti TLS");
+        assert!(!c.mouse && c.reconnect && !c.timestamps);
+        assert!(w.is_empty(), "{w:?}");
+        // Neatpažinta reikšmė — įspėjimas, numatytoji lieka.
+        let (c, w) = load_str("reconnect=taip\n");
+        assert!(c.reconnect);
+        assert!(w.iter().any(|x| x.contains("reconnect")), "{w:?}");
+    }
+
+    #[test]
+    fn invalid_server_in_config_warns() {
+        let (c, w) = load_str("server=bad server!\n");
+        assert!(c.server.is_empty());
+        assert!(w.iter().any(|x| x.contains("serverio")), "{w:?}");
+        let (c, w) = load_str("server=irc.libera.chat\n");
+        assert_eq!(c.server, "irc.libera.chat");
+        assert!(w.is_empty());
     }
 }

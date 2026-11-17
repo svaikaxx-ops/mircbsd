@@ -29,21 +29,30 @@ const AWAY_THROTTLE_MINUTES: i64 = 10;
 /// Most capability names kept from one `CAP LS`/`NEW` round.
 const MAX_CAP_NAMES: usize = 1024;
 
-/// Does `text` mention `nick` as a whole word (case-insensitive, first occurrence)?
+/// Does `text` mention `nick` as a whole word (case-insensitive)?
+///
+/// Tikrinamos VISOS vietos: „bobby, bob“ turi paryškinti „bob“ (anksčiau
+/// žiūrėta tik į pirmą atitikmenį „bobby“ ir highlight dingdavo).
 pub fn contains_nick(text: &str, nick: &str) -> bool {
     if nick.is_empty() {
         return false;
     }
     let text_low = text.to_lowercase();
     let nick_low = nick.to_lowercase();
-    let Some(idx) = text_low.find(&nick_low) else {
-        return false;
-    };
     let tb = text_low.as_bytes();
-    let before = idx == 0 || !is_nick_char(tb[idx - 1] as char);
-    let end = idx + nick_low.len();
-    let after = end >= tb.len() || !is_nick_char(tb[end] as char);
-    before && after
+    let mut from = 0;
+    while let Some(off) = text_low[from..].find(&nick_low) {
+        let idx = from + off;
+        let before = idx == 0 || !is_nick_char(tb[idx - 1] as char);
+        let end = idx + nick_low.len();
+        let after = end >= tb.len() || !is_nick_char(tb[end] as char);
+        if before && after {
+            return true;
+        }
+        // Kitas simbolis (ne baitas) — find grąžina simbolio ribą.
+        from = idx + text_low[idx..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
 }
 
 /// RFC nick characters: letters, digits and ``_-[]\`^{}|``.
@@ -246,10 +255,15 @@ impl Client {
                 if self.is_ignored(prefix) {
                     return;
                 }
-                self.add_msg(
-                    SERVER_WINDOW,
-                    new_msg(now, from_nick, p(1), MsgType::Notice),
-                );
+                // Kanalo NOTICE (taip pat STATUSMSG „@#kanalas“) — į to kanalo
+                // langą, jei jis atidarytas; kitaip (ir asmeniniai) — *server*.
+                let chan = self.statusmsg_target(p(0));
+                let dest = if self.is_channel(chan) && self.find_ch(chan).is_some() {
+                    chan
+                } else {
+                    SERVER_WINDOW
+                };
+                self.add_msg(dest, new_msg(now, from_nick, p(1), MsgType::Notice));
             }
 
             "332" => {
@@ -382,7 +396,7 @@ impl Client {
 
             "431" => self.err_msg("Nenurodytas slapyvardis"),
             "432" => self.err_msg(&format!("Netinkamas slapyvardis: {}", p(1))),
-            "433" => self.on_nick_in_use(),
+            "433" => self.on_nick_in_use(p(1)),
 
             "ERROR" => {
                 let m = p(0);
@@ -497,12 +511,20 @@ impl Client {
             let mut st = self.mu.lock();
             st.reconnect_delay = Duration::from_secs(5);
             st.nick_attempts = 0;
+            st.registered = true;
+            // 001 pirmasis parametras — serverio PRISKIRTAS nick (gali būti
+            // sutrumpintas iki NICKLEN ar pakeistas 433 sekos metu).
+            if let Some(n) = params.first() {
+                if crate::validate::is_valid_nick(n) {
+                    st.nick = n.clone();
+                }
+            }
         }
         if params.len() > 1 {
             self.server_msg(&params[1..].join(" "));
         }
-        let (pass, auto_join, perform, monitor) = {
-            let st = self.mu.lock();
+        let (pass, auto_join, perform, monitor, rejoin) = {
+            let mut st = self.mu.lock();
             // NickServ password and `perform` (often "IDENTIFY …") belong to
             // the configured server only.
             let creds = st.creds_allowed();
@@ -519,6 +541,7 @@ impl Client {
                     Vec::new()
                 },
                 st.monitor_list.clone(),
+                std::mem::take(&mut st.rejoin),
             )
         };
         // IDENTIFY only with an explicit NickServ password: sasl_pass belongs to
@@ -530,6 +553,21 @@ impl Client {
         for ch in &auto_join {
             self.send(&format!("JOIN {ch}"));
         }
+        // Po pakartotinio prisijungimo grįžtame į kanalus, kuriuose buvome
+        // (ir į /join be ryšio atidarytus) — anksčiau jų langai likdavo
+        // „mirę“ (be JOIN, žinutės → 442/404).
+        let mut joined: Vec<String> = Vec::new();
+        for ch in rejoin {
+            let dup = auto_join.iter().chain(joined.iter()).any(|a| {
+                a.split_whitespace()
+                    .next()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(&ch))
+            });
+            if !dup && self.is_channel(&ch) {
+                self.send(&format!("JOIN {ch}"));
+                joined.push(ch);
+            }
+        }
         for cmd in &perform {
             self.run_perform(cmd);
         }
@@ -538,7 +576,16 @@ impl Client {
         }
     }
 
-    fn on_nick_in_use(&self) {
+    fn on_nick_in_use(&self, wanted: &str) {
+        if self.mu.lock().registered {
+            // Po registracijos 433 atsako į /nick: dabartinis nick nesikeičia,
+            // automatinis „nick_“ bandymas čia būtų nepageidaujamas pervadinimas.
+            self.err_msg(&format!(
+                "Slapyvardis {} jau naudojamas",
+                sanitize_text(wanted)
+            ));
+            return;
+        }
         self.err_msg("Slapyvardis jau naudojamas!");
         let (cand, nick) = {
             let mut st = self.mu.lock();
@@ -591,6 +638,7 @@ impl Client {
         let from = msg.from_nick();
         let mut st = self.mu.lock();
         let is_me = self.nick_equal(from, &st.nick);
+        let existed = st.find_ch(ch).is_some();
         let Some(i) = self.ensure_ch(&mut st, ch) else {
             // Rejected: invalid name (ignore) or channel budget (tell the user).
             let hit = Self::take_limit_warning(&mut st, ch);
@@ -604,10 +652,14 @@ impl Client {
             return;
         };
         st.channels[i].add_nick(from, None);
-        if is_me {
-            st.active_idx = i;
-        }
         drop(st);
+        // Į NAUJAI atidarytą kanalą pereinama per switch_ch (išsaugomas
+        // ankstesnio lango slinkimas; anksčiau active_idx keistas tiesiogiai ir
+        // naujas langas paveldėdavo seno scroll_off). Grįžimas į jau atidarytą
+        // langą (rejoin po pakartotinio prisijungimo) fokuso nevagia.
+        if is_me && !existed {
+            self.switch_ch(i);
+        }
 
         // extended-join: JOIN <channel> <account|*> <realname>
         let mut join_msg = String::new();
@@ -677,7 +729,12 @@ impl Client {
             // find, not ensure: KICK must not create windows.
             let found = match st.find_ch(ch) {
                 Some(i) => {
-                    st.channels[i].remove_nick(kicked, None);
+                    if self.nick_equal(kicked, &me) {
+                        // Mus išmetė: kanale nebesame — senas sąrašas melagingas.
+                        st.channels[i].clear_nicks();
+                    } else {
+                        st.channels[i].remove_nick(kicked, None);
+                    }
                     true
                 }
                 None => false,
@@ -715,10 +772,22 @@ impl Client {
                 st.nick = new_nick.to_string();
             }
             let mut names = Vec::new();
+            let is_chan = |n: &str| self.is_channel(n);
             for ch in st.channels.iter_mut() {
                 if ch.has_nick(from) {
                     ch.rename_nick(from, new_nick, None);
                     names.push(ch.name.clone());
+                } else if ch.name != SERVER_WINDOW
+                    && !is_chan(&ch.name)
+                    && self.nick_equal(&ch.name, from)
+                {
+                    // Privatus langas seka pašnekovo nick'ą (kitaip jo
+                    // tolesnės žinutės atidarytų naują langą).
+                    let renamed = crate::sanitize::sanitize_chan_name(new_nick);
+                    if !renamed.is_empty() {
+                        ch.name = renamed;
+                        names.push(ch.name.clone());
+                    }
                 }
             }
             names
@@ -734,6 +803,14 @@ impl Client {
         let mode_str = msg.param(1);
         let params = &msg.params;
         if !self.is_channel(target) {
+            // Vartotojo režimai (MODE mano_nick +i) anksčiau dingdavo be žinios.
+            if params.len() > 1 {
+                self.server_msg(&format!(
+                    "Mode {}: {}",
+                    sanitize_text(target),
+                    sanitize_text(&params[1..].join(" "))
+                ));
+            }
             return;
         }
         let (_, signs, modes, _, chan_modes) = self.isup_snapshot();
@@ -780,8 +857,24 @@ impl Client {
 
     // ---- messages ----
 
+    /// STATUSMSG tikslas („@#kanalas“, „+#kanalas“) → kanalo vardas; kiti
+    /// tikslai nekeičiami.
+    fn statusmsg_target<'a>(&self, target: &'a str) -> &'a str {
+        if self.is_channel(target) {
+            return target;
+        }
+        let signs = self.isup.read().prefix_signs.clone();
+        let chan = target.trim_start_matches(|c: char| signs.contains(c));
+        if chan.len() != target.len() && self.is_channel(chan) {
+            chan
+        } else {
+            target
+        }
+    }
+
     fn on_privmsg(&self, msg: &IrcLine, now: DateTime<Utc>) {
-        let target = msg.param(0);
+        // „@#kanalas“ anksčiau atidarydavo privatų langą „@#kanalas“.
+        let target = self.statusmsg_target(msg.param(0));
         let text = msg.param(1);
         let from = msg.from_nick();
         let me = self.my_nick();
@@ -806,9 +899,17 @@ impl Client {
                 } else {
                     target
                 };
-                let hl = strip_irc_format(action)
-                    .to_lowercase()
-                    .contains(&me.to_lowercase());
+                // Ta pati taisyklė kaip PRIVMSG: PM, nick kaip žodis, highlight_words.
+                let plain = strip_irc_format(action);
+                let plain_low = plain.to_lowercase();
+                let hl = self.nick_equal(target, &me)
+                    || contains_nick(&plain, &me)
+                    || self
+                        .mu
+                        .lock()
+                        .highlight_words
+                        .iter()
+                        .any(|w| plain_low.contains(&w.to_lowercase()));
                 self.add_msg(dest, new_msg_hl(now, from, action, MsgType::Action, hl));
             } else if inner.starts_with("VERSION") {
                 let enabled = self.mu.lock().ctcp_version;

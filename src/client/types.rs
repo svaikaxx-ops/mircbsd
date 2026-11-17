@@ -129,6 +129,12 @@ pub struct State {
     pub sasl_ok: bool,
     pub sasl_pending: bool,
     pub nick_attempts: u32,
+    /// 001 gautas šiame ryšyje (po jo 433 — tik klaida, ne automatinis
+    /// nick keitimas; /nick laukia serverio NICK patvirtinimo).
+    pub registered: bool,
+    /// Kanalai, į kuriuos grįžtama po (pakartotinės) registracijos: pildoma
+    /// nutrūkus ryšiui (kanalai, kuriuose buvome) ir /join be ryšio.
+    pub rejoin: Vec<String>,
     /// Connection epoch: /connect and /reconnect bump it; stale threads exit.
     pub connect_gen: i64,
     pub cap_available: HashSet<String>,
@@ -183,6 +189,8 @@ pub struct State {
     pub tab_candidates: Vec<String>,
     pub tab_idx: usize,
     pub tab_prefix: String,
+    /// Įvesties tekstas už kursoriaus Tab pradžioje (išlaikomas užbaigiant).
+    pub tab_tail: String,
     pub keys_debug: bool,
     pub search_mode: bool,
     pub search_query: String,
@@ -267,6 +275,8 @@ impl Client {
             sasl_ok: false,
             sasl_pending: false,
             nick_attempts: 0,
+            registered: false,
+            rejoin: Vec::new(),
             connect_gen: 0,
             cap_available: HashSet::new(),
             last_urls: Vec::new(),
@@ -304,6 +314,7 @@ impl Client {
             tab_candidates: Vec::new(),
             tab_idx: 0,
             tab_prefix: String::new(),
+            tab_tail: String::new(),
             keys_debug: false,
             search_mode: false,
             search_query: String::new(),
@@ -451,17 +462,49 @@ impl State {
         self.cred_server.is_empty() || self.server.eq_ignore_ascii_case(&self.cred_server)
     }
 
+    /// Ryšys nutrūko: įsimename kanalus, kuriuose buvome (grįšime po 001),
+    /// ir išvalome nick'ų sąrašus — jie nebeatitinka tikrovės (be JOIN/PART
+    /// srauto senas sąrašas liktų amžinai, o po grįžimo 353 jį tik papildytų).
+    pub fn note_disconnect(&mut self) {
+        self.registered = false;
+        let me = self.nick.clone();
+        let mut rejoin = std::mem::take(&mut self.rejoin);
+        for ch in self.channels.iter_mut() {
+            if ch.name != SERVER_WINDOW
+                && !ch.is_private
+                && ch.has_nick(&me)
+                && !rejoin.iter().any(|r| r.eq_ignore_ascii_case(&ch.name))
+            {
+                rejoin.push(ch.name.clone());
+            }
+            ch.clear_nicks();
+        }
+        self.rejoin = rejoin;
+    }
+
     /// Insert the "new messages" separator before the first unread message.
     pub(crate) fn insert_unread_separator(target: &mut Channel) {
         if target.unread > 0
             && target.unread_from > 0
             && (target.unread_from as usize) < target.messages.len()
         {
-            let at = target.unread_from as usize;
-            let sep = new_msg(Utc::now(), "", "── naujos žinutės ──", MsgType::Server);
+            let mut at = target.unread_from as usize;
+            // Vienintelė žyma: ankstesnė (jau perskaityta) pašalinama, kitaip
+            // kiekvienas apsilankymas palikdavo dar vieną „naujos žinutės“.
+            if let Some(old) = target.messages[..at].iter().rposition(is_unread_separator) {
+                target.messages.remove(old);
+                at -= 1;
+            }
+            let sep = new_msg(Utc::now(), "", UNREAD_SEPARATOR, MsgType::Server);
             target.messages.insert(at, sep);
             target.render_gen += 1;
             target.invalidate_render_cache();
         }
     }
+}
+
+const UNREAD_SEPARATOR: &str = "── naujos žinutės ──";
+
+fn is_unread_separator(m: &Message) -> bool {
+    m.msg_type == MsgType::Server && m.nick.is_empty() && m.text == UNREAD_SEPARATOR
 }

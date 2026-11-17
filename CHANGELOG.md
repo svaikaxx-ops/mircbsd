@@ -28,6 +28,45 @@ pagal [SemVer](https://semver.org/).
 - **`NO_COLOR`** – spalvos išjungiamos, fonai rodomi inversija.
 - **Šviesi tema** – akcentų ir mIRC spalvos (balta, geltona, šviesiai
   pilka) pritaikytos šviesiam fonui; tamsioje temoje mIRC juoda – pilka.
+- **`mircbsd --help` / `-h`, `--version` / `-V`**; nežinomas `-` parametras –
+  klaida (išėjimo kodas 2), vienas argumentas be porto – įspėjimas.
+- **Grįžimas į kanalus** po pakartotinio prisijungimo (automatinio ar
+  `/reconnect`) – anksčiau langai likdavo „mirę“; `/join` be ryšio
+  prisijungia po registracijos. `/connect` į kitą serverį seno tinklo
+  kanalų nejungia.
+- **Delete** (`ESC[3~`) ir Home/End variantai (`ESC[1~`/`4~`/`7~`/`8~`,
+  `ESC O H/F`) – tmux, screen, rxvt, Linux konsolė.
+- Vartotojo režimai (`MODE nick +i`) rodomi `*server*` lange.
+
+### Ištaisyta (funkcinė peržiūra po perrašymo į Rust)
+
+- **433 po registracijos** (atsakas į `/nick`) automatiškai pervadindavo į
+  `nick_`; `/nick` iškart perrašydavo savo nick (433/432 atveju likdavo
+  melagingas) – dabar laukiama serverio `NICK`. 001 serverio priskirtas nick
+  priimamas.
+- **Naujas ryšys atstato ISUPPORT** (CHANTYPES, PREFIX, CASEMAPPING,
+  limitai) – `/connect` į kitą serverį nebenaudoja seno serverio taisyklių.
+- **Nick'ų sąrašai** išvalomi nutrūkus ryšiui ir kai mus išmeta (KICK).
+- **Highlight**: tikrinamos visos nick'o vietos („bobby, bob“); ACTION
+  naudoja tą pačią taisyklę ir `highlight_words` („meme“ nebeparyškina „me“).
+- **Kanalo NOTICE** ir STATUSMSG (`@#kanalas`) – į kanalo langą (anksčiau
+  NOTICE į `*server*`, o PRIVMSG atidarydavo langą „@#kanalas“).
+- **Privatus langas seka pašnekovo NICK** (nebeatsiranda antras langas).
+- **`/msg` be ryšio** žinutės nebeparodo kaip išsiųstos.
+- **`maxmessages` < 4** – buferis augo be ribų; nukirpus žinutes
+  „naujos žinutės“ žyma nebeslenka per toli; žyma tik viena lange.
+- **Tab eilutės viduryje** ištrindavo tekstą už kursoriaus.
+- **Config bool** – `tls=True`, `mouse=on` anksčiau tyliai reiškė false
+  (`tls=True` → jungtis be TLS); dabar kaip `/set`, neatpažinta reikšmė –
+  įspėjimas. Neteisingas `server=` – įspėjimas.
+- **`/set timestamps|ts_format|tscolor|highlight_color`** perpiešia senas
+  žinutes (renderio cache).
+- **Paieška**: `n`/`p` navigacija baigiasi pradėjus rašyti (anksčiau po
+  paieškos eilutės nebuvo galima pradėti raide „n“/„p“); slinkimas įskaito
+  paros skirtiklius.
+- **Langų perjungimas**: JOIN/PART nebepaveldi kito lango slinkimo;
+  serverio JOIN į atidarytą langą fokuso nevagia.
+- **`wrap_text`** – likutis po tarpo + platus simbolis galėjo viršyti plotį.
 
 ## [0.4.8] – 2026-11-16 – perrašymas į Rust
 

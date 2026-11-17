@@ -262,6 +262,11 @@ impl Client {
         }
         {
             let mut st = self.mu.lock();
+            if !st.server.eq_ignore_ascii_case(parts[0]) {
+                // Kitas tinklas: seno serverio kanalų ten nejungiame.
+                st.note_disconnect();
+                st.rejoin.clear();
+            }
             st.server = parts[0].to_string();
             st.port = parts[1].to_string();
             if parts.len() >= 3 {
@@ -297,8 +302,13 @@ impl Client {
         }
         let has_conn = {
             let mut st = self.mu.lock();
-            st.nick = new_nick.to_string();
-            st.conn.is_some()
+            // Po registracijos nick keičiamas tik gavus serverio NICK
+            // patvirtinimą (433/432 atveju jis lieka senas); iki jos — iškart,
+            // nes jis bus naudojamas registruojantis.
+            if !st.registered {
+                st.nick = new_nick.to_string();
+            }
+            st.connected
         };
         if has_conn {
             self.send(&format!("NICK {new_nick}"));
@@ -327,24 +337,37 @@ impl Client {
             ));
             return;
         }
-        let refused = {
+        let (opened, refused) = {
             let mut st = self.mu.lock();
-            if self.ensure_ch(&mut st, &ch_name).is_none() {
-                let hit = st.chan_limit_hit.clone();
-                if !hit.is_empty() && hit == sanitize_chan_name(&ch_name) {
-                    st.chan_limit_hit.clear();
-                    Some(hit)
-                } else {
-                    None
+            match self.ensure_ch(&mut st, &ch_name) {
+                Some(i) => (Some(i), None),
+                None => {
+                    let hit = st.chan_limit_hit.clone();
+                    if !hit.is_empty() && hit == sanitize_chan_name(&ch_name) {
+                        st.chan_limit_hit.clear();
+                        (None, Some(hit))
+                    } else {
+                        (None, None)
+                    }
                 }
-            } else {
-                None
             }
         };
+        // Vartotojo /join iškart rodo kanalo langą (serverio JOIN fokuso
+        // nebekeičia jau atidarytam langui — žr. on_join).
+        if let Some(i) = opened {
+            self.switch_ch(i);
+        }
         if let Some(hit) = refused {
             self.err_msg(&format!(
                 "ĮSPĖJIMAS: pasiektas kanalų limitas — kanalas „{hit}“ neatidarytas"
             ));
+        }
+        if !self.is_connected() {
+            // Be ryšio: kanalas bus prijungtas po registracijos (001).
+            let mut st = self.mu.lock();
+            if !st.rejoin.iter().any(|r| r.eq_ignore_ascii_case(&ch_name)) {
+                st.rejoin.push(ch_name.clone());
+            }
         }
         if self.is_connected() {
             if let Some(key) = key {
@@ -428,10 +451,13 @@ impl Client {
             self.err_msg("Netinkamas gavėjas (raidės, skaičiai ir .-_ ; max 100)");
             return;
         }
-        if self.is_connected() {
-            for part in split_for_privmsg(target, text) {
-                self.send(&format!("PRIVMSG {target} :{part}"));
-            }
+        if !self.is_connected() {
+            // Anksčiau žinutė be ryšio vis tiek būdavo parodoma kaip išsiųsta.
+            self.err_msg("Neprisijungta");
+            return;
+        }
+        for part in split_for_privmsg(target, text) {
+            self.send(&format!("PRIVMSG {target} :{part}"));
         }
         {
             let mut st = self.mu.lock();
@@ -1050,6 +1076,7 @@ impl Client {
             }
             let ch_name = st.channels[idx].name.clone();
             st.remove_ch(idx);
+            st.rejoin.retain(|r| !r.eq_ignore_ascii_case(&ch_name));
             (idx, ch_name)
         };
         let _ = idx;

@@ -383,3 +383,64 @@ fn mouse_report_through_handle_key() {
     c.handle_key(b"\x1b[<64;20;10M");
     assert_eq!(c.mu.lock().scroll_off, 3);
 }
+
+#[test]
+fn tab_in_middle_keeps_text_after_cursor() {
+    let c = client();
+    open_active(&c, "#chan");
+    {
+        let mut st = c.mu.lock();
+        let ch = st.active_chan_mut().unwrap();
+        ch.add_nick("Janina", None);
+        ch.add_nick("Jonas", None);
+    }
+    set_input(&c, "sveika Ja kaip sekasi");
+    c.mu.lock().input_pos = "sveika Ja".chars().count();
+    c.handle_key(b"\t");
+    assert_eq!(input_text(&c), "sveika Janina kaip sekasi");
+    c.handle_key(b"!");
+    assert_eq!(input_text(&c), "sveika Janina! kaip sekasi");
+
+    // Keli kandidatai: užuomina „[i/N]“ pašalinama, uodega lieka.
+    set_input(&c, "J tekstas");
+    c.mu.lock().input_pos = 1;
+    c.handle_key(b"\t");
+    assert!(input_text(&c).ends_with(" tekstas"), "{}", input_text(&c));
+    c.handle_key(b"x");
+    let got = input_text(&c);
+    assert!(
+        !got.contains("[1/2]") && got.ends_with(" tekstas"),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn delete_home_end_csi_variants() {
+    let c = client();
+    set_input(&c, "abc");
+    c.handle_key(b"\x1b[1~");
+    assert_eq!(c.mu.lock().input_pos, 0);
+    c.handle_key(b"\x1b[3~");
+    assert_eq!(input_text(&c), "bc");
+    c.handle_key(b"\x1b[4~");
+    assert_eq!(c.mu.lock().input_pos, 2);
+    c.handle_key(b"\x1b[3~"); // kursorius gale — nieko
+    assert_eq!(input_text(&c), "bc");
+    c.handle_key(b"\x1bOH");
+    assert_eq!(c.mu.lock().input_pos, 0);
+    c.handle_key(b"\x1bOF");
+    assert_eq!(c.mu.lock().input_pos, 2);
+}
+
+#[test]
+fn typing_ends_search_navigation_so_n_can_start_a_line() {
+    let c = client();
+    c.mu.lock().last_search_query = "zzz".into();
+    c.handle_key(b"\x1b[5~"); // PgUp — navigacija išlieka
+    assert_eq!(c.mu.lock().last_search_query, "zzz");
+    c.handle_key(b"a");
+    c.handle_key(b"\x7f"); // tuščia įvestis vėl
+    c.handle_key(b"n");
+    c.handle_key(b"ice");
+    assert_eq!(input_text(&c), "nice");
+}
