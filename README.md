@@ -39,7 +39,7 @@ Terminalo IRC klientas, parašytas Rust. Veikia **Debian** (Linux) ir FreeBSD.
   jungimasis iš naujo, MONITOR (`/notify`).
 - Žurnalai pagal dieną, paieška žurnaluose, JSON eksportas.
 - Kanalų ir nick'ų palyginimas pagal serverio `CASEMAPPING`: `ascii`,
-  `rfc1459`, `strict-rfc1459` ir Unicode (`rfc8265` / `rfc7613` / `utf8` —
+  `rfc1459`, `strict-rfc1459` ir Unicode (`rfc8265` / `rfc7613` / `utf8` –
   „#Žalgiris“ ≡ „#žalgiris“; apytikslis PRECIS be NFC ir pločio atvaizdavimo).
 - Apsauga nuo terminalo valdymo sekų ir IRC komandų injekcijos (žr.
   [Saugumas](#saugumas)).
@@ -100,9 +100,9 @@ pkg install curl
 curl -fsSL https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh
 ```
 
-Skriptas atpažįsta Termux ir diegia **Android binarį** (`aarch64-linux-android`)
+Skriptas atpažįsta Termux ir diegia **Android binarą** (`aarch64-linux-android`)
 į `$PREFIX/bin` (jau PATH'e, sudo nereikia). Android binaris naudoja Android
-DNS ir laiko juostą – statinis Linux (musl) binaris Android'e serverių vardų
+DNS ir laiko juostą – statinis Linux (musl) binaras Android'e serverių vardų
 nerastų (nėra `/etc/resolv.conf`).
 
 - `/open` atidaro nuorodas Android naršyklėje (`termux-open-url`).
@@ -175,7 +175,7 @@ $EDITOR ~/.config/mircbsd/config
 
 Neprivalomi paketai: `sudo apt install xdg-utils libnotify-bin` – `/open`
 (URL naršyklėje) ir darbalaukio pranešimai apie paminėjimus. TLS šakniniai
-sertifikatai įkompiliuoti į binarį – papildomų paketų nereikia.
+sertifikatai įkompiliuoti į binarą – papildomų paketų nereikia.
 
 **Atnaujinimas:** pakeiskite `VER` ir pakartokite atsisiuntimą bei `install`;
 konfigūracija `~/.config/mircbsd` lieka nepaliesta.
@@ -291,11 +291,12 @@ Formatas: `raktas=reikšmė`, `#` – komentaras. Visi raktai su paaiškinimais 
 | `logdir` | `~/irclogs` | Žurnalų katalogas |
 
 `/set` be argumentų parodo dabartines reikšmes. Keičiami gyvai (ir įrašomi
-atgal į config failą) šie raktai: `theme`, `nick_colors`, `show_joins`, `sidebar`,
-`timestamps`, `ts_format`, `tscolor`, `highlight_color`, `notifications`,
-`mouse`, `maxmessages`, `maxmemory`, `reconnect`, `ctcpversion`. Ryšio ir slaptažodžių raktai per
-`/set` nekeičiami. Bool reikšmės (ir config faile): `true`/`false`,
-`on`/`off`, `yes`/`no`, `1`/`0`.
+atgal į config failą) šie raktai: `theme`, `nick_colors`, `show_joins`,
+`sidebar`, `timestamps`, `ts_format`, `tscolor`, `highlight_color`,
+`notifications`, `mouse`, `maxmessages`, `maxmemory`, `reconnect`,
+`ctcpversion`. Ryšio ir slaptažodžių raktai per `/set` nekeičiami.
+Bool reikšmės (ir config faile): `true`/`false`, `on`/`off`, `yes`/`no`,
+`1`/`0`.
 
 ### Spalvos
 
@@ -464,12 +465,12 @@ Veiksmai: `chan-next`, `chan-prev`, `complete`, `hist-up`, `hist-down`,
 - **Slaptažodžiai nekeliauja į istoriją** – eilutės su `IDENTIFY` (pvz.
   `/msg nickserv IDENTIFY pass`), SASL `AUTHENTICATE` bei `/join` su kanalo
   raktu nėra saugomos nei ↑ istorijoje, nei `history` faile. Atpažintos
-  NickServ/ChanServ (bet kurios `*Serv` paslaugos) slaptažodžių komandos —
-  `IDENTIFY`, `REGISTER`, `SET PASSWORD`, `GHOST/RECOVER <nick> <slapt.>` —
+  NickServ/ChanServ (bet kurios `*Serv` paslaugos) slaptažodžių komandos –
+  `IDENTIFY`, `REGISTER`, `SET PASSWORD`, `GHOST/RECOVER <nick> <slapt.>` –
   ekrane (taigi ir `/search`), žurnale ir JSON eksporte rodomos kaip
-  „[slaptažodis paslėptas]“; serveriui siunčiamos nepakeistos. Slaptų duomenų atpažinimas
-  remiasi komandų forma, todėl kitų servisų ar neįprastų komandų atveju jo
-  nereikėtų laikyti garantuotu.
+  „[slaptažodis paslėptas]“; serveriui siunčiamos nepakeistos. Slaptų duomenų
+  atpažinimas remiasi komandų forma, todėl kitų servisų ar neįprastų
+  komandų atveju jo nereikėtų laikyti garantuotu.
 - **Terminalo valdymo simbolių apsauga** – visos tinklo žinutės išvalomos prieš
   rodymą: ESC/C1/C0 kontrolės kodai (ANSI ekrano trynimas, OSC antraščių ir
   iškarpinės injekcija) negali nukeliauti į terminalą.
@@ -477,13 +478,13 @@ Veiksmai: `chan-next`, `chan-prev`, `complete`, `hist-up`, `hist-down`,
   žinutės tekste neįmanoma „įkišti“ naujos IRC komandos.
 - **TLS** – įjungiamas su `tls=true` arba `mircbsd host 6697 nick tls`;
   sertifikatas tikrinamas (`MinVersion: TLS 1.2`). Slaptažodžiams rinkitės
-  SASL (`sasl=`), kuris vyksta šifruotu kanalu – be TLS IDENTIFY per Plaintext
-  eina atviru tekstu.
+  SASL (`sasl=`), kuris vyksta šifruotu kanalu – be TLS IDENTIFY per
+  plaintext eina atviru tekstu.
 - **SASL EXTERNAL** (`sasl_external=true` + `tls_cert`/`tls_key`) –
   autentifikacija kliento sertifikatu, be slaptažodžio.
 - **TLS pinning** (`tls_pinning=true`) – serverio sertifikato viešojo rakto
   sha256 atspaudas (TOFU): pirmo jungimo atspaudas išsaugomas
-  `fingerprints` faile; radus kita atspaudą, ryšys nutraukiamas dar prieš
+  `fingerprints` faile; radus kitą atspaudą, ryšys nutraukiamas dar prieš
   NICK/USER (galimas MITM). `tls_pin=` – rankinis atspaudas.
   Įjungus pinning, pasitikėjimas grindžiamas atspaudu, o įprasta sertifikatų
   grandinės ir serverio vardo patikra neatliekama. TOFU pirmojo jungimosi metu
@@ -491,7 +492,7 @@ Veiksmai: `chan-next`, `chan-prev`, `complete`, `hist-up`, `hist-down`,
   šaltinio gautą `tls_pin`. Nepavykus perskaityti ar išsaugoti atspaudų,
   ryšys nutraukiamas.
 - **`/set`** perrašo tik nešlamčius raktus (`timestamps`, `theme` ir kt.) –
-  nesaugios reikšmės (`sasl`, `password`, `server`, `tls`) per /set
+  nesaugios reikšmės (`sasl`, `password`, `server`, `tls`) per `/set`
   nekeičiamos.
 - **Naudotojo nick/kanalų pavadinimai** tikrinami pagal RFC simbolių rinkinį,
   todėl valdymo simboliai negali patekti net į serverio komandas.
@@ -510,9 +511,10 @@ cargo build --locked --release
 cargo audit               # reikia atskirai įdiegto cargo-audit
 ```
 
-CI atlieka Linux ir FreeBSD (14, VM) patikras – unit, E2E ir `install.sh` –, tikrina minimalią Rust versiją ir kas
-savaitę paleidžia priklausomybių saugumo auditą. E2E patikrai reikia Python 3,
-PTY ir leidimo naudoti vietinį tinklą. Daugiau – [CONTRIBUTING.md](CONTRIBUTING.md).
+CI atlieka Linux ir FreeBSD (14, VM) patikras – unit, E2E ir `install.sh` –,
+tikrina minimalią Rust versiją ir kas savaitę paleidžia priklausomybių
+saugumo auditą. E2E patikrai reikia Python 3, PTY ir leidimo naudoti
+vietinį tinklą. Daugiau – [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Pagrindiniai kodo moduliai: `client` valdo ryšį ir būseną, `proto` apdoroja
 IRC protokolą, `input` – komandas ir klavišus, `ui` – atvaizdavimą, o
