@@ -51,7 +51,7 @@ Terminalo IRC klientas, parašytas Rust. Veikia **Debian** (Linux) ir FreeBSD.
 ## Diegimas ir atnaujinimas (rekomenduojama)
 
 Viena komanda – Debian, Ubuntu, Raspberry Pi OS ir bet kuris kitas Linux
-(x86_64, ARM 64, ARM 32). Rust nereikia:
+(x86_64, ARM 64, ARM 32, ARMv6 – Pi Zero). Rust nereikia:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh
@@ -88,16 +88,16 @@ Jei nenorite paleisti skripto – tą patį galima padaryti ranka.
 | x86_64 (Intel/AMD) | `x86_64-unknown-linux-musl` | **rekomenduojama** – statinis, bet kuris Linux (Debian 12, 13, …) |
 | ARM 64 (Raspberry Pi 4/5, ARM serveriai) | `aarch64-unknown-linux-musl` | **rekomenduojama** – statinis, bet kuris Linux (nuo v0.5.1) |
 | ARM 32 (Raspberry Pi 2/3/4 su 32 bitų OS) | `armv7-unknown-linux-musleabihf` | statinis, bet kuris Linux (nuo v0.5.1) |
+| ARMv6 (Raspberry Pi 1, Zero, Zero W) | `arm-unknown-linux-musleabihf` | statinis, bet kuris Linux (nuo v0.5.2) |
 | x86_64 | `x86_64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
 | ARM 64 | `aarch64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
 
-Architektūrą parodo `uname -m`: `x86_64`, `aarch64` (64 bitų ARM) arba
-`armv7l` (32 bitų ARM). Raspberry Pi 1 ir Zero/Zero W (`armv6l`) paruošto
-binario neturi – kompiliuokite iš šaltinio.
+Architektūrą parodo `uname -m`: `x86_64`, `aarch64` (64 bitų ARM),
+`armv7l` (32 bitų ARM) arba `armv6l` (Raspberry Pi 1, Zero, Zero W).
 
 ```sh
 VER=v0.5.1                          # naujausia versija – žr. Releases
-T=x86_64-unknown-linux-musl         # arba aarch64-unknown-linux-musl / armv7-unknown-linux-musleabihf
+T=x86_64-unknown-linux-musl         # arba aarch64-unknown-linux-musl / armv7-… / arm-unknown-linux-musleabihf
 URL=https://github.com/svaikaxx-ops/mircbsd/releases/download/$VER
 cd /tmp
 curl -LO $URL/mircbsd-$VER-$T.tar.gz

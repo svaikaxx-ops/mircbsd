@@ -73,7 +73,7 @@ case "$arch" in
     x86_64|amd64) TARGET="x86_64-unknown-linux-musl" ;;
     aarch64|arm64) TARGET="aarch64-unknown-linux-musl" ;;
     armv7l|armv7*|armv8l) TARGET="armv7-unknown-linux-musleabihf" ;;
-    armv6l|armv6*) die "ARMv6 (Raspberry Pi 1 / Zero / Zero W) paruošto binario nėra – kompiliuokite iš šaltinio (README)" ;;
+    armv6l|armv6*) TARGET="arm-unknown-linux-musleabihf" ;;   # Pi 1 / Zero / Zero W
     *) die "nepalaikoma architektūra: $arch – kompiliuokite iš šaltinio (README)" ;;
 esac
 

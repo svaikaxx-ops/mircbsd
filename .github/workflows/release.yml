@@ -33,6 +33,11 @@ jobs:
             os: ubuntu-latest
             cross: true
             qemu: qemu-arm
+          # ARMv6 (Raspberry Pi 1, Zero, Zero W)
+          - target: arm-unknown-linux-musleabihf
+            os: ubuntu-latest
+            cross: true
+            qemu: qemu-arm -cpu arm1176
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

@@ -14,6 +14,10 @@ pagal [SemVer](https://semver.org/).
   diegia atomiškai (`mv`), sukuria konfigūraciją tik jei jos nėra;
   `--system`, `--version`, `--dir`, `--force`, `--uninstall`. POSIX `sh`,
   veikia su `curl` arba `wget`.
+- **Release: `arm-unknown-linux-musleabihf`** — statinis ARMv6 binaris
+  (Raspberry Pi 1, Zero, Zero W); kompiliuojamas per `cross`, tikrinamas
+  per `qemu-arm -cpu arm1176` (Pi Zero procesorius), kad nepatektų ARMv7
+  instrukcijų.
 
 ## [0.5.1] – 2026-11-17 – ARM musl binaris, priklausomybės
 
