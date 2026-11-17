@@ -266,6 +266,30 @@ pub fn is_regional_indicator(r: char) -> bool {
     (0x1F1E6..=0x1F1FF).contains(&cp)
 }
 
+/// Apytikslis Unicode `Extended_Pictographic` (emoji ir piktogramos).
+fn is_pictographic(r: char) -> bool {
+    matches!(
+        r as u32,
+        0x00A9
+            | 0x00AE
+            | 0x203C
+            | 0x2049
+            | 0x2122
+            | 0x2139
+            | 0x2194..=0x21AA
+            | 0x2300..=0x23FF
+            | 0x24C2
+            | 0x25A0..=0x27BF
+            | 0x2934..=0x2935
+            | 0x2B05..=0x2B55
+            | 0x3030
+            | 0x303D
+            | 0x3297
+            | 0x3299
+            | 0x1F000..=0x1FAFF
+    )
+}
+
 /// Grafinio klasterio plotis ląstelėmis.
 pub fn cluster_width(cluster: &str) -> i32 {
     if cluster.is_empty() {
@@ -276,6 +300,7 @@ pub fn cluster_width(cluster: &str) -> i32 {
     let mut _ri_count = 0i32;
     let mut has_emoji = false;
     let mut has_modifier = false;
+    let mut all_pictographic = true;
     let mut sum = 0i32;
 
     for r in cluster.chars() {
@@ -300,10 +325,16 @@ pub fn cluster_width(cluster: &str) -> i32 {
         if w == 2 {
             has_emoji = true;
         }
+        if w > 0 && !is_pictographic(r) {
+            all_pictographic = false;
+        }
     }
 
     if has_zwj {
-        return 2;
+        // Į vieną 2 ląstelių glifą terminalai jungia tik emoji. „a‍中“ ar
+        // „文‍ “ rodomi kaip atskiri simboliai — skaičiuojam sumą, kitaip
+        // eilutė ekrane būtų platesnė nei apskaičiuota (perpildymas).
+        return if all_pictographic && sum > 0 { 2 } else { sum };
     }
     if has_ri {
         return 2;
