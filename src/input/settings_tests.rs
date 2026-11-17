@@ -76,6 +76,51 @@ fn set_maxmessages_range_and_live_apply() {
 }
 
 #[test]
+fn set_maxmemory_range_persist_and_trims_at_once() {
+    const MB: usize = 1024 * 1024;
+    let _g = config_dir_lock();
+    fresh_config();
+    let c = client();
+    c.mu.lock().max_messages = 100_000;
+    c.ensure_ch(&mut c.mu.lock(), "#a").expect("ensure_ch");
+    {
+        let mut st = c.mu.lock();
+        let i = st.find_ch("#a").unwrap();
+        st.channels[i].max_messages = 100_000;
+    }
+    let big = "x".repeat(10_000);
+    for i in 0..2000 {
+        c.add_msg(
+            "#a",
+            crate::client::types::new_msg(
+                chrono::Utc::now(),
+                "n",
+                &format!("{i} {big}"),
+                crate::client::types::MsgType::Chat,
+            ),
+        );
+    }
+    let total = |c: &crate::client::Client| -> usize {
+        c.mu.lock().channels.iter().map(|ch| ch.msg_bytes).sum()
+    };
+    assert!(total(&c) > 16 * MB, "{}", total(&c));
+    for bad in ["15", "65537", "abc", "-1", "0"] {
+        c.handle_input(&format!("/set maxmemory {bad}"));
+    }
+    assert_eq!(config_text(), "", "atmestos reikšmės neįrašomos");
+    c.handle_input("/set maxmemory 16");
+    assert_eq!(c.mu.lock().max_buffer_bytes, 16 * MB);
+    assert!(total(&c) <= 16 * MB, "{}", total(&c));
+    assert_eq!(config_text(), "maxmemory=16\n");
+    let (cfg, w) = load_config(&config_path().unwrap());
+    assert_eq!(cfg.max_memory_mb, 16);
+    assert!(w.is_empty(), "{w:?}");
+    c.handle_input("/set maxmemory");
+    assert!(server_texts(&c).iter().any(|t| t == "maxmemory = 16"));
+    fresh_config();
+}
+
+#[test]
 fn set_rejects_invalid_values_for_global_keys_without_writing() {
     let _g = config_dir_lock();
     fresh_config();

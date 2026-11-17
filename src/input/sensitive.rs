@@ -56,6 +56,14 @@ pub fn is_sensitive_history(line: &str) -> bool {
             return true;
         }
     }
+    // GHOST / RECOVER / RELEASE <nick> <password>: the password is optional,
+    // so only the form with it (a word after the nick) counts.
+    if fields
+        .windows(3)
+        .any(|w| matches!(w[0], "ghost" | "recover" | "release"))
+    {
+        return true;
+    }
     // Short form "set p <password>".
     is_set_password_short(&low)
 }
@@ -88,6 +96,34 @@ pub fn is_sensitive_log_line(line: &str) -> bool {
     }
     // Without a command context nothing is hidden.
     false
+}
+
+/// Text shown instead of a hidden password (screen, logs, `/exportjson`).
+pub const HIDDEN_SECRET: &str = "[slaptažodis paslėptas]";
+
+/// Is `target` an IRC services bot? `NickServ`, `ChanServ`, `OperServ`, … —
+/// any name ending in `serv` — and the `service@server.name` form
+/// (`Q@CServe.quakenet.org`, `NickServ@services.`).
+pub fn is_service_target(target: &str) -> bool {
+    let low = target.trim().to_ascii_lowercase();
+    let nick = low.split('@').next().unwrap_or("");
+    nick.ends_with("serv") || (low.contains('@') && !nick.is_empty())
+}
+
+/// Does the user's OWN message `text`, sent to `target`, carry a password?
+/// Used for the on-screen echo (and therefore `/search`, logs and
+/// `/exportjson`, which all read the stored message).
+///
+/// Same rules as the logs: a services bot gets the NickServ command rules
+/// (`IDENTIFY x`, `REGISTER x mail`, `SET PASSWORD x`, …); anyone else only
+/// the command contexts of [`is_sensitive_log_line`] (`PASS x`, `/oper …`),
+/// so ordinary chat ("identify the bug") is shown as typed.
+pub fn is_sensitive_outgoing(target: &str, text: &str) -> bool {
+    let plain = text.trim();
+    if is_sensitive_log_line(plain) {
+        return true;
+    }
+    is_service_target(target) && is_sensitive_history(&format!("nickserv {plain}"))
 }
 
 /// Normalise whitespace: split on Unicode whitespace, rejoin with one space.
@@ -350,5 +386,31 @@ mod tests {
         assert!(contains_word("x identifyy identify", "identify"));
         assert!(!contains_word("abc", "identify"));
         assert!(!contains_word("abc", ""));
+    }
+
+    #[test]
+    fn outgoing_to_services_and_ghost() {
+        for (t, m) in [
+            ("NickServ", "IDENTIFY hunter2"),
+            ("nickserv", "ghost bob hunter2"),
+            ("NickServ", "RECOVER bob hunter2"),
+            ("ChanServ", "IDENTIFY #c hunter2"),
+            ("Q@CServe.quakenet.org", "AUTH bob hunter2"),
+            ("bob", "/oper admin hunter2"),
+        ] {
+            assert!(is_sensitive_outgoing(t, m), "{t} {m}");
+        }
+        for (t, m) in [
+            ("bob", "please identify the bug"),
+            ("bob", "register your vote"),
+            ("NickServ", "INFO bob"),
+            ("NickServ", "GHOST bob"),
+            ("#chan", "ghost town tonight"),
+        ] {
+            assert!(!is_sensitive_outgoing(t, m), "{t} {m}");
+        }
+        assert!(is_sensitive_history("/msg nickserv ghost bob hunter2"));
+        assert!(is_service_target("OperServ"));
+        assert!(!is_service_target("bob"));
     }
 }

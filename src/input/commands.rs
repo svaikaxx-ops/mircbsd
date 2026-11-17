@@ -31,7 +31,7 @@ use crate::validate::{
 use crate::width::string_width;
 
 use super::first_field;
-use super::sensitive::is_sensitive_history;
+use super::sensitive::{is_sensitive_history, is_sensitive_outgoing, HIDDEN_SECRET};
 
 /// Go `strings.SplitN(s, " ", 2)`. An empty string yields `("", None)`.
 fn split2(s: &str) -> (&str, Option<&str>) {
@@ -149,11 +149,22 @@ impl Client {
             return;
         }
         let nick = self.my_nick();
+        // A password (IDENTIFY in a NickServ window, …) goes to the server
+        // unchanged but is never shown, searched or logged in clear text.
+        let secret = is_sensitive_outgoing(&active_name, text);
         for part in split_for_privmsg(&active_name, text) {
             self.send(&format!("PRIVMSG {active_name} :{part}"));
+            if !secret {
+                self.add_msg(
+                    &active_name,
+                    new_msg(Utc::now(), &nick, &part, MsgType::Chat),
+                );
+            }
+        }
+        if secret {
             self.add_msg(
                 &active_name,
-                new_msg(Utc::now(), &nick, &part, MsgType::Chat),
+                new_msg(Utc::now(), &nick, HIDDEN_SECRET, MsgType::Chat),
             );
         }
     }
@@ -484,9 +495,15 @@ impl Client {
             let mut st = self.mu.lock();
             self.ensure_ch(&mut st, target);
         }
+        // Echo: the real text was sent above; the window shows the masked one.
+        let shown = if is_sensitive_outgoing(target, text) {
+            HIDDEN_SECRET
+        } else {
+            text
+        };
         self.add_msg(
             target,
-            new_msg(Utc::now(), &self.my_nick(), text, MsgType::Chat),
+            new_msg(Utc::now(), &self.my_nick(), shown, MsgType::Chat),
         );
     }
 
@@ -504,7 +521,12 @@ impl Client {
         }
         if self.is_connected() {
             self.send(&format!("NOTICE {target} :{text}"));
-            self.server_msg(&format!("-> -{target}- {text}"));
+            let shown = if is_sensitive_outgoing(target, text) {
+                HIDDEN_SECRET
+            } else {
+                text
+            };
+            self.server_msg(&format!("-> -{target}- {shown}"));
         }
     }
 
@@ -1199,7 +1221,7 @@ impl Client {
         if self.nick_equal(chan_name, "NickServ") {
             for msg in &mut msgs {
                 if is_sensitive_history(&crate::ui::strip_irc_format(&msg.text)) {
-                    msg.text = "[slaptažodis paslėptas]".into();
+                    msg.text = HIDDEN_SECRET.into();
                 }
             }
         }

@@ -22,6 +22,12 @@ pub const DEFAULT_PREFIX_MODES: &str = "qaohv";
 /// every insertion is O(n) → O(n²) overall.
 pub const MAX_NICKS_PER_CHANNEL: usize = 5000;
 
+/// Approximate memory cost of one stored message: the struct itself plus its
+/// nick and text bytes (`Channel::msg_bytes`, global `maxmemory` budget).
+pub fn msg_cost(m: &Message) -> usize {
+    std::mem::size_of::<Message>() + m.nick.len() + m.text.len()
+}
+
 #[derive(Debug, Clone)]
 pub struct Channel {
     pub name: String,
@@ -65,6 +71,10 @@ pub struct Channel {
     /// means "not built yet" and is rebuilt lazily.
     pub nick_set: HashSet<String>,
 
+    /// Sum of [`msg_cost`] over `messages` — kept in step by every method
+    /// that adds or removes messages (the global `maxmemory` budget reads it).
+    pub msg_bytes: usize,
+
     // Render cache: lines depend on messages, width and own nick.
     // `render_gen` is bumped on every message change (add_msg, clear).
     //
@@ -105,6 +115,7 @@ impl Channel {
             prefix: String::new(),
             prefix_modes: String::new(),
             nick_set: HashSet::new(),
+            msg_bytes: 0,
             render_gen: 0,
             rendered_gen: -1,
             rendered_w: 0,
@@ -116,6 +127,7 @@ impl Channel {
 
     /// Appends a message and trims the buffer (`addMsg`).
     pub fn add_msg(&mut self, m: Message) {
+        self.msg_bytes += msg_cost(&m);
         self.messages.push(m);
         self.render_gen += 1;
         // Limit the number of messages.
@@ -126,7 +138,8 @@ impl Channel {
                 .max(self.messages.len() - self.max_messages)
                 .max(1)
                 .min(self.messages.len());
-            self.messages.drain(..trim);
+            let freed: usize = self.messages.drain(..trim).map(|m| msg_cost(&m)).sum();
+            self.msg_bytes -= freed;
             // Neperskaitytų pradžios indeksas slenka kartu su žinutėmis,
             // kitaip „naujos žinutės“ žyma atsidurtų per toli (arba dingtų).
             if self.unread_from >= 0 {
@@ -142,11 +155,51 @@ impl Channel {
     /// Drops all messages and the render cache (`/clear`).
     pub fn clear_messages(&mut self) {
         self.messages.clear();
+        self.msg_bytes = 0;
         self.scroll_off = 0;
         self.render_gen += 1;
         // The cache must be DELETED, not just marked: stale lines would
         // make the incremental cache expect messages that no longer exist.
         self.invalidate_render_cache();
+    }
+
+    /// Inserts a message at `at` (the "new messages" marker), keeping
+    /// `msg_bytes` in step.
+    pub fn insert_msg(&mut self, at: usize, m: Message) {
+        self.msg_bytes += msg_cost(&m);
+        self.messages.insert(at, m);
+    }
+
+    /// Removes message `i`, keeping `msg_bytes` in step.
+    pub fn remove_msg(&mut self, i: usize) -> Message {
+        let m = self.messages.remove(i);
+        self.msg_bytes -= msg_cost(&m);
+        m
+    }
+
+    /// Drops the OLDEST messages until at least `need` bytes are freed (the
+    /// global `maxmemory` budget). The newest message always stays. Returns
+    /// the bytes freed; the render cache is rebuilt when anything went.
+    pub fn trim_oldest_bytes(&mut self, need: usize) -> usize {
+        let keep_last = self.messages.len().saturating_sub(1);
+        let (mut n, mut freed) = (0, 0);
+        while n < keep_last && freed < need {
+            freed += msg_cost(&self.messages[n]);
+            n += 1;
+        }
+        if n == 0 {
+            return 0;
+        }
+        self.messages.drain(..n);
+        self.msg_bytes -= freed;
+        if self.unread_from >= 0 {
+            self.unread_from = (self.unread_from - n as isize).max(0);
+        }
+        self.render_gen += 1;
+        // The source shrank: an incremental cache would still show (and
+        // count) the dropped lines.
+        self.invalidate_render_cache();
+        freed
     }
 
     /// Marks the render cache invalid (`rendered = nil`, `renderedGen = -1`,

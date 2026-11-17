@@ -112,6 +112,54 @@ impl State {
         rows.max(1)
     }
 
+    /// Global memory bound (`maxmemory`): when the stored messages of ALL
+    /// windows exceed the budget, the oldest lines of the LARGEST window go
+    /// first, down to 90 % of the budget (hysteresis: the scan is not repeated
+    /// on every message). Small windows — a quiet query, `*server*` — keep
+    /// their history while a flooded one is trimmed; every window keeps at
+    /// least its newest line. Returns the bytes freed.
+    ///
+    /// `maxmessages` limits one window; this bounds the sum, which a hostile
+    /// server could otherwise drive to 300 windows × 5000 × 4 KB.
+    pub fn enforce_memory_budget(&mut self) -> usize {
+        let budget = self.max_buffer_bytes;
+        let mut total: usize = self.channels.iter().map(|c| c.msg_bytes).sum();
+        if budget == 0 || total <= budget {
+            return 0;
+        }
+        let low = budget - budget / 10;
+        let mut freed_all = 0;
+        while total > low {
+            let (mut big, mut big_bytes, mut second) = (None, 0, 0);
+            for (i, ch) in self.channels.iter().enumerate() {
+                if ch.messages.len() <= 1 {
+                    continue;
+                }
+                if ch.msg_bytes > big_bytes {
+                    second = big_bytes;
+                    big_bytes = ch.msg_bytes;
+                    big = Some(i);
+                } else if ch.msg_bytes > second {
+                    second = ch.msg_bytes;
+                }
+            }
+            let Some(i) = big else { break };
+            // Down to the next-largest window, but at least 1/16 of this one
+            // per pass (equal-sized windows would otherwise go one line at a
+            // time: O(lines × windows)).
+            let need = (total - low)
+                .min((big_bytes - second).max(big_bytes / 16))
+                .max(1);
+            let freed = self.channels[i].trim_oldest_bytes(need);
+            if freed == 0 {
+                break;
+            }
+            total -= freed;
+            freed_all += freed;
+        }
+        freed_all
+    }
+
     /// Clamp `chan_scroll_off` into `[0, len - rows]` (`clampChanScrollLocked`).
     pub fn clamp_chan_scroll(&mut self) {
         let max = (self.channels.len() as i32 - self.visible_channel_rows()).max(0);
@@ -299,6 +347,7 @@ impl Client {
                 ch.highlight += 1;
             }
         }
+        st.enforce_memory_budget();
         let log_dir = st.log_dir.clone();
         let server = st.server.clone();
         let want_notify = m.highlight && !is_active && st.notify;
@@ -501,5 +550,37 @@ mod tests {
         assert_eq!(st.active_idx, idx);
         assert_eq!(st.channels[idx].unread, 0);
         assert_eq!(st.channels[idx].unread_from, -1);
+    }
+
+    #[test]
+    fn hostile_flood_stays_within_global_memory_budget() {
+        const BUDGET: usize = 2 * 1024 * 1024;
+        let c = client();
+        c.mu.lock().max_buffer_bytes = BUDGET;
+        for i in 0..5 {
+            c.add_msg(
+                "friend",
+                new_msg(Utc::now(), "friend", &format!("f{i}"), MsgType::Chat),
+            );
+        }
+        // 150 private windows × 40 lines × ~3 KB ≈ 18 MB, nine times the budget.
+        let me = c.my_nick();
+        let big = "A".repeat(3000);
+        for line in 0..40 {
+            for n in 0..150 {
+                c.parse_irc(&format!(":evil{n}!u@h PRIVMSG {me} :{line} {big}"));
+            }
+        }
+        let st = c.mu.lock();
+        let total: usize = st.channels.iter().map(|ch| ch.msg_bytes).sum();
+        assert!(total <= BUDGET, "total {total} > budget {BUDGET}");
+        assert!(total > BUDGET / 2, "trimmed far too much: {total}");
+        // The flood was trimmed, not the quiet conversation.
+        let f = st.find_ch("friend").unwrap();
+        assert_eq!(st.channels[f].messages.len(), 5);
+        // Every flooded window keeps at least its newest line.
+        for ch in st.channels.iter().filter(|ch| ch.name.starts_with("evil")) {
+            assert!(ch.messages.last().unwrap().text.starts_with("39 "));
+        }
     }
 }

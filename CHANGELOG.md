@@ -29,6 +29,30 @@ pagal [SemVer](https://semver.org/).
 - `cargo audit` ignoruoja RUSTSEC-2026-0543 („chrono is unmaintained“) —
   tai ne pažeidžiamumas, pataisytos versijos nėra; žr. `.cargo/audit.toml`.
 
+### Saugumas
+
+- **Savi slaptažodžiai ekrane** — `/msg NickServ IDENTIFY x`, `REGISTER x
+  paštas`, `/msg ChanServ IDENTIFY #k x`, `/notice …` ir `identify x`,
+  įvestas NickServ lange, buvo rodomi (ir randami per `/search`) atviru
+  tekstu. Dabar aide rodoma „[slaptažodis paslėptas]“, o serveriui eilutė
+  siunčiama nepakeista. Atpažinimas — tas pats `sensitive.rs` (žurnalų
+  taisyklės + NickServ taisyklės bet kuriai `*Serv` paslaugai), ne atskiras
+  žodynas; paprastas pokalbis („identify the bug“) rodomas kaip įvestas.
+  Istorijoje tokios eilutės nesaugomos visai (ne užmaskuotos — ↑ kitaip
+  išsiųstų kaukę), todėl nepatenka ir į `history` failą; dabar vertinamas ir
+  langas, į kurį rašoma.
+- **NickServ `GHOST`/`RECOVER`/`RELEASE <nick> <slaptažodis>`** — anksčiau
+  nebuvo atpažįstami (istorija, žurnalai, ekranas).
+- **Bendra atminties riba (`maxmemory`, MB, numatyta 256)** — priešiškas
+  serveris galėjo atidaryti ~300 langų × `maxmessages` × iki 4 KB (≈ 6 GB).
+  Dabar visų langų žinučių suma ribojama: viršijus biudžetą, seniausios
+  DIDŽIAUSIO lango eilutės trinamos pirmos (iki 90 % biudžeto), todėl
+  užtvindyti langai trumpinami, o ramūs pokalbiai ir `*server*` išlieka;
+  kiekviename lange lieka bent naujausia eilutė. Atvaizdavimo cache
+  išvalomas. Keičiama per config ir `/set maxmemory` (16–65536; sumažinus
+  nukerpama iš karto). Langų skaičiaus ribos (100 kanalų + 200 privačių)
+  nepakeistos.
+
 ## [0.5.2] – 2026-11-17 – install.sh, ARMv6 (Pi Zero) binaris
 
 ### Nauja

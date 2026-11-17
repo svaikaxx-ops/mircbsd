@@ -24,6 +24,7 @@ impl Client {
             "highlight_color" => hl_color_name(),
             "nick_colors" => bool_cfg(nick_coloring()).to_string(),
             "maxmessages" => self.mu.lock().max_messages.to_string(),
+            "maxmemory" => (self.mu.lock().max_buffer_bytes / (1024 * 1024)).to_string(),
             "theme" => if theme_dark_mode() { "dark" } else { "light" }.to_string(),
             _ => String::new(),
         };
@@ -147,6 +148,23 @@ impl Client {
                     }
                 }
                 ok_msg = " (esamiems langams)";
+            }
+            "maxmemory" => {
+                use crate::config::{max_memory_bytes, parse_max_memory};
+                use crate::config::{MAX_MAX_MEMORY_MB, MIN_MAX_MEMORY_MB};
+                let Some(n) = parse_max_memory(value) else {
+                    self.err_msg(&format!(
+                        "Reikšmė — MB, sveikas skaičius {MIN_MAX_MEMORY_MB}–{MAX_MAX_MEMORY_MB}: {}",
+                        sanitize_text(value)
+                    ));
+                    return None;
+                };
+                // Lowered below the current use: trim now, not on the next line.
+                let mut st = self.mu.lock();
+                st.max_buffer_bytes = max_memory_bytes(n);
+                st.enforce_memory_budget();
+                drop(st);
+                self.queue_redraw();
             }
             _ => return None,
         }

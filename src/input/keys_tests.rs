@@ -460,3 +460,19 @@ fn typing_ends_search_navigation_so_n_can_start_a_line() {
     c.handle_key(b"ice");
     assert_eq!(input_text(&c), "nice");
 }
+
+#[test]
+fn secret_typed_into_service_window_skips_history() {
+    let (c, q) = connected();
+    open_active(&c, "NickServ");
+    c.handle_key(b"identify hunter2\r");
+    c.handle_key(b"ghost bob hunter2\r");
+    let out = sent(&q);
+    assert!(
+        out.iter()
+            .any(|l| l == "PRIVMSG NickServ :ghost bob hunter2"),
+        "{out:?}"
+    );
+    c.handle_key(b"info bob\r");
+    assert_eq!(c.mu.lock().history, vec!["info bob"]);
+}

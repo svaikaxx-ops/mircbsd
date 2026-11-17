@@ -246,12 +246,13 @@ Formatas: `raktas=reikšmė`, `#` – komentaras. Visi raktai su paaiškinimais 
 | `notifications` | `true` | Desktop pranešimai (`notify-send`) apie paminėjimus neaktyviuose languose |
 | `mouse` | `true` | Pelė: ratukas slenka, paspaudimas kanalų sąraše perjungia langą |
 | `maxmessages` | `5000` | Kiek žinučių laikyti atmintyje kiekvienam langui |
+| `maxmemory` | `256` | Bendras visų langų žinučių biudžetas, MB (16–65536); viršijus pirmiausia trumpinamas didžiausias langas |
 | `logdir` | `~/irclogs` | Žurnalų katalogas |
 
 `/set` be argumentų parodo dabartines reikšmes. Keičiami gyvai (ir įrašomi
 atgal į config failą) šie raktai: `theme`, `nick_colors`, `timestamps`,
 `ts_format`, `tscolor`, `highlight_color`, `notifications`, `mouse`,
-`maxmessages`, `reconnect`, `ctcpversion`. Ryšio ir slaptažodžių raktai per
+`maxmessages`, `maxmemory`, `reconnect`, `ctcpversion`. Ryšio ir slaptažodžių raktai per
 `/set` nekeičiami. Bool reikšmės (ir config faile): `true`/`false`,
 `on`/`off`, `yes`/`no`, `1`/`0`.
 
@@ -420,8 +421,11 @@ Veiksmai: `chan-next`, `chan-prev`, `complete`, `hist-up`, `hist-down`,
   patys redaktoriumi, teises keisti nėra ko.
 - **Slaptažodžiai nekeliauja į istoriją** – eilutės su `IDENTIFY` (pvz.
   `/msg nickserv IDENTIFY pass`), SASL `AUTHENTICATE` bei `/join` su kanalo
-  raktu nėra saugomos `history` faile. Atpažintos „NickServ“ slaptažodžių
-  komandos paslepiamos žurnale ir JSON eksporte. Slaptų duomenų atpažinimas
+  raktu nėra saugomos nei ↑ istorijoje, nei `history` faile. Atpažintos
+  NickServ/ChanServ (bet kurios `*Serv` paslaugos) slaptažodžių komandos —
+  `IDENTIFY`, `REGISTER`, `SET PASSWORD`, `GHOST/RECOVER <nick> <slapt.>` —
+  ekrane (taigi ir `/search`), žurnale ir JSON eksporte rodomos kaip
+  „[slaptažodis paslėptas]“; serveriui siunčiamos nepakeistos. Slaptų duomenų atpažinimas
   remiasi komandų forma, todėl kitų servisų ar neįprastų komandų atveju jo
   nereikėtų laikyti garantuotu.
 - **Terminalo valdymo simbolių apsauga** – visos tinklo žinutės išvalomos prieš

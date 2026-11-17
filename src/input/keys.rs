@@ -18,7 +18,7 @@ use crate::sanitize::is_control_rune;
 use crate::ui::draw::chan_list_width;
 
 use super::decode_rune;
-use super::sensitive::is_sensitive_history;
+use super::sensitive::{is_sensitive_history, is_sensitive_outgoing};
 
 /// How long after the last pasted chunk more paste data may still arrive; an
 /// Enter inside this window is part of the paste, not a confirmation.
@@ -563,8 +563,15 @@ impl Client {
                         text
                     };
                     if !text.is_empty() {
-                        // Password commands (IDENTIFY, …) are not kept in the history.
-                        if !is_sensitive_history(&text) {
+                        // Password commands (IDENTIFY, …) are not kept in the
+                        // history at all (not even masked: ↑ would then resend
+                        // the mask), so they never reach the history file. A
+                        // plain line is also judged by the window it goes to
+                        // ("identify x" typed in a NickServ window).
+                        let secret = is_sensitive_history(&text)
+                            || (!text.starts_with('/')
+                                && is_sensitive_outgoing(&self.active_name(), &text));
+                        if !secret {
                             let mut st = self.mu.lock();
                             st.history.push(text.clone());
                             if st.history.len() > HISTORY_MAX {
