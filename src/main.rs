@@ -853,3 +853,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod log_tests;

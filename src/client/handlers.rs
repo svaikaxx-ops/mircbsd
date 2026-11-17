@@ -1165,9 +1165,9 @@ impl Client {
             "NAK" => self.send("CAP END"),
             "NEW" => self.handle_cap_new(caps),
             "LIST" => {
-                let mut active: Vec<String> = self.mu.lock().active_caps.iter().cloned().collect();
-                active.sort();
-                self.send(&format!("CAP LIST :{}", active.join(" ")));
+                // Atsakymas į MŪSŲ „CAP LIST“ — tik parodom. Atsiuntus
+                // „CAP LIST“ atgal serveris vėl atsakytų sąrašu → begalinis ciklas.
+                self.server_msg(&format!("Aktyvios CAP: {}", sanitize_text(caps)));
             }
             "DEL" => {
                 let mut st = self.mu.lock();
@@ -1214,3 +1214,7 @@ fn monitor_nick(mask: &str) -> String {
 #[cfg(test)]
 #[path = "handlers_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "handlers_cap_tests.rs"]
+mod cap_tests;

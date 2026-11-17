@@ -389,3 +389,7 @@ mod tests {
         assert_eq!(testutil::input_text(&c), "h!i");
     }
 }
+
+#[cfg(test)]
+#[path = "settings_tests.rs"]
+mod settings_tests;

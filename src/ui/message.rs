@@ -244,7 +244,9 @@ impl Message {
     /// text rendering itself does not depend on it.
     pub fn render_lines(&self, msg_w: i32, _my_nick: &str) -> Vec<String> {
         // Nick/channel/server text — no terminal codes.
-        let nick = sanitize_text(&self.nick);
+        // Tabuliacija: plotis 0 skaičiuojant, bet terminale šokama iki 8
+        // ląstelių — eilutė išeitų už ribų. Ekrane rodoma kaip tarpas.
+        let nick = sanitize_text(&self.nick).replace('\t', " ");
         // Chat/action/notice text goes through render_irc_format (strips
         // codes); other kinds are printed raw — clean control characters.
         let text = if !matches!(
@@ -254,7 +256,8 @@ impl Message {
             sanitize_text(&self.text)
         } else {
             self.text.clone()
-        };
+        }
+        .replace('\t', " ");
 
         let ts_color = ts_color_code();
         let mut ts = String::new();
@@ -420,7 +423,11 @@ pub fn wrap_text(text: &str, width: i32) -> Vec<String> {
                     // Break at the last space: what follows it is the next line.
                     let rest = cur.split_off(cut + 1);
                     cur.truncate(cut);
-                    lines.push(cur.concat());
+                    // Tarpas eilutės pradžioje (po kieto lūžio) — tuščios
+                    // eilutės nekuriam.
+                    if !cur.is_empty() {
+                        lines.push(cur.concat());
+                    }
                     cur = rest;
                     cur_w = cur.iter().map(|c| cluster_width(c)).sum();
                     // Likutis po tarpo + platus klasteris vis dar gali netilpti
@@ -678,3 +685,7 @@ pub fn changed_day(a: &DateTime<Utc>, b: &DateTime<Utc>) -> bool {
 #[cfg(test)]
 #[path = "message_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "wrap_tests.rs"]
+mod wrap_tests;

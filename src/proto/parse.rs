@@ -204,3 +204,7 @@ mod tests {
         assert_eq!(from_nick("irc.example.org"), "irc.example.org");
     }
 }
+
+#[cfg(test)]
+#[path = "parse_tests.rs"]
+mod edge_tests;

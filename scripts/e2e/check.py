@@ -58,6 +58,10 @@ def main():
         except Exception as e:   # noqa: BLE001 — rodom, ne krintam
             ok, note = False, 'EXC ' + repr(e)
         results.append((ok, name, note))
+        if not ok:
+            # Kadras derinimui: <TESTENV>/fail-<nr>.txt
+            with open(os.path.join(TESTENV, 'fail-%s.txt' % name[:2]), 'w') as f:
+                f.write(S())
         print('%-58s %s  (%s)' % (name, 'PASS' if ok else 'FAIL', note))
 
     def cmds(text):
@@ -387,6 +391,140 @@ def main():
         return ok, 'ekranas atkurtas' if ok else t[-400:]
 
     record('24 Ctrl+L — pilnas perbraižymas', chk_ctrl_l)
+
+    # ---------- 14. Platūs simboliai: jokia eilutė neišeina už ribų ----------
+    def nick_sep_col(r):
+        """Dešiniojo (nick sąrašo) skirtuko „│“ ląstelės indeksas eilutėje r."""
+        cells = d.screen.cells(r)
+        idx = [i for i, c in enumerate(cells) if c == '│']
+        return idx[-1] if len(idx) >= 2 else None
+
+    def message_rows(marker_chars):
+        rows = []
+        for r in range(1, d.screen.rows - 1):
+            if any(m in d.screen.line(r) for m in marker_chars):
+                rows.append(r)
+        return rows
+
+    def chk_wide_wrap():
+        # 23 patikra paliko atidarytą paiešką (ESC+S) — Esc ją uždaro, kitaip
+        # „/win 2“ keliautų į paieškos lauką.
+        d.keys('\x1b')
+        time.sleep(0.4)
+        d.keys('\x15')
+        cmds('/win 2\r')
+        if not driver.wait_until(lambda: '| #testas ' in d.screen.line(0), timeout=5):
+            return False, '/win 2 nepavyko: ' + d.screen.line(0)[:70]
+        d.keys('\x1b[6;2~')
+        time.sleep(0.3)
+        # (a) CJK + emoji su tarpais, (b) „a‍中“ poros (ZWJ tarp ne emoji —
+        # terminale 3 ląstelės), (c) tab'ai (terminale šuoliai iki 8).
+        botmsg('#testas', [
+            'PLATUS ' + '中文字😀 ' * 40 + 'GALAS-A',
+            'ZWJ ' + 'a‍中' * 70 + ' GALAS-B',
+            'TAB' + '\tx' * 30 + ' GALAS-C',
+        ])
+        if not driver.wait_until(lambda: 'GALAS-C' in S(), timeout=8):
+            return False, 'žinutės neatvyko: ' + S()[-300:]
+        time.sleep(0.4)
+        sep = nick_sep_col(2)
+        if sep is None:
+            return False, 'nick sąrašo skirtukas nerastas: %r' % d.screen.line(2)
+        bad = []
+        for r in message_rows(['中', 'GALAS', 'TAB', 'ZWJ', ' x x']):
+            cells = d.screen.cells(r)
+            # Perpildyta eilutė terminale persikelia į kitą — tekstas atsiduria
+            # kanalų juostoje (stulpeliai 0..17) arba už nick skirtuko.
+            left = ''.join(cells[:18])
+            right = ''.join(cells[sep + 1:])
+            if ('中' in left or 'x x' in left or '中' in right or 'GALAS' in right
+                    or cells[sep] != '│'):
+                bad.append((r, d.screen.line(r)))
+        t = S()
+        whole = all(g in t for g in ('GALAS-A', 'GALAS-B', 'GALAS-C'))
+        cnt = t.count('中文字😀')
+        ok = not bad and whole and cnt == 40
+        return ok, ('3 žinutės telpa, 中文字😀×%d' % cnt) if ok else \
+            'perpildyta: %r; visos=%s; kiekis=%d' % (bad[:2], whole, cnt)
+
+    record('25 platūs simboliai/ZWJ/tab — eilutės neperpildo', chk_wide_wrap)
+
+    # ---------- 15. KICK savęs ----------
+    def chk_kick_self():
+        d.keys('\x15')
+        srv.send_line(':viesas!v@fake KICK #antras testas :lauk-is-cia')
+        cmds('/win 1\r')
+        ok1 = driver.wait_until(
+            lambda: 'išmestas iš #antras (lauk-is-cia)' in S(), timeout=8)
+        ok2 = '#antras' in S()      # langas lieka kanalų juostoje
+        # Savas nick dingsta iš #antras nick sąrašo.
+        cmds('/win 3\r')
+        driver.wait_until(lambda: '| #antras ' in d.screen.line(0), timeout=5)
+        time.sleep(0.3)
+        sep = nick_sep_col(2)
+        nicks = ' '.join(''.join(d.screen.cells(r)[sep + 1:]) for r in range(1, 10)) \
+            if sep else ''
+        # Išmestas iš kanalo — savo nick sąraše nebėra (sąrašas išvalomas).
+        ok3 = sep is not None and 'Nick' in nicks and 'testas' not in nicks
+        ok = ok1 and ok2 and ok3
+        return ok, 'pranešimas + langas + nick sąrašas' if ok else \
+            'pranešimas=%s langas=%s nicks=%r' % (ok1, ok2, nicks.strip()[:80])
+
+    record('26 KICK savęs — pranešimas, langas lieka, nick dingsta', chk_kick_self)
+
+    # ---------- 16. Lango dydžio keitimas (SIGWINCH) ----------
+    def chk_resize():
+        cmds('/win 2\r')
+        driver.wait_until(lambda: '| #testas ' in d.screen.line(0), timeout=5)
+        time.sleep(0.3)
+        old_sep = nick_sep_col(2)
+        d.resize(100, 30)
+        botmsg('#testas', ['po dydžio keitimo ' + 'ž' * 150 + ' DYDIS-GALAS'])
+        ok = driver.wait_until(
+            lambda: 'DYDIS-GALAS' in S() and nick_sep_col(2) is not None
+            and '| #testas ' in d.screen.line(0), timeout=8)
+        time.sleep(0.4)
+        new_sep = nick_sep_col(2)
+        bottom = d.screen.line(29)
+        # Be SIGWINCH apdorojimo klientas pieštų 120 stulpelių: CUP į 101+
+        # stulpelį prispaudžiamas prie 100 → skirtukas būtų 99, ne old-20.
+        ok = (ok and old_sep is not None and new_sep == old_sep - 20
+              and bottom.strip() != '')
+        rows_ok = all(len(d.screen.line(r)) <= 100 for r in range(30))
+        d.resize(120, 40)
+        driver.wait_until(lambda: nick_sep_col(2) == old_sep, timeout=8)
+        return ok and rows_ok, 'skirtukas %s→%s, apačia=%r' % (
+            old_sep, new_sep, bottom[:30])
+
+    record('27 SIGWINCH — perbraižoma nauju dydžiu', chk_resize)
+
+    # ---------- 17. Serverio kritimas → automatinis prisijungimas + 433 ----------
+    def chk_reconnect_433():
+        nick_before = srv.count_received('NICK ')
+        # Kitas registracijos bandymas: „testas“ užimtas → 433.
+        srv.nick_collisions = {'testas'}
+        srv.drop_client()
+        if not driver.wait_until(lambda: 'Ryšys nutrūko' in S()
+                                 or 'Jungiamasi iš naujo' in S(), timeout=10):
+            cmds('/win 1\r')
+        ok_drop = driver.wait_until(lambda: srv.connections >= 2, timeout=20)
+        ok_nick = srv.wait_received('NICK testas_', timeout=15) is not None
+        ok_reg = driver.wait_until(lambda: srv.registered, timeout=15)
+        ok_join = driver.wait_until(
+            lambda: srv.count_received('JOIN #testas') >= 2, timeout=10)
+        # Žinutė NAUJA jungtimi turi pasiekti ekraną.
+        cmds('/win 2\r')
+        d.keys('\x1b[6;2~')
+        time.sleep(0.3)
+        botmsg('#testas', ['po-persijungimo-labas'])
+        ok_msg = driver.wait_until(lambda: 'po-persijungimo-labas' in S(), timeout=8)
+        ok = ok_drop and ok_nick and ok_reg and ok_join and ok_msg \
+            and srv.count_received('NICK ') > nick_before
+        return ok, 'jungtis #%d, NICK testas_, JOIN, žinutė' % srv.connections if ok else \
+            'jungtys=%d nick_=%s reg=%s join=%s msg=%s' % (
+                srv.connections, ok_nick, ok_reg, ok_join, ok_msg)
+
+    record('28 serverio kritimas → reconnect + 433 → nick_', chk_reconnect_433)
 
     # ---------- Rezultatai ----------
     good = sum(1 for ok, _n, _ in results if ok)

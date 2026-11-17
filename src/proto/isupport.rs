@@ -265,3 +265,7 @@ mod tests {
         assert!(!i.is_channel(""));
     }
 }
+
+#[cfg(test)]
+#[path = "isupport_tests.rs"]
+mod more_tests;

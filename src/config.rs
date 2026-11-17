@@ -42,10 +42,40 @@ pub struct Config {
     pub theme: String,
 }
 
+/// `$HOME` (netuščias). Testuose — izoliuotas laikinas katalogas, kad
+/// testai NIEKADA neliestų tikro `~/.config/mircbsd` ar `~/irclogs`.
+fn env_home() -> Option<String> {
+    #[cfg(test)]
+    {
+        Some(test_home().to_string_lossy().into_owned())
+    }
+    #[cfg(not(test))]
+    {
+        std::env::var("HOME").ok().filter(|h| !h.is_empty())
+    }
+}
+
+/// Testų „namų“ katalogas: `$TMPDIR/mircbsd-test-home-<pid>` (0700).
+/// Visi `config_dir()`/`history_path()`/numatytas `log_dir` testuose
+/// rodo čia, nepriklausomai nuo `HOME`/`XDG_CONFIG_HOME`.
+#[cfg(test)]
+pub fn test_home() -> PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let d = std::env::temp_dir().join(format!("mircbsd-test-home-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700));
+        }
+        d
+    })
+    .clone()
+}
+
 fn home_dir() -> PathBuf {
-    std::env::var("HOME")
-        .ok()
-        .filter(|h| !h.is_empty())
+    env_home()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -250,15 +280,14 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
 }
 
 fn user_config_dir() -> Option<PathBuf> {
+    // Testuose XDG_CONFIG_HOME ignoruojamas — tik izoliuotas test_home().
+    #[cfg(not(test))]
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
             return Some(PathBuf::from(xdg));
         }
     }
-    std::env::var("HOME")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .map(|h| PathBuf::from(h).join(".config"))
+    env_home().map(|h| PathBuf::from(h).join(".config"))
 }
 
 /// `$XDG_CONFIG_HOME/mircbsd` or `$HOME/.config/mircbsd`.
@@ -289,13 +318,11 @@ pub fn keys_path() -> Option<PathBuf> {
 /// Expand `~/…` using `$HOME`.
 pub fn expand_home_path(v: &str) -> String {
     if let Some(rest) = v.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            if !home.is_empty() {
-                return PathBuf::from(home)
-                    .join(rest)
-                    .to_string_lossy()
-                    .into_owned();
-            }
+        if let Some(home) = env_home() {
+            return PathBuf::from(home)
+                .join(rest)
+                .to_string_lossy()
+                .into_owned();
         }
     }
     v.to_string()
@@ -522,6 +549,10 @@ pub fn parse_bool_value(v: &str) -> (bool, bool) {
         _ => (false, false),
     }
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod more_tests;
 
 #[cfg(test)]
 mod tests {

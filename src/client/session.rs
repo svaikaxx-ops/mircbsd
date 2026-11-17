@@ -422,3 +422,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod more_tests;

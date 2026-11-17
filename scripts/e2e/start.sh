@@ -1,5 +1,5 @@
 #!/bin/bash
-# E2E: sukompiliuoja mircBSD ir paleidžia 24 patikras.
+# E2E: sukompiliuoja mircBSD ir paleidžia emuliatoriaus savitikrą ir 28 patikras.
 # Artefaktai rašomi į naują laikiną katalogą.
 set -eu
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -10,4 +10,5 @@ echo ">> Kompiliuojam mircBSD → $DIR/bin/mircbsd"
 cp "$REPO_ROOT/target/release/mircbsd" "$DIR/bin/mircbsd"
 export MIRCBSD_E2E_DIR="$DIR"
 export MIRCBSD_BIN="$DIR/bin/mircbsd"
+python3 "$REPO_ROOT/scripts/e2e/ansi_selftest.py"
 exec python3 "$REPO_ROOT/scripts/e2e/check.py"
