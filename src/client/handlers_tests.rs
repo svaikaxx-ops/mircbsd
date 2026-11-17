@@ -39,6 +39,24 @@ fn ping_pong() {
 }
 
 #[test]
+fn lag_pong_must_carry_our_token() {
+    let (c, _q) = setup();
+    let t0 = std::time::Instant::now();
+    let (tok, fresh) = c.mu.lock().lag_ping_token(t0);
+    assert!(fresh);
+    // Neatsakytas PING: kartojamas tas pats žetonas ir pradžios laikas.
+    let later = t0 + std::time::Duration::from_secs(60);
+    assert_eq!(c.mu.lock().lag_ping_token(later), (tok.clone(), false));
+    assert_eq!(c.mu.lock().lag_sent, Some(t0));
+    // Svetimas PONG (pvz. /quote PING) matavimo nebaigia.
+    c.parse_irc(":srv PONG srv :kitas");
+    assert!(c.mu.lock().lag.is_none());
+    c.parse_irc(&format!(":srv PONG srv :{tok}"));
+    let st = c.mu.lock();
+    assert!(st.lag.is_some() && st.lag_sent.is_none());
+}
+
+#[test]
 fn join_names_quit_flow() {
     let (c, _q) = setup();
     c.parse_irc(":me!u@h JOIN #rust");

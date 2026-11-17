@@ -155,7 +155,17 @@ impl Client {
 
         match msg.cmd.as_str() {
             "PING" => self.send(&format!("PONG :{}", p(0))),
-            "PONG" => self.mu.lock().last_pong = std::time::Instant::now(),
+            "PONG" => {
+                let now = std::time::Instant::now();
+                let changed = {
+                    let mut st = self.mu.lock();
+                    st.last_pong = now;
+                    st.lag_pong(params, now)
+                };
+                if changed {
+                    self.queue_redraw();
+                }
+            }
 
             "001" => self.on_welcome(params),
             "002" | "003" | "004" | "372" | "375" | "376" => {

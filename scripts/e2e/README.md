@@ -27,12 +27,12 @@ neliečiamas (HOME ir XDG_CONFIG_HOME nukreipti į testavimo home).
   buferizuojamos tarp read(), `resize`).
 - `server.py` — fake IRC serveris: CAP LS→REQ→ACK(visos cap'os)→END→
   001/005 (CHANTYPES, PREFIX, CHANMODES=beI,k,l,imnpst, CASEMAPPING=rfc1459,
-  MONITOR=60, NICKLEN=30)→MOTD; JOIN echo + 353/366 (ir kelių kanalų `JOIN #a,#b`); **PONG** į kliento
+  MONITOR=60, NICKLEN=30)→MOTD; JOIN echo + 353/366 (ir kelių kanalų `JOIN #a,#b`); **PONG** (`pong_delay` — vėlinimas) į kliento
   periodinį PING (BE JO klientas po timeout'o laiko jungtį mirusia!);
   MONITOR +/−/CLEAR įrašymas.
 - `driver.py` — pty fork, ekrano tiektuvas + žaliavos buferis
   (raw_since žymėse), `wait_until`.
-- `check.py` — 30 patikrų: prisijungimas (001+MOTD), keys įspėjimas,
+- `check.py` — 32 patikros: prisijungimas (001+MOTD), keys įspėjimas,
   PRIVMSG, IRC spalvų sanavimas, terminalo injekcija, apvyniojimas,
   PgUp/Shift+PgDn slinktis, n/p tuščiam inputui, switchCh paieškos būsenos
   išvalymas, /search all (rezultatai *server*), /logsearch (kūno atitiktis +
@@ -48,7 +48,10 @@ neliečiamas (HOME ir XDG_CONFIG_HOME nukreipti į testavimo home).
   žinutė nauja jungtimi, **29** kito join — blanki pilka (90, ne 32),
   **30** `/set show_joins smart`: tylaus nick'o join paslepiamas (ir
   istorijoje), kalbėjusio part rodomas, fono lango neperskaitytų skaičius
-  nepasikeičia, eilutė vis tiek žurnale, `all` grąžina.
+  nepasikeičia, eilutė vis tiek žurnale, `all` grąžina, **31** `| lag 0.0Xs`
+  statuso juostoje 120×40 ir 80×24 (kadrai `frame-*.txt`), **32**
+  `srv.pong_delay = 7` + persijungimas: laukiant PONG lag auga, ≥5 s
+  raudonas fonas (`\x1b[41m`), po PONG — pastovus ~7 s.
   Nepavykus — kadras `fail-<nr>.txt`.
 - `ansi_selftest.py` — emuliatoriaus savitikra (paleidžiama pirma):
   escape seka, perskelta per dvi pty read() dalis bet kurioje vietoje, duoda

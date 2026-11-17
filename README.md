@@ -275,7 +275,7 @@ atgal į config failą) šie raktai: `theme`, `nick_colors`, `show_joins`,
 
 | Vieta | Kas rodoma |
 |-------|-----------|
-| Viršutinė juosta | `mircBSD \| nick [AWAY] @ serveris [TLS] \| aktyvus langas`; ryšio būsena `[JUNGIAMASI…]` / `[ATSIJUNGTA]` / `[NEPRISIJUNGTA]`; dešinėje – užuominos (siaurame lange trumpėja) |
+| Viršutinė juosta | `mircBSD \| nick [AWAY] @ serveris [TLS] \| aktyvus langas \| lag 0.12s`; ryšio būsena `[JUNGIAMASI…]` / `[ATSIJUNGTA]` / `[NEPRISIJUNGTA]`; dešinėje – užuominos (siaurame lange trumpėja). `lag` – serverio PING→PONG laikas (matuojamas po prisijungimo ir kas minutę); laukiant atsakymo ilgiau – rodomas augantis laukimo laikas, nuo 5 s raudonu fonu. Siaurėjant pirmiausia dingsta užuominos, tada `mircBSD`, tada `lag`; lango vardas lieka |
 | `✦` eilutė | Kanalo tema |
 | Kairė | Langai su numeriais (`/win N`, `Alt+N`, `F1–F12`); `>` – privatus pokalbis; skaičius – neperskaitytos žinutės, `!N` – paminėjimai (raudonai) |
 | Centras | Žinutės; `── naujos žinutės ──` žymi, kur baigėte skaityti; paslinkus – `↑ ISTORIJA` juosta |

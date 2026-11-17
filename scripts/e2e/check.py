@@ -4,6 +4,7 @@
 # tikrina GALUTINĄ ekrano kadrą (ne žaliavą), kur tai reikšminga.
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -593,6 +594,79 @@ def main():
                 'show_joins=smart' in cfg)
 
     record('30 show_joins smart — filtras, unread, žurnalas', chk_show_joins_smart)
+
+    # ---------- 19. Lag statuso juostoje ----------
+    def lag_value():
+        m = re.search(r'\| lag (\d+(?:\.\d+)?)s ', d.screen.line(0))
+        return float(m.group(1)) if m else None
+
+    def save_frame(name):
+        with open(os.path.join(TESTENV, name), 'w') as f:
+            f.write(S())
+
+    def chk_lag_shown():
+        goto_testas()
+        # Pirmas PING išsiunčiamas iškart po registracijos (po 28 patikros
+        # persijungimo) — PONG greitas, lag ~0.00s.
+        ok120 = driver.wait_until(lambda: lag_value() is not None, timeout=8)
+        bar120 = d.screen.line(0)
+        save_frame('frame-120x40.txt')
+        d.resize(80, 24)
+        ok80 = driver.wait_until(
+            lambda: '| #testas | lag ' in d.screen.line(0)
+            and len(d.screen.line(0).rstrip()) <= 80, timeout=8)
+        bar80 = d.screen.line(0)
+        save_frame('frame-80x24.txt')
+        d.resize(120, 40)
+        driver.wait_until(lambda: len(d.screen.line(0).rstrip()) > 80, timeout=8)
+        v = lag_value()
+        ok = ok120 and ok80 and v is not None and v < 2 and '| #testas ' in bar120
+        return ok, '120: %r | 80: %r' % (bar120.strip(), bar80.strip()) if ok else \
+            'lag120=%s lag80=%s: %r / %r' % (ok120, ok80, bar120, bar80)
+
+    record('31 lag statuso juostoje (120×40 ir 80×24)', chk_lag_shown)
+
+    def chk_lag_grows():
+        # Lėtas serveris: PONG po 7 s. Naujas ryšys → PING po registracijos.
+        srv.pong_delay = 7.0
+        conns = srv.connections
+        pings = srv.count_received('PING :mircbsd-')
+        srv.drop_client()
+        if not driver.wait_until(lambda: srv.connections > conns and srv.registered,
+                                 timeout=25):
+            return False, 'persijungimas neįvyko'
+        goto_testas()
+        if not driver.wait_until(lambda: srv.count_received('PING :mircbsd-') > pings,
+                                 timeout=10):
+            return False, 'PING su žetonu negautas'
+        d.mark_raw('lag')
+        # Laukiant PONG skaičius auga (rodomas laukimo laikas).
+        if not driver.wait_until(lambda: (lag_value() or 0) >= 1.0, timeout=6):
+            return False, 'augantis lag nerodomas: %r' % d.screen.line(0)
+        v1 = lag_value()
+        time.sleep(1.5)
+        v2 = lag_value()
+        grows = v1 is not None and v2 is not None and v2 > v1
+        # ≥ 5 s — paryškinta raudonu fonu.
+        warn = driver.wait_until(
+            lambda: '\x1b[41m| lag ' in d.raw_since('lag').decode('utf-8', 'replace'),
+            timeout=8)
+        bar_warn = d.screen.line(0)
+        # PONG atėjo — rodomas išmatuotas ~7 s ir nebeauga.
+        measured = driver.wait_until(lambda: 6.9 <= (lag_value() or 0) <= 7.6, timeout=10)
+        time.sleep(2.0)
+        s1 = lag_value()
+        time.sleep(1.0)
+        s2 = lag_value()
+        steady = s1 is not None and s1 == s2
+        srv.pong_delay = 0.0
+        ok = grows and warn and measured and steady
+        return ok, 'auga %.2f→%.2f, raudona: %r, išmatuota %ss' % (
+            v1, v2, bar_warn.strip()[-30:], s2) if ok else \
+            'auga=%s(%s→%s) raudona=%s išmatuota=%s pastovu=%s(%s,%s): %r' % (
+                grows, v1, v2, warn, measured, steady, s1, s2, d.screen.line(0))
+
+    record('32 lag auga laukiant PONG, ≥5 s paryškintas', chk_lag_grows)
 
     # ---------- Rezultatai ----------
     good = sum(1 for ok, _n, _ in results if ok)

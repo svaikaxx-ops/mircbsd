@@ -1,5 +1,6 @@
 use super::*;
 use crate::ui::message::{Message, MsgType};
+use std::time::Duration;
 
 #[test]
 fn clamp_status_fits_width() {
@@ -125,6 +126,108 @@ fn cache_is_incremental_and_inserts_day_separators() {
 }
 
 #[test]
+fn lag_shown_grows_only_past_the_measured_value() {
+    let ms = Duration::from_millis;
+    // Nieko nematuota ir nelaukiama — nerodoma.
+    assert_eq!(lag_shown(None, None), None);
+    // Pirmas PING dar < 1 s — dar nerodoma; po 1 s — auga.
+    assert_eq!(lag_shown(None, Some(ms(400))), None);
+    assert_eq!(lag_shown(None, Some(ms(1500))), Some(ms(1500)));
+    // Greitas ryšys: laukimas iki 1 s nerodomas (nemirguliuoja).
+    assert_eq!(lag_shown(Some(ms(120)), Some(ms(800))), Some(ms(120)));
+    // Laukiama ilgiau už matavimą → augantis skaičius.
+    assert_eq!(lag_shown(Some(ms(3000)), Some(ms(2000))), Some(ms(3000)));
+    assert_eq!(lag_shown(Some(ms(3000)), Some(ms(7000))), Some(ms(7000)));
+    assert_eq!(lag_shown(Some(ms(120)), None), Some(ms(120)));
+}
+
+#[test]
+fn lag_format() {
+    assert_eq!(format_lag(Duration::from_millis(123)), "0.12s");
+    assert_eq!(format_lag(Duration::from_millis(5040)), "5.04s");
+    assert_eq!(format_lag(Duration::from_millis(12_340)), "12.3s");
+    assert_eq!(format_lag(Duration::from_secs(187)), "187s");
+}
+
+#[test]
+fn lag_segment_yields_before_the_window_name() {
+    let srv = "irc.example.org [TLS]";
+    // Platu: viskas telpa.
+    let (l, seg) = status_left_lag("me", srv, "#rust", Some("0.12s"), 120);
+    assert_eq!(l, " mircBSD | me @ irc.example.org [TLS] | #rust ");
+    assert_eq!(seg, "| lag 0.12s ");
+    // Siauriau: pirma dingsta „mircBSD“, lag lieka.
+    let (l, seg) = status_left_lag("me", srv, "#rust", Some("0.12s"), 50);
+    assert_eq!(l, " me @ irc.example.org [TLS] | #rust ");
+    assert_eq!(seg, "| lag 0.12s ");
+    // Dar siauriau: lag dingsta pirmiau nei serveris ir lango vardas.
+    let (l, seg) = status_left_lag("me", srv, "#rust", Some("0.12s"), 40);
+    assert_eq!(l, " me @ irc.example.org [TLS] | #rust ");
+    assert_eq!(seg, "");
+    let (l, seg) = status_left_lag("me", srv, "#rust", Some("0.12s"), 20);
+    assert_eq!(l, " me | #rust ");
+    assert_eq!(seg, "");
+    // Niekada neprisijungus — lag nerodomas.
+    let (_, seg) = status_left_lag("me", "", "*server*", Some("0.12s"), 120);
+    assert_eq!(seg, "");
+}
+
+#[test]
+fn frame_status_bar_shows_lag_and_warns_when_slow() {
+    let channels = vec![ChanState {
+        name: "#rust".into(),
+        ..Default::default()
+    }];
+    let nicks: Vec<String> = vec![];
+    let lines: Vec<String> = vec![];
+    let input: Vec<char> = vec![];
+    let status = |p: &FrameParams| -> String {
+        let out = draw_frame(p).unwrap().output;
+        let start = out.find("\x1b[1;1H").unwrap();
+        let end = out[start..].find("\x1b[2;1H").unwrap() + start;
+        out[start..end].to_string()
+    };
+    for (w, hint) in [(80, STATUS_RIGHT_SHORT), (120, STATUS_RIGHT)] {
+        let mut p = params(&channels, &nicks, &lines, &input);
+        p.width = w;
+        p.lag = Some(Duration::from_millis(120));
+        let bar = status(&p);
+        assert!(bar.contains("| #rust | lag 0.12s "), "{w}: {bar:?}");
+        assert!(bar.contains(hint), "{w}: užuomina");
+        assert!(!bar.contains(ANSI_BG_RED));
+        // Matoma juosta (be CSI sekų) — lygiai w ląstelių.
+        let mut visible = String::new();
+        let mut it = bar.chars();
+        while let Some(ch) = it.next() {
+            if ch == '\x1b' {
+                for n in it.by_ref() {
+                    if ('@'..='~').contains(&n) && n != '[' {
+                        break;
+                    }
+                }
+            } else {
+                visible.push(ch);
+            }
+        }
+        assert_eq!(string_width(&visible), w, "{w}: {visible:?}");
+
+        // ≥ 5 s — paryškinta (raudonas fonas), po jo juostos spalvos grąžinamos.
+        p.lag = Some(Duration::from_millis(6200));
+        let bar = status(&p);
+        assert!(
+            bar.contains(&format!(
+                "{ANSI_BG_RED}| lag 6.20s {ANSI_RESET}{ANSI_BG_BLUE}"
+            )),
+            "{w}: {bar:?}"
+        );
+
+        // Atsijungus — lag nerodomas.
+        p.connected = false;
+        assert!(!status(&p).contains("lag "));
+    }
+}
+
+#[test]
 fn show_joins_filters_rendered_lines_and_rerenders_on_change() {
     let _g = crate::ui::theme::TEST_LOCK.lock();
     let t = crate::timeutil::now();
@@ -213,6 +316,7 @@ fn params<'a>(
         use_tls: true,
         search_mode: false,
         search_query: "",
+        lag: None,
     }
 }
 

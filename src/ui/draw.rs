@@ -11,13 +11,15 @@
 //! 4. unlock; call [`draw_frame`] and write the returned string to the
 //!    terminal; store [`Frame::msg_area_top`] back into the client.
 
+use std::time::Duration;
+
 use crate::sanitize::sanitize_text;
 use crate::width::{fit_width, rune_width, string_width, truncate_width};
 
 use super::channel::{mode_prefix, Channel};
 use super::message::{changed_day, day_sep_line, strip_irc_format};
 use super::theme::{
-    accent_color, move_to, no_color, strip_colors, ANSI_BG_BLUE, ANSI_BOLD, ANSI_CYAN,
+    accent_color, move_to, no_color, strip_colors, ANSI_BG_BLUE, ANSI_BG_RED, ANSI_BOLD, ANSI_CYAN,
     ANSI_DARK_GRAY, ANSI_GREEN, ANSI_HIDE_CUR, ANSI_MAGENTA, ANSI_RED, ANSI_RESET, ANSI_REVERSE,
     ANSI_SHOW_CUR, ANSI_WHITE,
 };
@@ -163,6 +165,60 @@ pub fn status_left(who: &str, server: &str, active_name: &str, w: i32) -> String
     candidates[2].clone()
 }
 
+/// Nuo šio lag statuso juostoje paryškinamas (strigusi jungtis).
+pub const LAG_WARN: Duration = Duration::from_secs(5);
+
+/// Kokį lag rodyti: paskutinį išmatuotą, o jei atsakymo laukiama ilgiau už
+/// jį (ir ilgiau nei 1 s — kad greitas ryšys nemirguliuotų) — augantį
+/// laukimo laiką: vartotojas mato strigstančią jungtį dar prieš timeout'ą.
+pub fn lag_shown(measured: Option<Duration>, waiting: Option<Duration>) -> Option<Duration> {
+    let floor = measured.unwrap_or_default().max(Duration::from_secs(1));
+    match waiting {
+        Some(w) if w > floor => Some(w),
+        _ => measured,
+    }
+}
+
+/// `0.12s`, `3.40s`, `12.3s`, `187s`.
+pub fn format_lag(d: Duration) -> String {
+    let s = d.as_secs_f64();
+    if s < 10.0 {
+        format!("{s:.2}s")
+    } else if s < 100.0 {
+        format!("{s:.1}s")
+    } else {
+        format!("{}s", d.as_secs())
+    }
+}
+
+/// Statuso juostos kairė dalis su lag segmentu (`| lag 0.12s `). Prioritetai
+/// siaurėjant: pirmiausia trumpėja/dingsta užuominos (dešinė), tada
+/// „mircBSD“, tada lag, tada serveris — lango vardas lieka visada.
+/// Grąžina (kairė dalis, lag segmentas arba tuščias).
+pub fn status_left_lag(
+    who: &str,
+    server: &str,
+    active_name: &str,
+    lag: Option<&str>,
+    w: i32,
+) -> (String, String) {
+    let left = status_left(who, server, active_name, w);
+    let Some(lag) = lag.filter(|_| !server.is_empty()) else {
+        return (left, String::new());
+    };
+    let seg = format!("| lag {lag} ");
+    let seg_w = string_width(&seg);
+    for c in [
+        format!(" mircBSD | {who} @ {server} | {active_name} "),
+        format!(" {who} @ {server} | {active_name} "),
+    ] {
+        if string_width(&c) + seg_w <= w {
+            return (c, seg);
+        }
+    }
+    (left, String::new())
+}
+
 /// First row of the message area (status row + optional topic + optional
 /// search bar), 1-based (`msgAreaTop`).
 pub fn msg_area_top(has_topic: bool, search_mode: bool) -> i32 {
@@ -230,6 +286,8 @@ pub struct FrameParams<'a> {
     pub use_tls: bool,
     pub search_mode: bool,
     pub search_query: &'a str,
+    /// Rodomas lag ([`lag_shown`]); `None` — nerodomas.
+    pub lag: Option<Duration>,
 }
 
 /// Result of [`draw_frame`].
@@ -400,13 +458,36 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
             });
         }
     }
-    let status_left = status_left(&who, &srv, &sanitize_text(p.active_name), w);
-    let status_right = status_right_for(&status_left, w);
+    let lag_txt = p.lag.filter(|_| p.connected).map(format_lag);
+    let (status_left, lag_seg) = status_left_lag(
+        &who,
+        &srv,
+        &sanitize_text(p.active_name),
+        lag_txt.as_deref(),
+        w,
+    );
+    let status_right = status_right_for(&format!("{status_left}{lag_seg}"), w);
     // Clip the left part to the free space: a long channel name (a hostile
     // server has no length limit) would wrap the bar onto a second row and
     // break topic/search drawing.
-    let (status_left, pad) = clamp_status_left(&status_left, status_right, w);
+    let (status_left, pad) =
+        clamp_status_left(&status_left, status_right, w - string_width(&lag_seg));
     out.push_str(&status_left);
+    if !lag_seg.is_empty() {
+        let warn = p.lag.is_some_and(|l| l >= LAG_WARN);
+        if warn {
+            // NO_COLOR: raudonas fonas taptų inversija — o juosta jau
+            // invertuota, tad segmentas rodomas atvirkščiai (be inversijos).
+            out.push_str(if no_color() { "\x1b[27m" } else { ANSI_BG_RED });
+        }
+        out.push_str(&lag_seg);
+        if warn {
+            out.push_str(ANSI_RESET);
+            out.push_str(ANSI_BG_BLUE);
+            out.push_str(ANSI_BOLD);
+            out.push_str(ANSI_WHITE);
+        }
+    }
     out.push_str(&" ".repeat(pad as usize));
     out.push_str(status_right);
     out.push_str(ANSI_RESET);

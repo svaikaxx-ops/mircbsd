@@ -206,6 +206,13 @@ fn serve_irc<S: Read + Write>(stream: S, seen: std::sync::mpsc::Sender<String>) 
                 .unwrap();
             w.flush().unwrap();
         }
+        if let Some(tok) = l.strip_prefix("PING :") {
+            // Kaip tikri serveriai: PONG <serveris> :<žetonas>.
+            let w = rd.get_mut();
+            w.write_all(format!(":srv PONG srv :{tok}\r\n").as_bytes())
+                .unwrap();
+            w.flush().unwrap();
+        }
         if l.starts_with("QUIT") {
             return;
         }
@@ -242,6 +249,37 @@ fn plain_connect_register_ping_quit() {
     assert!(seen[2].starts_with("USER tester 0 * :"));
     assert!(seen.contains(&"PONG :tok".to_string()), "{seen:?}");
     assert_eq!(seen.last().unwrap(), "QUIT :byeEVIL");
+}
+
+#[test]
+fn lag_is_measured_right_after_registration_and_hidden_when_offline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let srv = std::thread::spawn(move || {
+        let (s, _) = listener.accept().unwrap();
+        serve_irc(s, tx);
+    });
+    let c = test_client(port, false);
+    c.start_connect();
+    // Pirmas PING — iškart po 001 (ne po PING_INTERVAL), PONG jį baigia.
+    wait_until("lag measured", || c.mu.lock().lag.is_some());
+    {
+        let st = c.mu.lock();
+        assert!(st.lag_sent.is_none());
+        let lag = st.lag_shown(Instant::now()).expect("shown while connected");
+        assert!(lag < Duration::from_secs(5), "{lag:?}");
+    }
+    c.send("QUIT :bye");
+    c.finish_writes(Duration::from_secs(3));
+    srv.join().unwrap();
+    wait_until("disconnect", || !c.is_connected());
+    assert_eq!(c.mu.lock().lag_shown(Instant::now()), None);
+    let seen: Vec<String> = rx.try_iter().collect();
+    assert!(
+        seen.iter().any(|l| l.starts_with("PING :mircbsd-")),
+        "{seen:?}"
+    );
 }
 
 #[test]

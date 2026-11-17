@@ -164,6 +164,12 @@ pub struct State {
     pub paste_collect_until: Option<Instant>,
 
     pub last_pong: Instant,
+    /// Lag matavimas: paskutinis išmatuotas PING→PONG laikas (`None` — dar
+    /// nematuota šiai jungčiai).
+    pub lag: Option<Duration>,
+    /// Laukiamo lag PING žetonas ir išsiuntimo laikas (`None` — nelaukiama).
+    pub lag_token: String,
+    pub lag_sent: Option<Instant>,
     /// Times of recent CTCP replies (rate limit, at most `MAX_CTCP_REPLIES`).
     pub ctcp_replies: Vec<Instant>,
 
@@ -299,6 +305,9 @@ impl Client {
             paste_partial: String::new(),
             paste_collect_until: None,
             last_pong: Instant::now(),
+            lag: None,
+            lag_token: String::new(),
+            lag_sent: None,
             ctcp_replies: Vec::new(),
             channels: vec![Channel::new(
                 SERVER_WINDOW,
@@ -467,6 +476,62 @@ impl Client {
 }
 
 impl State {
+    /// Lag PING žetonas. Jei ankstesnis PING dar neatsakytas — tas pats
+    /// žetonas ir laikas (matuojama nuo PIRMOJO siuntimo, todėl strigusi
+    /// jungtis rodo vis augantį lag, o ne kas minutę nuo nulio).
+    /// Grąžina (žetonas, ar tai naujas matavimas).
+    pub fn lag_ping_token(&mut self, now: Instant) -> (String, bool) {
+        let fresh = self.lag_sent.is_none();
+        if fresh {
+            self.lag_token = format!(
+                "mircbsd-{}-{}",
+                self.connect_gen,
+                crate::timeutil::now().as_millisecond()
+            );
+            self.lag_sent = Some(now);
+        }
+        (self.lag_token.clone(), fresh)
+    }
+
+    /// Naujas PING faktiškai išrašytas `now` (stovėjo rašymo eilėje).
+    pub fn restamp_lag(&mut self, now: Instant) {
+        if self.lag_sent.is_some() {
+            self.lag_sent = Some(now);
+        }
+    }
+
+    /// PONG su mūsų žetonu (bet kuriame parametre: serveriai siunčia
+    /// `PONG <serveris> :<žetonas>`) baigia matavimą. `true` — lag pakito.
+    pub fn lag_pong(&mut self, params: &[String], now: Instant) -> bool {
+        match self.lag_sent {
+            Some(sent) if params.contains(&self.lag_token) => {
+                self.lag = Some(now.saturating_duration_since(sent));
+                self.lag_sent = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Nauja jungtis: senas matavimas nebegalioja.
+    pub fn reset_lag(&mut self) {
+        self.lag = None;
+        self.lag_sent = None;
+        self.lag_token.clear();
+    }
+
+    /// Statuso juostos lag (`None` — nerodyti: neprisijungta arba dar
+    /// nematuota).
+    pub fn lag_shown(&self, now: Instant) -> Option<Duration> {
+        if !self.connected {
+            return None;
+        }
+        crate::ui::draw::lag_shown(
+            self.lag,
+            self.lag_sent.map(|t| now.saturating_duration_since(t)),
+        )
+    }
+
     /// May the configured credentials (server PASS, SASL PLAIN password,
     /// NickServ IDENTIFY, `perform`) be sent to the CURRENT server? Only to
     /// the server they were configured for: `/connect other.net …` must not

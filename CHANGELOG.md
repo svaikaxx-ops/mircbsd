@@ -8,6 +8,14 @@ pagal [SemVer](https://semver.org/).
 
 ### Nauja
 
+- **Lag statuso juostoje** (`| lag 0.12s`) — PING su unikaliu žetonu
+  siunčiamas iškart po registracijos ir kas minutę, matuojama iki PONG su
+  tuo pačiu žetonu (nuo tikro išrašymo į lizdą, ne nuo įdėjimo į eilę).
+  Laukiant atsakymo ilgiau nei paskutinis matavimas rodomas augantis laikas
+  (strigusi jungtis matoma dar prieš ping timeout), nuo 5 s — raudonu fonu
+  (`NO_COLOR` — be inversijos). Atsijungus nerodomas. Siaurame lange lag
+  užleidžia vietą lango vardui. Ping timeout / persijungimo logika
+  nepakeista.
 - **Tylesni join/part/quit** — kitų naudotojų prisijungimai, išėjimai,
   atsijungimai, nick keitimai ir kitų išmetimai (KICK) piešiami blankia
   temos spalva (tamsi tema — tamsiai pilka, šviesi — šviesiai pilka;
