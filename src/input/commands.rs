@@ -20,14 +20,15 @@ use crate::config::{
 };
 use crate::sanitize::{sanitize_chan_name, sanitize_path, sanitize_text};
 use crate::ui::{
-    hl_color_name, messages_to_json_indent, nick_coloring, set_highlight_color, set_nick_colors,
-    set_theme, set_timestamps, set_ts_color, theme_dark_mode, timestamps_enabled, ts_color_name,
-    ts_format,
+    format_go_time, hl_color_name, messages_to_json_indent, msg_width, nick_coloring,
+    set_highlight_color, set_nick_colors, set_theme, set_timestamps, set_ts_color, theme_dark_mode,
+    timestamps_enabled, ts_color_name, ts_format,
 };
 use crate::validate::{
     is_valid_channel_for, is_valid_channel_key, is_valid_list_filter, is_valid_mode_spec,
     is_valid_mode_target, is_valid_nick, is_valid_server, is_valid_target, is_valid_who_target,
 };
+use crate::width::string_width;
 
 use super::first_field;
 use super::sensitive::is_sensitive_history;
@@ -220,7 +221,7 @@ impl Client {
             "quit" | "exit" | "q" => self.cmd_quit(args),
             "keys" => self.cmd_keys(args),
             "help" => {
-                for line in help_lines() {
+                for line in help_lines(self.active_text_width()) {
                     self.active_info_msg(&line);
                 }
             }
@@ -989,6 +990,22 @@ impl Client {
         self.send(&format!("WHO {target}"));
     }
 
+    /// Text cells a server line has in the active window: the message
+    /// column minus the timestamp prefix.
+    fn active_text_width(&self) -> i32 {
+        let (w, name) = {
+            let st = self.mu.lock();
+            let name = st.active_chan().map(|c| c.name.clone()).unwrap_or_default();
+            (st.width, name)
+        };
+        let ts = if timestamps_enabled() {
+            string_width(&format_go_time(&chrono::Local::now(), &ts_format())) + 1
+        } else {
+            0
+        };
+        msg_width(w, self.is_channel(&name)) - ts
+    }
+
     fn cmd_window(&self, args: &str) {
         if args.is_empty() {
             let (rows, active) = {
@@ -1165,10 +1182,11 @@ fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     crate::persist::atomic_write(path, data)
 }
 
-/// `/help` text: grouped by topic, two aligned columns. Keep in sync with
+/// `/help` text: grouped by topic; two aligned columns when `avail` text
+/// cells fit them, else one stacked column. Keep in sync with
 /// [`Client::handle_cmd`] and README.md (tests check that every dispatched
 /// command is listed).
-fn help_lines() -> Vec<String> {
+fn help_lines(avail: i32) -> Vec<String> {
     const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         (
             "Ryšys",
@@ -1268,7 +1286,14 @@ fn help_lines() -> Vec<String> {
             ],
         ),
     ];
-    const COL: usize = 36;
+    let chars = |s: &str| s.chars().count();
+    let all = SECTIONS.iter().flat_map(|(_, rows)| rows.iter());
+    let col = all.clone().map(|(c, _)| chars(c)).max().unwrap_or(0) + 2;
+    let widest = 2 + col + all.map(|(_, w)| chars(w)).max().unwrap_or(0);
+    // Two aligned columns when they fit the window; otherwise the
+    // description goes on its own indented line (wrapping a two-column row
+    // would put the description under the command).
+    let aligned = widest <= avail.max(0) as usize;
     let mut lines = vec![format!(
         "══ mircBSD v{} — pagalba ══",
         crate::client::VERSION
@@ -1276,8 +1301,13 @@ fn help_lines() -> Vec<String> {
     for (title, rows) in SECTIONS {
         lines.push(format!("── {title} ──"));
         for (cmd, what) in rows.iter() {
-            let pad = COL.saturating_sub(cmd.chars().count()).max(1);
-            lines.push(format!("  {cmd}{}{what}", " ".repeat(pad)));
+            if aligned {
+                let pad = col - chars(cmd);
+                lines.push(format!("  {cmd}{}{what}", " ".repeat(pad)));
+            } else {
+                lines.push(format!("  {cmd}"));
+                lines.push(format!("      {what}"));
+            }
         }
     }
     lines.push("Daugiau: README.md · nustatymų sąrašas: /set · langų sąrašas: /window".to_string());

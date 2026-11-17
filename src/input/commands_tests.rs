@@ -287,7 +287,15 @@ fn server_window_refuses_chat() {
 
 #[test]
 fn help_lists_every_command() {
-    let help = super::help_lines().join("\n");
+    // Wide window: two aligned columns; narrow: every line fits.
+    let wide = super::help_lines(200);
+    assert!(wide
+        .iter()
+        .any(|l| l.contains("/reconnect ") && l.contains("jungtis iš naujo")));
+    let narrow = super::help_lines(40);
+    assert!(narrow.len() > wide.len());
+    assert!(narrow.iter().any(|l| l.trim() == "jungtis iš naujo"));
+    let help = wide.join("\n");
     for cmd in [
         "connect",
         "server",
