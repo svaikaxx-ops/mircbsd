@@ -121,8 +121,17 @@ impl Channel {
         // Limit the number of messages.
         if self.messages.len() > self.max_messages {
             // Drop the oldest quarter.
-            let trim = (self.max_messages / 4).min(self.messages.len());
+            // Bent viena: su maxmessages < 4 ketvirtis = 0 ir buferis augtų be ribų.
+            let trim = (self.max_messages / 4)
+                .max(self.messages.len() - self.max_messages)
+                .max(1)
+                .min(self.messages.len());
             self.messages.drain(..trim);
+            // Neperskaitytų pradžios indeksas slenka kartu su žinutėmis,
+            // kitaip „naujos žinutės“ žyma atsidurtų per toli (arba dingtų).
+            if self.unread_from >= 0 {
+                self.unread_from = (self.unread_from - trim as isize).max(0);
+            }
             self.render_gen += 1;
             // Cached lines no longer match the messages — rebuild from
             // scratch (an incremental cache would show deleted messages).
