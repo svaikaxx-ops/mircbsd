@@ -48,11 +48,59 @@ Terminalo IRC klientas, parašytas Rust. Veikia **Debian** (Linux) ir FreeBSD.
 - Tikrasis terminalas (TTY) – paleidžiant be TTY klientas nepasileidžia;
   mažiausias dydis 40×8
 
-## Diegimas – Debian
+## Diegimas iš release (paruošti binarai)
+
+Paprasčiausias būdas – atsisiųsti sukompiliuotą binarį iš
+[Releases](https://github.com/svaikaxx-ops/mircbsd/releases). Rust nereikia.
+
+| Kompiuteris | Failas (`T=`) | Veikia |
+| --- | --- | --- |
+| x86_64 (Intel/AMD) | `x86_64-unknown-linux-musl` | **rekomenduojama** – statinis, bet kuris Linux (Debian 12, 13, …) |
+| ARM 64 (Raspberry Pi 4/5, ARM serveriai) | `aarch64-unknown-linux-musl` | **rekomenduojama** – statinis, bet kuris Linux (nuo v0.5.1) |
+| x86_64 | `x86_64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
+| ARM 64 | `aarch64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
+
+Architektūrą parodo `uname -m` (`x86_64` arba `aarch64`).
+
+```sh
+VER=v0.5.0                          # naujausia versija – žr. Releases
+T=x86_64-unknown-linux-musl         # arba aarch64-unknown-linux-musl
+URL=https://github.com/svaikaxx-ops/mircbsd/releases/download/$VER
+cd /tmp
+curl -LO $URL/mircbsd-$VER-$T.tar.gz
+curl -LO $URL/mircbsd-$VER-$T.tar.gz.sha256
+sha256sum -c mircbsd-$VER-$T.tar.gz.sha256     # turi parodyti: OK
+tar xzf mircbsd-$VER-$T.tar.gz
+
+# Sau (be root; ~/.local/bin turi būti PATH'e)
+install -Dm755 mircbsd-$VER-$T/mircbsd ~/.local/bin/mircbsd
+# Arba visai sistemai
+# sudo install -m755 mircbsd-$VER-$T/mircbsd /usr/local/bin/mircbsd
+
+mircbsd --version
+```
+
+Pirmą kartą – konfigūracija (pavyzdys yra archyve):
+
+```sh
+mkdir -p ~/.config/mircbsd
+cp mircbsd-$VER-$T/config.example ~/.config/mircbsd/config
+chmod 600 ~/.config/mircbsd/config
+$EDITOR ~/.config/mircbsd/config
+```
+
+Neprivalomi paketai: `sudo apt install xdg-utils libnotify-bin` – `/open`
+(URL naršyklėje) ir darbalaukio pranešimai apie paminėjimus. TLS šakniniai
+sertifikatai įkompiliuoti į binarį – papildomų paketų nereikia.
+
+**Atnaujinimas:** pakeiskite `VER` ir pakartokite atsisiuntimą bei `install`;
+konfigūracija `~/.config/mircbsd` lieka nepaliesta.
+
+## Diegimas iš šaltinio – Debian
 
 ```sh
 sudo apt update
-sudo apt install -y cargo rustc ca-certificates xdg-utils
+sudo apt install -y cargo rustc xdg-utils
 
 cd mircbsd
 cargo build --release
@@ -66,13 +114,13 @@ sudo install -m755 target/release/mircbsd /usr/local/bin/mircbsd
 
 Pastabos:
 
-- `ca-certificates` – reikalingas TLS prisijungimui (portas 6697)
+- TLS šakniniai sertifikatai (`webpki-roots`) įkompiliuoti – `ca-certificates` nereikalingas
 - `xdg-utils` – komandai `/open` (atidaryti URL naršyklėje); jei nėra, ieškoma
   `gio`, `sensible-browser`, `x-www-browser`, `firefox`
 - Pirmas `cargo build` atsiunčia priklausomybes iš crates.io
 - Paleiskite **ne kaip root** – konfigūracija saugoma `$HOME`
 
-## Diegimas – FreeBSD
+## Diegimas iš šaltinio – FreeBSD
 
 ```sh
 cargo build --release

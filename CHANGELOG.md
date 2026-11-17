@@ -13,6 +13,15 @@ pagal [SemVer](https://semver.org/).
   `sha2` 0.11 ir `parking_lot` 0.13 atidėti — reikalauja Rust 1.88 / 1.95
   (minimali palaikoma versija 1.85).
 
+### Nauja
+
+- **Release: `aarch64-unknown-linux-musl`** — statinis ARM 64 binaris (veikia ir
+  Debian 12); kiekvienas release binaris paleidžiamas (`--version`) prieš
+  publikavimą, musl binariams tikrinama, ar jie statiniai. Release workflow
+  galima paleisti rankiniu būdu (tik kompiliuoja, release nekuria).
+- **README** — diegimas iš release binarų (Debian); pašalinta klaidinga
+  pastaba, kad TLS reikia `ca-certificates`.
+
 ## [0.5.0] – 2026-11-17 – paruošimas viešam leidimui
 
 ### Pakeista – sąsaja

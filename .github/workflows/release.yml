@@ -1,9 +1,12 @@
 name: Release
 
-# Paleidžiama užkėlus žymą v*, pvz.: git tag v0.4.9 && git push origin v0.4.9
+# Paleidžiama užkėlus žymą v*, pvz.: git tag v0.5.1 && git push origin v0.5.1
+# Rankinis paleidimas (workflow_dispatch) tik sukompiliuoja ir patikrina
+# binarus — release nekuriamas.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,6 +24,9 @@ jobs:
             musl: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            musl: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -37,7 +43,23 @@ jobs:
         run: cargo test --locked
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          # ring kompiliuoja C kodą: musl taikiniams — musl-gcc
+          if [ "${{ matrix.musl }}" = "true" ]; then
+            t="${{ matrix.target }}"; export "CC_${t//-/_}=musl-gcc"
+          fi
+          cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/mircbsd"
+          file "$bin"
+          "$bin" --version
+          if [ "${{ matrix.musl }}" = "true" ]; then
+            file "$bin" | grep -Eq "static(ally|-pie) linked" || { echo "musl binaris ne statinis"; exit 1; }
+          fi
 
       - name: Package
         shell: bash
@@ -56,6 +78,7 @@ jobs:
             dist/*.sha256
 
   publish:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
