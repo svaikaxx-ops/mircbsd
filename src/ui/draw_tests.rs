@@ -23,9 +23,68 @@ fn clamp_status_fits_width() {
 fn widths_and_rows() {
     assert_eq!(msg_width(100, false), 100 - 18 - 2);
     assert_eq!(msg_width(100, true), 100 - 18 - 2 - 17);
-    assert_eq!(msg_width(30, true), 10);
+    // Narrow: the channel list shrinks and the nick list is hidden.
+    assert_eq!(msg_width(50, true), 50 - 12 - 2);
+    assert_eq!(msg_width(20, true), 10);
     assert_eq!(msg_area_top(false, false), 2);
     assert_eq!(msg_area_top(true, true), 4);
+}
+
+#[test]
+fn responsive_layout() {
+    // 80 columns still has room for the nick list (43-cell messages).
+    let l = layout(80, true);
+    assert_eq!((l.chan_w, l.nick_w, l.msg_w), (18, 16, 43));
+    // Below 77 the nick list would squeeze messages under 40 cells.
+    assert_eq!(layout(76, true).nick_w, 0);
+    assert_eq!(layout(76, true).msg_w, 76 - 18 - 2);
+    // Query / server windows never show it.
+    assert_eq!(layout(200, false).nick_w, 0);
+    assert_eq!(chan_list_width(59), CHAN_LIST_WIDTH_NARROW);
+    assert_eq!(chan_list_width(60), CHAN_LIST_WIDTH);
+}
+
+#[test]
+fn status_bar_keeps_the_window_name() {
+    let full = status_left("me", "irc.example.org [TLS]", "#rust", 120);
+    assert_eq!(full, " mircBSD | me @ irc.example.org [TLS] | #rust ");
+    // Narrow: the brand goes first, then the server — "| #rust " stays.
+    let mid = status_left("me", "irc.example.org [TLS]", "#rust", 40);
+    assert_eq!(mid, " me @ irc.example.org [TLS] | #rust ");
+    let small = status_left("me", "irc.example.org [TLS]", "#rust", 20);
+    assert_eq!(small, " me | #rust ");
+    assert!(status_left("me", "", "*server*", 80).contains("[NEPRISIJUNGTA] | *server*"));
+    // The hint shrinks before the left part is clipped.
+    assert_eq!(status_right_for(&full, 120), STATUS_RIGHT);
+    assert_eq!(status_right_for(&full, 60), STATUS_RIGHT_SHORT);
+    assert_eq!(status_right_for(&full, 46), "");
+}
+
+#[test]
+fn input_window_counts_cells_and_follows_the_cursor() {
+    let ascii: Vec<char> = "abcdef".chars().collect();
+    assert_eq!(input_window(&ascii, 6, 10), (0, 6));
+    // Cursor at the end of a long line: the tail is shown, cursor fits.
+    let long: Vec<char> = "x".repeat(30).chars().collect();
+    let (s, e) = input_window(&long, 30, 10);
+    assert_eq!((s, e), (21, 30));
+    // Cursor at the START of a long line: the head is shown (the old code
+    // always showed the tail and put the cursor on the wrong character).
+    assert_eq!(input_window(&long, 0, 10), (0, 10));
+    // Wide characters take two cells each.
+    let wide: Vec<char> = "你好世界你好".chars().collect();
+    let (s, e) = input_window(&wide, 6, 7);
+    let cells: i32 = wide[s..6].iter().map(|&r| rune_width(r)).sum();
+    assert!(cells < 7, "cursor must stay inside the 7-cell field");
+    assert_eq!(e, 6);
+}
+
+#[test]
+fn too_small_frame_explains_the_minimum() {
+    let f = too_small_frame(30, 5).unwrap();
+    assert!(f.contains("per mažas"));
+    assert!(f.contains("40×8"));
+    assert!(too_small_frame(0, 0).is_none());
 }
 
 #[test]
@@ -109,6 +168,7 @@ fn params<'a>(
         nick_scroll_off: 0,
         chan_scroll_off: 0,
         connected: true,
+        connecting: false,
         my_nick: "me",
         server: "irc.example.org",
         away: "",
@@ -163,8 +223,34 @@ fn frame_basic_structure() {
     // Scrolled: banner is present and view shifted.
     p.scroll_off = 5;
     let f = draw_frame(&p).unwrap();
-    assert!(f.output.contains("SCROLL (+5"));
+    assert!(f.output.contains("ISTORIJA: +5"));
     assert!(!f.output.contains("line 49"));
+    p.scroll_off = 0;
+
+    // Nick list header carries the count; the status bar names the window.
+    let f = draw_frame(&p).unwrap();
+    assert!(f.output.contains(" Nick (3)"));
+    assert!(f.output.contains("| #rust "));
+
+    // NO_COLOR: no colour SGR left, backgrounds become reverse video.
+    {
+        let _g = crate::ui::theme::TEST_LOCK.lock();
+        crate::ui::theme::set_no_color(true);
+        let f = draw_frame(&p).unwrap();
+        crate::ui::theme::set_no_color(false);
+        for code in ["\x1b[44m", "\x1b[31m", "\x1b[90m", "\x1b[36m"] {
+            assert!(!f.output.contains(code), "{code:?} with NO_COLOR");
+        }
+        assert!(f.output.contains("\x1b[7m"));
+        assert!(f.output.contains("1:#rust"));
+    }
+
+    // Narrow terminal: nick list hidden, channel list narrower.
+    p.width = 50;
+    let f = draw_frame(&p).unwrap();
+    assert!(!f.output.contains(" Nick ("));
+    assert!(f.output.contains("| #rust "));
+    p.width = 80;
 
     // Too small / bad active idx → None.
     p.width = 39;

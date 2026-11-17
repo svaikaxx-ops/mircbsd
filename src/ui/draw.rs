@@ -12,26 +12,98 @@
 //!    terminal; store [`Frame::msg_area_top`] back into the client.
 
 use crate::sanitize::sanitize_text;
-use crate::width::{fit_width, string_width, truncate_width};
+use crate::width::{fit_width, rune_width, string_width, truncate_width};
 
 use super::channel::{mode_prefix, Channel};
 use super::message::{changed_day, day_sep_line, strip_irc_format};
 use super::theme::{
-    move_to, ANSI_BG_BLUE, ANSI_BOLD, ANSI_CYAN, ANSI_DARK_GRAY, ANSI_GREEN, ANSI_HIDE_CUR,
-    ANSI_MAGENTA, ANSI_RED, ANSI_RESET, ANSI_SHOW_CUR, ANSI_WHITE, ANSI_YELLOW,
+    accent_color, move_to, no_color, strip_colors, ANSI_BG_BLUE, ANSI_BOLD, ANSI_CYAN,
+    ANSI_DARK_GRAY, ANSI_GREEN, ANSI_HIDE_CUR, ANSI_MAGENTA, ANSI_RED, ANSI_RESET, ANSI_REVERSE,
+    ANSI_SHOW_CUR, ANSI_WHITE,
 };
 
-/// Width of the channel list column (`chanListWidth`).
+/// Width of the channel list column (`chanListWidth`) on a normal terminal.
 pub const CHAN_LIST_WIDTH: i32 = 18;
+/// Channel list width on a narrow terminal (< [`NARROW_WIDTH`] columns).
+pub const CHAN_LIST_WIDTH_NARROW: i32 = 12;
+/// Below this terminal width the channel list shrinks to
+/// [`CHAN_LIST_WIDTH_NARROW`].
+pub const NARROW_WIDTH: i32 = 60;
 /// Width of the nick list column (`nickListWidth`).
 pub const NICK_LIST_WIDTH: i32 = 16;
+/// The nick list is shown only if the message column keeps at least this
+/// many cells; otherwise it is hidden so the text stays readable.
+pub const MIN_MSG_WIDTH_WITH_NICKS: i32 = 40;
 
 /// Smallest terminal that is drawn at all (`w < 40 || h < 8` → skip).
 pub const MIN_WIDTH: i32 = 40;
 pub const MIN_HEIGHT: i32 = 8;
 
-/// Right half of the status bar (`statusRight`).
-pub const STATUS_RIGHT: &str = " PgUp/Dn:scroll Ctrl+N/P:kan Ctrl+←→:žodis Tab:AC /help ";
+/// Right half of the status bar (`statusRight`): key hints, shown only when
+/// the left part (nick, server, window) still fits.
+pub const STATUS_RIGHT: &str = " PgUp/Dn:slinkti  Ctrl+N/P:langai  Tab:užbaigti  /help ";
+/// Short hint used when [`STATUS_RIGHT`] does not fit.
+pub const STATUS_RIGHT_SHORT: &str = " /help ";
+
+/// Column geometry of one frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    /// Channel list width (its `│` separator is the next column).
+    pub chan_w: i32,
+    /// Nick list width; 0 when the nick list is hidden.
+    pub nick_w: i32,
+    /// Message column width (the render-cache key).
+    pub msg_w: i32,
+}
+
+/// Responsive layout: the channel list shrinks on narrow terminals and the
+/// nick list disappears when it would squeeze the messages below
+/// [`MIN_MSG_WIDTH_WITH_NICKS`].
+pub fn layout(w: i32, show_nicks: bool) -> Layout {
+    let chan_w = chan_list_width(w);
+    let base = w - chan_w - 2;
+    let nick_w = if show_nicks && base - (NICK_LIST_WIDTH + 1) >= MIN_MSG_WIDTH_WITH_NICKS {
+        NICK_LIST_WIDTH
+    } else {
+        0
+    };
+    let nick_panel_w = if nick_w > 0 { nick_w + 1 } else { 0 };
+    Layout {
+        chan_w,
+        nick_w,
+        msg_w: (base - nick_panel_w).max(10),
+    }
+}
+
+/// Channel list width for a terminal `w` columns wide (mouse hit-testing
+/// uses the same value).
+pub fn chan_list_width(w: i32) -> i32 {
+    if w < NARROW_WIDTH {
+        CHAN_LIST_WIDTH_NARROW
+    } else {
+        CHAN_LIST_WIDTH
+    }
+}
+
+/// Frame shown instead of the UI when the terminal is smaller than
+/// [`MIN_WIDTH`]×[`MIN_HEIGHT`]; `None` when the size is unknown (0×0).
+pub fn too_small_frame(w: i32, h: i32) -> Option<String> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let msg = format!("Terminalas per mažas ({w}×{h}); reikia bent {MIN_WIDTH}×{MIN_HEIGHT}");
+    let mut out = String::from("\x1b[?25l\x1b[2J");
+    for (i, line) in wrap_plain(&msg, w).iter().take(h as usize).enumerate() {
+        out.push_str(&move_to(i as i32 + 1, 1));
+        out.push_str(line);
+    }
+    Some(out)
+}
+
+/// Word wrap for short plain notices (no formatting codes).
+fn wrap_plain(s: &str, w: i32) -> Vec<String> {
+    super::message::wrap_text(s, w.max(1))
+}
 
 /// Trims the left part of the status bar to the free space (`w` minus the
 /// cell width of `status_right`) and returns the number of padding spaces
@@ -45,10 +117,50 @@ pub fn clamp_status_left(status_left: &str, status_right: &str, w: i32) -> (Stri
 }
 
 /// Width of the message column (`msgW`): the window minus the channel list,
-/// its separator and the nick panel; at least 10.
+/// its separator and the nick panel (if [`layout`] shows it); at least 10.
 pub fn msg_width(w: i32, show_nicks: bool) -> i32 {
-    let nick_panel_w = if show_nicks { NICK_LIST_WIDTH + 1 } else { 0 };
-    (w - CHAN_LIST_WIDTH - 2 - nick_panel_w).max(10)
+    layout(w, show_nicks).msg_w
+}
+
+/// Picks the status bar hint that still leaves room for `left`:
+/// the full [`STATUS_RIGHT`], the short [`STATUS_RIGHT_SHORT`] or nothing.
+pub fn status_right_for(left: &str, w: i32) -> &'static str {
+    let lw = string_width(left);
+    if lw + string_width(STATUS_RIGHT) <= w {
+        STATUS_RIGHT
+    } else if lw + string_width(STATUS_RIGHT_SHORT) <= w {
+        STATUS_RIGHT_SHORT
+    } else {
+        ""
+    }
+}
+
+/// Left part of the status bar, shortened step by step until it fits `w`
+/// cells: first the "mircBSD" label goes, then the server. The active window
+/// name is kept as long as possible (it is the one thing the user must see).
+///
+/// `who` is the nick part (with `[AWAY]`), `server` the server part (with
+/// `[TLS]` / connection state); an empty `server` means "never connected".
+pub fn status_left(who: &str, server: &str, active_name: &str, w: i32) -> String {
+    let candidates = if server.is_empty() {
+        [
+            format!(" mircBSD | [NEPRISIJUNGTA] | {active_name} "),
+            format!(" [NEPRISIJUNGTA] | {active_name} "),
+            format!(" [NEPRISIJUNGTA] | {active_name} "),
+        ]
+    } else {
+        [
+            format!(" mircBSD | {who} @ {server} | {active_name} "),
+            format!(" {who} @ {server} | {active_name} "),
+            format!(" {who} | {active_name} "),
+        ]
+    };
+    for c in &candidates[..2] {
+        if string_width(c) <= w {
+            return c.clone();
+        }
+    }
+    candidates[2].clone()
 }
 
 /// First row of the message area (status row + optional topic + optional
@@ -110,6 +222,8 @@ pub struct FrameParams<'a> {
     pub nick_scroll_off: i32,
     pub chan_scroll_off: i32,
     pub connected: bool,
+    /// A connect loop is running (dialing / waiting to reconnect).
+    pub connecting: bool,
     pub my_nick: &'a str,
     pub server: &'a str,
     pub away: &'a str,
@@ -257,28 +371,34 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
     out.push_str(&move_to(row, 1));
     out.push_str(ANSI_BG_BLUE);
     out.push_str(ANSI_BOLD);
-    let tls_mark = if p.use_tls { "[TLS] " } else { "" };
-    let away_mark = if !p.away.is_empty() { " [AWAY]" } else { "" };
-    let reconn_mark = if !p.connected {
-        " [RECONNECTING...]"
-    } else {
-        ""
-    };
-    let mut status_left = format!(
-        " mircBSD {}| {}{}{} @ {} | {} ",
-        tls_mark, p.my_nick, away_mark, reconn_mark, p.server, p.active_name
-    );
-    if !p.connected && p.server.is_empty() {
-        status_left = " mircBSD | [NEPRISIJUNGTA] ".to_string();
+    out.push_str(ANSI_WHITE);
+    let mut who = sanitize_text(p.my_nick);
+    if !p.away.is_empty() {
+        who.push_str(" [AWAY]");
     }
-    let status_left = sanitize_text(&status_left);
+    let mut srv = String::new();
+    if !(p.server.is_empty() && !p.connected) {
+        srv = sanitize_text(p.server);
+        if p.use_tls {
+            srv.push_str(" [TLS]");
+        }
+        if !p.connected {
+            srv.push_str(if p.connecting {
+                " [JUNGIAMASI…]"
+            } else {
+                " [ATSIJUNGTA]"
+            });
+        }
+    }
+    let status_left = status_left(&who, &srv, &sanitize_text(p.active_name), w);
+    let status_right = status_right_for(&status_left, w);
     // Clip the left part to the free space: a long channel name (a hostile
     // server has no length limit) would wrap the bar onto a second row and
     // break topic/search drawing.
-    let (status_left, pad) = clamp_status_left(&status_left, STATUS_RIGHT, w);
+    let (status_left, pad) = clamp_status_left(&status_left, status_right, w);
     out.push_str(&status_left);
     out.push_str(&" ".repeat(pad as usize));
-    out.push_str(STATUS_RIGHT);
+    out.push_str(status_right);
     out.push_str(ANSI_RESET);
     row += 1;
 
@@ -320,19 +440,26 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
     //
     // SCROLLING: there can be more channels than rows (up to 100). Scroll
     // offset (chan_scroll_off) + ▲▼ arrows.
+    let lay = layout(w, p.show_nicks);
+    let chan_w = lay.chan_w;
+    let accent = accent_color();
     let n_chan = channels.len() as i32;
     let max_chan_scroll = (n_chan - msg_rows).max(0);
     let chan_scroll = p.chan_scroll_off.min(max_chan_scroll).max(0);
+    // Window numbers (for /win N, F1–F12, Alt+1–9) right-aligned to the
+    // widest number so the names line up past window 9.
+    let num_w = n_chan.max(1).to_string().len();
     for i in 0..msg_rows {
         let r = msg_area_top + i;
         out.push_str(&move_to(r, 1));
-        out.push_str(&erase(CHAN_LIST_WIDTH));
+        out.push_str(&erase(chan_w));
         out.push_str(&move_to(r, 1));
         let chan_idx = chan_scroll + i;
         if chan_idx < n_chan {
             let ci = chan_idx as usize;
             let st = &channels[ci];
-            if ci == p.active_idx {
+            let active = ci == p.active_idx;
+            if active {
                 out.push_str(ANSI_BG_BLUE);
                 out.push_str(ANSI_BOLD);
                 out.push_str(ANSI_WHITE);
@@ -340,57 +467,60 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
                 out.push_str(ANSI_RED);
                 out.push_str(ANSI_BOLD);
             } else if st.unread > 0 {
-                out.push_str(ANSI_YELLOW);
+                out.push_str(accent);
                 out.push_str(ANSI_BOLD);
             } else if st.is_private {
                 out.push_str(ANSI_MAGENTA);
-            } else {
-                out.push_str(ANSI_DARK_GRAY);
             }
+            // Idle windows use the terminal's default colour: dark grey (90)
+            // vanishes on some dark themes (e.g. Solarized, where it equals
+            // the background).
             let mut display_name = sanitize_text(&st.name);
             if st.is_private {
                 // Private chats are marked ">" — the name must be sanitised
                 // as well (a hostile PRIVMSG nick may carry ESC).
                 display_name = format!(">{}", display_name);
             }
-            let fkey_prefix = if chan_idx < 12 {
-                format!("{}:", chan_idx + 1)
-            } else {
-                String::new()
-            };
-            let max_name_w = CHAN_LIST_WIDTH - 2 - fkey_prefix.len() as i32;
-            let display_name = truncate_width(&display_name, max_name_w);
-            let mut label = format!(" {}{}", fkey_prefix, fit_width(&display_name, max_name_w));
-            if st.unread > 0 && ci != p.active_idx {
-                let unread_w = (max_name_w - 3).max(1);
-                // Column width in CELLS (fit_width), not bytes: otherwise
-                // non-ASCII names (Lithuanian, CJK) would push the "!N"
-                // badge past CHAN_LIST_WIDTH and rows would drift.
-                let mut badge = if st.highlight > 0 {
+            let num = format!("{:>num_w$}:", chan_idx + 1);
+            // Row = " " + number + name area + " " (the last cell keeps the
+            // name off the separator).
+            let name_area = (chan_w - 2 - num.len() as i32).max(1);
+            let mut badge = String::new();
+            if st.unread > 0 && !active {
+                badge = if st.highlight > 0 {
                     format!("!{}", st.highlight)
                 } else {
                     st.unread.to_string()
                 };
-                // Badge limited to the space left on the row: a huge
-                // unread count (100000+) would otherwise spill past "│".
-                let max_badge = (CHAN_LIST_WIDTH - 1 - fkey_prefix.len() as i32 - unread_w).max(1);
+                // A huge unread count (100000+) must not push the name out
+                // completely or spill past "│": cap the badge at half the
+                // name area.
+                let max_badge = (name_area / 2).max(1);
                 if string_width(&badge) > max_badge {
                     badge = truncate_width(&badge, max_badge);
                     if badge.is_empty() {
                         badge = "+".to_string();
                     }
                 }
-                label = format!(
-                    " {}{}{}",
-                    fkey_prefix,
-                    fit_width(&display_name, unread_w),
-                    badge
-                );
             }
+            // Badge right-aligned at the end of the name area. Widths in
+            // CELLS (fit_width), not bytes: otherwise non-ASCII names
+            // (Lithuanian, CJK) would push it past the column.
+            let label = if badge.is_empty() {
+                format!(" {}{} ", num, fit_width(&display_name, name_area))
+            } else {
+                let bw = string_width(&badge);
+                format!(
+                    " {}{} {} ",
+                    num,
+                    fit_width(&display_name, (name_area - bw - 1).max(0)),
+                    badge
+                )
+            };
             out.push_str(&label);
             out.push_str(ANSI_RESET);
         }
-        out.push_str(&move_to(r, CHAN_LIST_WIDTH + 1));
+        out.push_str(&move_to(r, chan_w + 1));
         out.push_str(ANSI_DARK_GRAY);
         out.push('│');
         out.push_str(ANSI_RESET);
@@ -398,29 +528,30 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
     // Channel list arrows (more channels than rows).
     if max_chan_scroll > 0 {
         if chan_scroll > 0 {
-            out.push_str(&move_to(msg_area_top, CHAN_LIST_WIDTH));
-            out.push_str(ANSI_YELLOW);
+            out.push_str(&move_to(msg_area_top, chan_w));
+            out.push_str(accent);
             out.push('▲');
             out.push_str(ANSI_RESET);
         }
         if chan_scroll < max_chan_scroll {
-            out.push_str(&move_to(msg_area_bot, CHAN_LIST_WIDTH));
-            out.push_str(ANSI_YELLOW);
+            out.push_str(&move_to(msg_area_bot, chan_w));
+            out.push_str(accent);
             out.push('▼');
             out.push_str(ANSI_RESET);
         }
     }
 
     // --- Messages ---
-    let nick_panel_w = if p.show_nicks { NICK_LIST_WIDTH + 1 } else { 0 };
-    let msg_w = msg_width(w, p.show_nicks);
+    let show_nicks = lay.nick_w > 0;
+    let nick_panel_w = if show_nicks { lay.nick_w + 1 } else { 0 };
+    let msg_w = lay.msg_w;
 
     let lines = p.lines;
     let total_lines = lines.len() as i32;
     let scroll_off = p.scroll_off.max(0);
     let start_line = (total_lines - msg_rows - scroll_off).max(0);
 
-    let msg_col_start = CHAN_LIST_WIDTH + 2;
+    let msg_col_start = chan_w + 2;
     let msg_col_end = w - nick_panel_w;
     for i in 0..msg_rows {
         let r = msg_area_top + i;
@@ -435,23 +566,19 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
 
     if scroll_off > 0 {
         let banner = format!(
-            " ↑ SCROLL (+{} eilučių žemiau) ─ PgDn/↓ žemyn, Shift+PgDn apačion ",
+            " ↑ ISTORIJA: +{} eil. žemiau · PgDn žemyn · Shift+PgDn į apačią ",
             scroll_off
         );
-        let banner: String = if banner.chars().count() > msg_w as usize {
-            banner.chars().take(msg_w as usize).collect()
-        } else {
-            banner
-        };
+        let banner = truncate_width(&banner, msg_w);
         out.push_str(&move_to(msg_area_top, msg_col_start));
-        out.push_str(ANSI_YELLOW);
+        out.push_str(ANSI_REVERSE);
         out.push_str(ANSI_BOLD);
         out.push_str(&banner);
         out.push_str(ANSI_RESET);
     }
 
     // --- Nick list ---
-    if p.show_nicks {
+    if show_nicks {
         let nick_col = w - NICK_LIST_WIDTH;
         let visible_nicks = msg_rows - 1;
         let n_nicks = nicks.len() as i32;
@@ -467,25 +594,29 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
             out.push_str(&erase(NICK_LIST_WIDTH));
             out.push_str(&move_to(r, nick_col));
             if i == 0 {
-                let mut hint = String::new();
-                if n_nicks > visible_nicks {
+                // Header: nick count; while scrolling "shown/total".
+                let header = if n_nicks > visible_nicks {
                     let shown = (nick_scroll_off + visible_nicks).min(n_nicks);
-                    hint = format!("({}/{})", shown, n_nicks);
-                }
+                    format!(" Nick ({}/{})", shown, n_nicks)
+                } else {
+                    format!(" Nick ({})", n_nicks)
+                };
                 out.push_str(ANSI_BOLD);
                 out.push_str(ANSI_CYAN);
-                out.push_str(&fit_width(&format!(" Nick{}", hint), NICK_LIST_WIDTH));
+                out.push_str(&fit_width(&header, NICK_LIST_WIDTH));
                 out.push_str(ANSI_RESET);
             } else {
                 let ni = nick_scroll_off + i - 1;
                 if ni < n_nicks {
                     let n = sanitize_text(&nicks[ni as usize]);
                     let display = truncate_width(&n, NICK_LIST_WIDTH);
+                    // Plain nicks use the default colour (37 "white" is
+                    // invisible on a light background).
                     let color = match mode_prefix(&n, p.prefix_signs) {
-                        "~" | "&" | "@" => ANSI_YELLOW,
+                        "~" | "&" | "@" => accent,
                         "%" => ANSI_GREEN,
                         "+" => ANSI_CYAN,
-                        _ => ANSI_WHITE,
+                        _ => "",
                     };
                     out.push_str(color);
                     out.push_str(&fit_width(&display, NICK_LIST_WIDTH));
@@ -496,41 +627,52 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
         if n_nicks > visible_nicks {
             if nick_scroll_off > 0 {
                 out.push_str(&move_to(msg_area_top, nick_col + NICK_LIST_WIDTH - 1));
-                out.push_str(ANSI_YELLOW);
+                out.push_str(accent);
                 out.push('▲');
                 out.push_str(ANSI_RESET);
             }
             if nick_scroll_off < max_scroll {
                 out.push_str(&move_to(msg_area_bot, nick_col + NICK_LIST_WIDTH - 1));
-                out.push_str(ANSI_YELLOW);
+                out.push_str(accent);
                 out.push('▼');
                 out.push_str(ANSI_RESET);
             }
         }
     }
 
-    // --- Separator ---
+    // --- Separator (with ┴ under the column dividers) ---
     out.push_str(&move_to(h - 1, 1));
     out.push_str(ANSI_DARK_GRAY);
-    out.push_str(&"─".repeat(w as usize));
+    let nick_sep_col = if show_nicks {
+        w - NICK_LIST_WIDTH - 1
+    } else {
+        0
+    };
+    for col in 1..=w {
+        out.push(if col == chan_w + 1 || col == nick_sep_col {
+            '┴'
+        } else {
+            '─'
+        });
+    }
     out.push_str(ANSI_RESET);
 
     // --- Input line ---
     out.push_str(&move_to(h, 1));
     out.push_str(&erase(w));
     out.push_str(&move_to(h, 1));
+    let mut prefix_len = 0;
     if !p.away.is_empty() {
-        out.push_str(ANSI_YELLOW);
+        out.push_str(accent);
         out.push_str("[AWAY] ");
         out.push_str(ANSI_RESET);
-    }
-    out.push_str(ANSI_GREEN);
-    out.push_str("> ");
-    out.push_str(ANSI_RESET);
-    let mut prefix_len = 2;
-    if !p.away.is_empty() {
         prefix_len += 7;
     }
+    out.push_str(ANSI_GREEN);
+    out.push_str(ANSI_BOLD);
+    out.push_str("> ");
+    out.push_str(ANSI_RESET);
+    prefix_len += 2;
     // SANITISE THE INPUT LINE — the only place where unsanitised text
     // reaches the terminal. Server data (a nick prefix that arrived via
     // JOIN/NAMES) may carry an ESC/OSC sequence: without this filter "OSC 52"
@@ -539,28 +681,57 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
     let input_str: String = p.input.iter().collect();
     let safe_input = sanitize_text(&input_str);
     let disp_runes: Vec<char> = safe_input.chars().collect();
-    let max_input = (w - prefix_len - 1).max(0) as usize;
-    let disp_start = if disp_runes.len() > max_input {
-        disp_runes.len() - max_input
-    } else {
-        0
-    };
-    out.extend(disp_runes[disp_start..].iter());
 
     // Cursor position — over the SANITISED text (sanitising removes
     // characters, so the raw index no longer matches): count how many
     // characters remain before input_pos.
     let upto = p.input_pos.min(p.input.len());
     let prefix_str: String = p.input[..upto].iter().collect();
-    let cur_pos = sanitize_text(&prefix_str).chars().count() as i32;
-    let cursor_col = (prefix_len + 1 + (cur_pos - disp_start as i32)).clamp(1, w);
+    let cur_pos = sanitize_text(&prefix_str)
+        .chars()
+        .count()
+        .min(disp_runes.len());
+    let max_input = (w - prefix_len - 1).max(1);
+    let (disp_start, disp_end) = input_window(&disp_runes, cur_pos, max_input);
+    out.extend(disp_runes[disp_start..disp_end].iter());
+    let cursor_cells: i32 = disp_runes[disp_start..cur_pos]
+        .iter()
+        .map(|&r| rune_width(r))
+        .sum();
+    let cursor_col = (prefix_len + 1 + cursor_cells).clamp(1, w);
     out.push_str(&move_to(h, cursor_col));
     out.push_str(ANSI_SHOW_CUR);
 
+    if no_color() {
+        out = strip_colors(&out);
+    }
     Some(Frame {
         output: out,
         msg_area_top,
     })
+}
+
+/// Visible slice `[start, end)` of the input line that fits `max` CELLS and
+/// keeps the cursor (`cur`, a char index) on screen. Wide characters (CJK,
+/// emoji) take 2 cells, so counting chars would misplace the cursor.
+pub fn input_window(chars: &[char], cur: usize, max: i32) -> (usize, usize) {
+    let cur = cur.min(chars.len());
+    let w = |r: &char| rune_width(*r);
+    // Scroll right just enough that the text up to the cursor plus the
+    // cursor cell itself fits.
+    let mut start = 0;
+    let mut used: i32 = chars[..cur].iter().map(w).sum();
+    while start < cur && used + 1 > max {
+        used -= w(&chars[start]);
+        start += 1;
+    }
+    let mut end = start;
+    let mut cells = 0;
+    while end < chars.len() && cells + w(&chars[end]) <= max {
+        cells += w(&chars[end]);
+        end += 1;
+    }
+    (start, end.max(cur))
 }
 
 #[cfg(test)]
