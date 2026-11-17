@@ -414,22 +414,51 @@ fn write_log_entry(files: &mut HashMap<String, File>, e: &LogEntry) -> io::Resul
 }
 
 /// `<log_dir>/<server>/<channel>-YYYY-MM-DD.log`, mode 0600, directory 0700.
+///
+/// The log file is opened with `O_NOFOLLOW` and both directories must belong
+/// to us: in a shared log directory a planted symlink would otherwise make
+/// server-controlled chat text land in another file (e.g. `~/.bashrc`).
 fn open_log_file(log_dir: &str, server: &str, chan: &str, day: &str) -> io::Result<File> {
     let dir = Path::new(log_dir).join(sanitize_path(server));
     fs::create_dir_all(&dir)
         .map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", dir.display())))?;
     restrict_dir(Path::new(log_dir));
     restrict_dir(&dir);
+    ensure_own_dir(Path::new(log_dir))?;
+    ensure_own_dir(&dir)?;
     let path = dir.join(format!("{chan}-{day}.log"));
     let mut opts = OpenOptions::new();
     opts.create(true).append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     opts.open(&path)
         .map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", path.display())))
+}
+
+/// The directory must be owned by the effective user (not someone else's
+/// directory in a shared location).
+fn ensure_own_dir(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let md = fs::metadata(path)?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        if md.uid() != me {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{}: katalogas priklauso kitam naudotojui", path.display()),
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 fn restrict_dir(path: &Path) {
@@ -602,6 +631,26 @@ mod tests {
         assert!(cfg.server_pass.is_empty() && cfg.sasl_pass.is_empty());
         assert!(cfg.nick_serv.is_empty() && cfg.perform.is_empty());
         assert_eq!(warns.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_file_symlink_is_not_followed() {
+        // A planted `<chan>-<day>.log` symlink (shared/world-writable log
+        // directory) must not redirect server-controlled chat text into,
+        // say, ~/.bashrc.
+        let dir = std::env::temp_dir().join(format!("mircbsd-log-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("srv")).unwrap();
+        let victim = dir.join("victim");
+        fs::write(&victim, b"keep").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join("srv").join("#c-2026-01-01.log")).unwrap();
+        let res = open_log_file(dir.to_str().unwrap(), "srv", "#c", "2026-01-01");
+        if let Ok(mut f) = res {
+            let _ = f.write_all(b"pwned");
+        }
+        assert_eq!(fs::read(&victim).unwrap(), b"keep");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
