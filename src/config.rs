@@ -93,6 +93,13 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
         Ok(f) => f,
         Err(_) => return (cfg, warnings),
     };
+    #[cfg(unix)]
+    let readable_by_others = {
+        use std::os::unix::fs::PermissionsExt;
+        file.metadata()
+            .map(|m| m.permissions().mode() & 0o077 != 0)
+            .unwrap_or(false)
+    };
 
     let reader = BufReader::new(file);
     for line in reader.lines() {
@@ -191,6 +198,19 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
             "theme" => cfg.theme = v.to_ascii_lowercase(),
             _ => {}
         }
+    }
+
+    // Passwords in a group/world-readable file: tell the user (the file is
+    // only ever rewritten 0600 by `/set`, never chmod-ed behind their back).
+    #[cfg(unix)]
+    if readable_by_others
+        && (!cfg.server_pass.is_empty() || !cfg.sasl_pass.is_empty() || !cfg.nick_serv.is_empty())
+    {
+        warnings.push(format!(
+            "{} su slaptažodžiais skaitomas kitiems naudotojams — chmod 600 {}",
+            path.display(),
+            path.display()
+        ));
     }
 
     (cfg, warnings)
@@ -320,8 +340,14 @@ pub fn unescape_key_seq(s: &str) -> Result<Vec<u8>, String> {
             }
             b'x' => {
                 if i + 4 <= bytes.len() {
-                    let hex = &s[i + 2..i + 4];
-                    let v = u8::from_str_radix(hex, 16)
+                    // Bytes, not `&s[..]`: a non-ASCII letter after `\x` is not
+                    // a char boundary and slicing the str would panic.
+                    let hex_bytes = &bytes[i + 2..i + 4];
+                    let hex = String::from_utf8_lossy(hex_bytes);
+                    if !hex_bytes.iter().all(u8::is_ascii_hexdigit) {
+                        return Err(format!("nevalidus \\xXX: \\x{hex}"));
+                    }
+                    let v = u8::from_str_radix(&hex, 16)
                         .map_err(|_| format!("nevalidus \\xXX: \\x{hex}"))?;
                     out.push(v);
                     i += 4;
@@ -466,7 +492,7 @@ pub fn parse_bool_value(v: &str) -> (bool, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::load_config;
+    use super::{load_config, unescape_key_seq};
     use std::io::Write;
 
     #[test]
@@ -496,5 +522,41 @@ mod tests {
         assert!(warnings
             .iter()
             .any(|warning| warning.contains("perskaityti")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readable_config_with_passwords_warns() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "mircbsd-config-perm-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret");
+        std::fs::write(&secret, "nick=a\nsasl=hunter2\n").unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let (_, warns) = load_config(&secret);
+        assert!(warns.iter().any(|w| w.contains("chmod 600")), "{warns:?}");
+
+        // 0600, or no passwords at all: no warning.
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(load_config(&secret).1.is_empty());
+        let plain = dir.join("plain");
+        std::fs::write(&plain, "nick=a\n").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_config(&plain).1.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn key_escape_with_non_ascii_after_x_is_an_error_not_a_panic() {
+        // `\xaé` sliced a str in the middle of "é" → panic at startup / `/keys`.
+        for bad in ["\\xaé", "\\xé", "\\xžž", "\\x"] {
+            assert!(unescape_key_seq(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(unescape_key_seq("\\x1bé").unwrap(), "\x1bé".as_bytes());
     }
 }

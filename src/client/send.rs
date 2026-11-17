@@ -21,10 +21,15 @@ use super::IRC_SEND_BURST;
 /// Capacity of the per-connection write queue (Go: `make(chan string, 256)`).
 pub const WRITE_QUEUE_CAP: usize = 256;
 
-/// Remove CR/LF (protocol-injection guard) and cut to the 512-byte line limit.
+/// Remove CR/LF/NUL (protocol-injection guard) and cut to the 512-byte line
+/// limit. NUL is illegal in an IRC line: servers cut the line there or drop
+/// it, so a NUL from server data (PING token, CTCP payload) or a paste must
+/// never reach the socket.
 pub fn prepare_line(line: &str) -> String {
-    let cleaned: String = if line.contains(['\r', '\n']) {
-        line.chars().filter(|&c| c != '\r' && c != '\n').collect()
+    let cleaned: String = if line.contains(['\r', '\n', '\0']) {
+        line.chars()
+            .filter(|&c| c != '\r' && c != '\n' && c != '\0')
+            .collect()
     } else {
         line.to_string()
     };
@@ -231,6 +236,8 @@ mod tests {
     #[test]
     fn prepare_strips_crlf_and_truncates() {
         assert_eq!(prepare_line("PRIVMSG a :x\r\nQUIT"), "PRIVMSG a :xQUIT");
+        // NUL is illegal on the wire as well (server cuts the line there).
+        assert_eq!(prepare_line("PONG :a\0b"), "PONG :ab");
         let long = "é".repeat(400);
         let out = prepare_line(&long);
         assert!(out.len() <= 510);

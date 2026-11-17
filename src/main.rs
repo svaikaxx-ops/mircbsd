@@ -167,6 +167,13 @@ fn welcome(client: &Client, cfg: &Config, warns: &[String]) {
 /// (same as the Go client).
 fn apply_cli(cfg: &mut Config, warns: &mut Vec<String>) {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    apply_cli_args(cfg, warns, &args);
+}
+
+/// [`apply_cli`] on explicit arguments. A server other than the configured
+/// one does NOT inherit the config passwords (PASS, SASL, NickServ,
+/// `perform`): they were written for the configured network.
+fn apply_cli_args(cfg: &mut Config, warns: &mut Vec<String>, args: &[String]) {
     if args.len() < 2 {
         return;
     }
@@ -179,6 +186,22 @@ fn apply_cli(cfg: &mut Config, warns: &mut Vec<String>) {
     if !is_valid_port(&port) {
         warns.push(format!("Neteisingas portas: {port}"));
         port.clear();
+    }
+    if !cfg.server.is_empty() && !server.eq_ignore_ascii_case(&cfg.server) {
+        let had = !cfg.server_pass.is_empty()
+            || !cfg.sasl_pass.is_empty()
+            || !cfg.nick_serv.is_empty()
+            || !cfg.perform.is_empty();
+        cfg.server_pass.clear();
+        cfg.sasl_pass.clear();
+        cfg.nick_serv.clear();
+        cfg.perform.clear();
+        if had {
+            warns.push(format!(
+                "Serveris {server} ≠ konfigūracijos {} — config slaptažodžiai ir perform nenaudojami",
+                cfg.server
+            ));
+        }
     }
     cfg.server = server;
     cfg.port = port;
@@ -237,8 +260,7 @@ impl Drop for RawTerm {
 /// Desktop notification via `notify-send` (`notifyDesktop`). Missing binary
 /// is ignored. `--` keeps a server-controlled title from being parsed as a flag.
 fn notify_desktop(title: &str, body: &str) {
-    let title = clip_runes(&sanitize_text(title), 60, false);
-    let body = clip_runes(&sanitize_text(body), 120, true);
+    let (title, body) = notify_texts(title, body);
     let mut child = match Command::new("notify-send")
         .args(["-a", "mircBSD", "-t", "5000", "--", &title, &body])
         .stdin(Stdio::null())
@@ -252,6 +274,29 @@ fn notify_desktop(title: &str, body: &str) {
     thread::spawn(move || {
         let _ = child.wait();
     });
+}
+
+/// Title and body for `notify-send`: sanitized and clipped. The BODY is
+/// interpreted as markup by freedesktop notification daemons (`<a href>`,
+/// `<img src>` …), so `&`, `<`, `>` from the network are escaped (after
+/// clipping, so an entity is never cut in half).
+fn notify_texts(title: &str, body: &str) -> (String, String) {
+    let title = clip_runes(&sanitize_text(title), 60, false);
+    let body = clip_runes(&sanitize_text(body), 120, true);
+    (title, escape_markup(&body))
+}
+
+fn escape_markup(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn clip_runes(s: &str, max: usize, ellipsis: bool) -> String {
@@ -391,22 +436,51 @@ fn write_log_entry(files: &mut HashMap<String, File>, e: &LogEntry) -> io::Resul
 }
 
 /// `<log_dir>/<server>/<channel>-YYYY-MM-DD.log`, mode 0600, directory 0700.
+///
+/// The log file is opened with `O_NOFOLLOW` and both directories must belong
+/// to us: in a shared log directory a planted symlink would otherwise make
+/// server-controlled chat text land in another file (e.g. `~/.bashrc`).
 fn open_log_file(log_dir: &str, server: &str, chan: &str, day: &str) -> io::Result<File> {
     let dir = Path::new(log_dir).join(sanitize_path(server));
     fs::create_dir_all(&dir)
         .map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", dir.display())))?;
     restrict_dir(Path::new(log_dir));
     restrict_dir(&dir);
+    ensure_own_dir(Path::new(log_dir))?;
+    ensure_own_dir(&dir)?;
     let path = dir.join(format!("{chan}-{day}.log"));
     let mut opts = OpenOptions::new();
     opts.create(true).append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     opts.open(&path)
         .map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", path.display())))
+}
+
+/// The directory must be owned by the effective user (not someone else's
+/// directory in a shared location).
+fn ensure_own_dir(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let md = fs::metadata(path)?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        if md.uid() != me {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{}: katalogas priklauso kitam naudotojui", path.display()),
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 fn restrict_dir(path: &Path) {
@@ -551,6 +625,67 @@ fn signal_loop(_client: Arc<Client>, _set: ()) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_server_other_than_config_drops_config_credentials() {
+        let mut cfg = mircbsd::config::default_config();
+        cfg.server = "irc.libera.chat".into();
+        cfg.server_pass = "srv".into();
+        cfg.sasl_pass = "sasl".into();
+        cfg.nick_serv = "ns".into();
+        cfg.perform = vec!["PRIVMSG NickServ :IDENTIFY x".into()];
+        let mut same = cfg.clone();
+        let mut warns = Vec::new();
+        apply_cli_args(
+            &mut same,
+            &mut warns,
+            &["IRC.Libera.Chat".into(), "6697".into()],
+        );
+        assert_eq!(same.sasl_pass, "sasl", "same server keeps credentials");
+        assert!(warns.is_empty());
+
+        apply_cli_args(
+            &mut cfg,
+            &mut warns,
+            &["irc.evil.net".into(), "6667".into()],
+        );
+        assert_eq!(cfg.server, "irc.evil.net");
+        assert!(cfg.server_pass.is_empty() && cfg.sasl_pass.is_empty());
+        assert!(cfg.nick_serv.is_empty() && cfg.perform.is_empty());
+        assert_eq!(warns.len(), 1);
+    }
+
+    #[test]
+    fn notification_body_markup_is_escaped() {
+        let (title, body) = notify_texts(
+            "#c\x1b]0;x\x07",
+            "<evil> <a href=\"http://x\">spausk</a> <img src=\"/etc/x.png\"> & co",
+        );
+        assert_eq!(title, "#c]0;x");
+        assert!(!body.contains('<') && !body.contains('>'), "{body}");
+        assert!(body.starts_with("&lt;evil&gt; &lt;a href="), "{body}");
+        assert!(body.contains("&amp; co"), "{body}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_file_symlink_is_not_followed() {
+        // A planted `<chan>-<day>.log` symlink (shared/world-writable log
+        // directory) must not redirect server-controlled chat text into,
+        // say, ~/.bashrc.
+        let dir = std::env::temp_dir().join(format!("mircbsd-log-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("srv")).unwrap();
+        let victim = dir.join("victim");
+        fs::write(&victim, b"keep").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join("srv").join("#c-2026-01-01.log")).unwrap();
+        let res = open_log_file(dir.to_str().unwrap(), "srv", "#c", "2026-01-01");
+        if let Ok(mut f) = res {
+            let _ = f.write_all(b"pwned");
+        }
+        assert_eq!(fs::read(&victim).unwrap(), b"keep");
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn log_open_error_identifies_directory() {

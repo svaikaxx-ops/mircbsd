@@ -10,20 +10,24 @@ use chrono::{DateTime, Local, TimeZone, Utc};
 
 use crate::proto::caps::{
     authenticate_chunks, parse_cap_names, sasl_decide, sasl_plain_payload, wanted_caps, SaslInputs,
-    SASL_EXTERNAL_WARN,
+    IRCV3_WANTED_CAPS, SASL_EXTERNAL_WARN,
 };
 use crate::proto::isupport::parse_chan_modes;
 use crate::proto::parse::{parse_line, IrcLine};
-use crate::sanitize::{sanitize_chan_name, sanitize_text};
+use crate::sanitize::{is_safe_url, sanitize_chan_name, sanitize_text};
 use crate::validate::{nick_equal, strip_mode};
 use crate::width::{fit_width, pad_right};
 
 use crate::ui::strip_irc_format;
 
 use super::types::{new_msg, new_msg_hl, Client, MsgType, State, SERVER_WINDOW};
-use super::{os_label, MAX_AWAY_NOTIFIED, MAX_CTCP_BYTES, VERSION};
+use super::{
+    os_label, CTCP_REPLY_WINDOW, MAX_AWAY_NOTIFIED, MAX_CTCP_BYTES, MAX_CTCP_REPLIES, VERSION,
+};
 
 const AWAY_THROTTLE_MINUTES: i64 = 10;
+/// Most capability names kept from one `CAP LS`/`NEW` round.
+const MAX_CAP_NAMES: usize = 1024;
 
 /// Does `text` mention `nick` as a whole word (case-insensitive, first occurrence)?
 pub fn contains_nick(text: &str, nick: &str) -> bool {
@@ -47,13 +51,16 @@ pub fn is_nick_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || "_-[]\\`^{}|".contains(c)
 }
 
-/// http/https/ftp URLs in `text` (formatting stripped, trailing punctuation trimmed).
+/// http/https/ftp URLs in `text` (formatting stripped, trailing punctuation
+/// trimmed). URLs with hidden characters are skipped ([`is_safe_url`]): what
+/// `/open` launches must be exactly what `/urls` showed.
 pub fn extract_urls(text: &str) -> Vec<String> {
     strip_irc_format(text)
         .split_whitespace()
         .map(|w| w.trim_end_matches(['.', ',', '!', '?', ')']))
         .filter(|w| {
-            w.starts_with("http://") || w.starts_with("https://") || w.starts_with("ftp://")
+            (w.starts_with("http://") || w.starts_with("https://") || w.starts_with("ftp://"))
+                && is_safe_url(w)
         })
         .map(str::to_string)
         .collect()
@@ -417,7 +424,15 @@ impl Client {
                         continue;
                     }
                     let key = self.mon_key(&nick);
-                    self.mu.lock().monitor_online.insert(key);
+                    {
+                        // Only nicks WE watch: a hostile server could
+                        // otherwise grow the set without bound.
+                        let mut st = self.mu.lock();
+                        if !st.monitor_list.iter().any(|n| self.nick_equal(n, &nick)) {
+                            continue;
+                        }
+                        st.monitor_online.insert(key);
+                    }
                     self.server_msg(&format!("● {nick} prisijungė (žiūrimas)"));
                 }
             }
@@ -488,10 +503,21 @@ impl Client {
         }
         let (pass, auto_join, perform, monitor) = {
             let st = self.mu.lock();
+            // NickServ password and `perform` (often "IDENTIFY …") belong to
+            // the configured server only.
+            let creds = st.creds_allowed();
             (
-                st.nickserv_pass.clone(),
+                if creds {
+                    st.nickserv_pass.clone()
+                } else {
+                    String::new()
+                },
                 st.auto_join.clone(),
-                st.perform.clone(),
+                if creds {
+                    st.perform.clone()
+                } else {
+                    Vec::new()
+                },
                 st.monitor_list.clone(),
             )
         };
@@ -786,7 +812,7 @@ impl Client {
                 self.add_msg(dest, new_msg_hl(now, from, action, MsgType::Action, hl));
             } else if inner.starts_with("VERSION") {
                 let enabled = self.mu.lock().ctcp_version;
-                if enabled {
+                if enabled && self.allow_ctcp_reply() {
                     self.send(&format!(
                         "NOTICE {from} :\x01VERSION mircBSD {VERSION} ({}/Rust)\x01",
                         os_label()
@@ -795,7 +821,9 @@ impl Client {
             } else if inner.starts_with("PING") {
                 // Bounded reflection: no amplification.
                 let payload = cut_utf8(inner, MAX_CTCP_BYTES);
-                self.send(&format!("NOTICE {from} :\x01{payload}\x01"));
+                if self.allow_ctcp_reply() {
+                    self.send(&format!("NOTICE {from} :\x01{payload}\x01"));
+                }
             }
             return;
         }
@@ -841,6 +869,20 @@ impl Client {
                 st.last_urls.drain(..drop_n);
             }
         }
+    }
+
+    /// CTCP reply budget: at most `MAX_CTCP_REPLIES` per `CTCP_REPLY_WINDOW`
+    /// (sliding window). Over budget the request is silently ignored.
+    fn allow_ctcp_reply(&self) -> bool {
+        let now = std::time::Instant::now();
+        let mut st = self.mu.lock();
+        st.ctcp_replies
+            .retain(|t| now.saturating_duration_since(*t) < CTCP_REPLY_WINDOW);
+        if st.ctcp_replies.len() >= MAX_CTCP_REPLIES {
+            return false;
+        }
+        st.ctcp_replies.push(now);
+        true
     }
 
     fn on_away(&self, msg: &IrcLine, now: DateTime<Utc>) {
@@ -906,7 +948,7 @@ impl Client {
             external: st.sasl_external,
             has_cert: !st.tls_cert_path.is_empty(),
             use_tls: st.use_tls,
-            has_password: !st.sasl_pass.is_empty(),
+            has_password: !st.sasl_pass.is_empty() && st.creds_allowed(),
             already_ok: st.sasl_ok,
         }
     }
@@ -943,10 +985,21 @@ impl Client {
         }
     }
 
+    /// Collect offered capability names, at most [`MAX_CAP_NAMES`] (an endless
+    /// `CAP LS *` continuation must not buffer unbounded data).
+    fn add_cap_names(st: &mut State, caps: &str) {
+        for name in parse_cap_names(caps) {
+            if st.cap_available.len() >= MAX_CAP_NAMES {
+                break;
+            }
+            st.cap_available.insert(name);
+        }
+    }
+
     /// `CAP NEW`: server offers capabilities after registration.
     pub fn handle_cap_new(&self, caps: &str) {
         let mut st = self.mu.lock();
-        st.cap_available.extend(parse_cap_names(caps));
+        Self::add_cap_names(&mut st, caps);
         self.finish_cap_round(st, true);
     }
 
@@ -959,7 +1012,7 @@ impl Client {
         match sub.as_str() {
             "LS" => {
                 let mut st = self.mu.lock();
-                st.cap_available.extend(parse_cap_names(caps));
+                Self::add_cap_names(&mut st, caps);
                 if cont {
                     return;
                 }
@@ -976,13 +1029,21 @@ impl Client {
                             continue;
                         }
                         let name = cap.to_lowercase();
+                        // Only capabilities we can have requested: an ACK
+                        // for anything else is ignored (bounded set).
+                        if name != "sasl" && !IRCV3_WANTED_CAPS.contains(&name.as_str()) {
+                            continue;
+                        }
                         if name == "sasl" {
                             sasl_acked = true;
                         }
                         st.active_caps.insert(name);
                     }
                     // Start AUTHENTICATE only if WE asked for sasl and have a credential.
-                    if !st.cap_sasl || (st.sasl_mech != "EXTERNAL" && st.sasl_pass.is_empty()) {
+                    if !st.cap_sasl
+                        || (st.sasl_mech != "EXTERNAL"
+                            && (st.sasl_pass.is_empty() || !st.creds_allowed()))
+                    {
                         sasl_acked = false;
                     }
                 }
@@ -1025,7 +1086,7 @@ impl Client {
         let (pending, nick, pass, mech) = {
             let st = self.mu.lock();
             (
-                st.sasl_pending,
+                st.sasl_pending && st.creds_allowed(),
                 st.nick.clone(),
                 st.sasl_pass.clone(),
                 st.sasl_mech.clone(),

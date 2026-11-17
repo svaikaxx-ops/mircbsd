@@ -104,6 +104,10 @@ pub struct State {
     /// "PLAIN" / "EXTERNAL" — mechanism that was started.
     pub sasl_mech: String,
     pub server_pass: String,
+    /// The configured server the credentials above (PASS, SASL, NickServ
+    /// password, `perform`) belong to; "" = not bound. See
+    /// [`State::creds_allowed`].
+    pub cred_server: String,
     pub auto_join: Vec<String>,
     pub away: String,
     pub perform: Vec<String>,
@@ -151,6 +155,8 @@ pub struct State {
     pub paste_collect_until: Option<Instant>,
 
     pub last_pong: Instant,
+    /// Times of recent CTCP replies (rate limit, at most `MAX_CTCP_REPLIES`).
+    pub ctcp_replies: Vec<Instant>,
 
     pub channels: Vec<Channel>,
     pub active_idx: usize,
@@ -225,6 +231,7 @@ impl Client {
             "6667".to_string()
         };
 
+        let cred_server = server.clone();
         let st = State {
             nick,
             server,
@@ -242,6 +249,7 @@ impl Client {
             tls_pin: cfg.tls_pin.clone(),
             sasl_mech: String::new(),
             server_pass: cfg.server_pass.clone(),
+            cred_server,
             auto_join: cfg.auto_join.clone(),
             away: String::new(),
             perform: cfg.perform.clone(),
@@ -273,6 +281,7 @@ impl Client {
             paste_partial: String::new(),
             paste_collect_until: None,
             last_pong: Instant::now(),
+            ctcp_replies: Vec::new(),
             channels: vec![Channel::new(
                 SERVER_WINDOW,
                 cfg.max_messages.max(0) as usize,
@@ -433,6 +442,15 @@ impl Client {
 }
 
 impl State {
+    /// May the configured credentials (server PASS, SASL PLAIN password,
+    /// NickServ IDENTIFY, `perform`) be sent to the CURRENT server? Only to
+    /// the server they were configured for: `/connect other.net …` must not
+    /// hand the passwords to another network's operators. Unbound
+    /// credentials (no server in the config) keep the old behaviour.
+    pub fn creds_allowed(&self) -> bool {
+        self.cred_server.is_empty() || self.server.eq_ignore_ascii_case(&self.cred_server)
+    }
+
     /// Insert the "new messages" separator before the first unread message.
     pub(crate) fn insert_unread_separator(target: &mut Channel) {
         if target.unread > 0

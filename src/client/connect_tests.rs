@@ -268,6 +268,36 @@ fn warns_before_password_on_plain_connection() {
     assert!(rx.try_iter().any(|line| line == "PASS secret"));
 }
 
+#[test]
+fn connect_to_other_server_does_not_send_config_password() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let srv = std::thread::spawn(move || {
+        let (socket, _) = listener.accept().unwrap();
+        serve_irc(socket, tx);
+    });
+    let mut cfg = default_config();
+    cfg.server = "irc.example.org".into();
+    cfg.server_pass = "secret".into();
+    cfg.reconnect = false;
+    cfg.log_dir = String::new();
+    let client = Client::new(&cfg);
+    // The user connects somewhere else than the configured network.
+    client.handle_cmd("connect", &format!("127.0.0.1 {port} tester"));
+    wait_until("registration", || {
+        server_texts(&client).iter().any(|t| t == "Welcome")
+    });
+    client.send("QUIT :bye");
+    client.finish_writes(Duration::from_secs(3));
+    srv.join().unwrap();
+    let seen: Vec<String> = rx.try_iter().collect();
+    assert!(!seen.iter().any(|l| l.starts_with("PASS")), "{seen:?}");
+    assert!(server_texts(&client)
+        .iter()
+        .any(|t| t.contains("nesiunčiami")));
+}
+
 fn tls_server(
     listener: TcpListener,
     seen: std::sync::mpsc::Sender<String>,
@@ -295,6 +325,34 @@ fn tls_server(
         }
         serve_irc(StreamOwned::new(conn, sock), seen);
     })
+}
+
+#[test]
+fn first_use_pin_records_that_the_certificate_is_not_ca_signed() {
+    let certs = CertificateDer::pem_slice_iter(TEST_CERT_PEM.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let name = ServerName::try_from("localhost").unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+
+    // First use (no pin): accepted (TOFU), but flagged as not CA-signed.
+    let v = pin_verifier(provider.clone(), None);
+    v.ca_trusted.store(true, Ordering::SeqCst);
+    assert!(v
+        .verify_server_cert(&certs[0], &[], &name, &[], UnixTime::now())
+        .is_ok());
+    assert!(!v.ca_trusted.load(Ordering::SeqCst));
+
+    // Known pin: compared, the CA check is not needed.
+    let v = pin_verifier(provider.clone(), Some(TEST_CERT_SPKI_SHA256.into()));
+    assert!(v.ca.is_none());
+    assert!(v
+        .verify_server_cert(&certs[0], &[], &name, &[], UnixTime::now())
+        .is_ok());
+    let v = pin_verifier(provider, Some("00".repeat(32)));
+    assert!(v
+        .verify_server_cert(&certs[0], &[], &name, &[], UnixTime::now())
+        .is_err());
 }
 
 #[test]
