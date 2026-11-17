@@ -297,8 +297,13 @@ impl Client {
         }
         let has_conn = {
             let mut st = self.mu.lock();
-            st.nick = new_nick.to_string();
-            st.conn.is_some()
+            // Po registracijos nick keičiamas tik gavus serverio NICK
+            // patvirtinimą (433/432 atveju jis lieka senas); iki jos — iškart,
+            // nes jis bus naudojamas registruojantis.
+            if !st.registered {
+                st.nick = new_nick.to_string();
+            }
+            st.connected
         };
         if has_conn {
             self.send(&format!("NICK {new_nick}"));
@@ -345,6 +350,13 @@ impl Client {
             self.err_msg(&format!(
                 "ĮSPĖJIMAS: pasiektas kanalų limitas — kanalas „{hit}“ neatidarytas"
             ));
+        }
+        if !self.is_connected() {
+            // Be ryšio: kanalas bus prijungtas po registracijos (001).
+            let mut st = self.mu.lock();
+            if !st.rejoin.iter().any(|r| r.eq_ignore_ascii_case(&ch_name)) {
+                st.rejoin.push(ch_name.clone());
+            }
         }
         if self.is_connected() {
             if let Some(key) = key {
@@ -1050,6 +1062,7 @@ impl Client {
             }
             let ch_name = st.channels[idx].name.clone();
             st.remove_ch(idx);
+            st.rejoin.retain(|r| !r.eq_ignore_ascii_case(&ch_name));
             (idx, ch_name)
         };
         let _ = idx;

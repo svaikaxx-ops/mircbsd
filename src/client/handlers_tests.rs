@@ -388,3 +388,73 @@ fn hostile_server_cannot_grow_monitor_and_cap_sets_without_bound() {
     assert!(!st.active_caps.contains("another"));
     assert!(st.active_caps.contains("server-time"));
 }
+
+#[test]
+fn nick_in_use_after_registration_does_not_rename() {
+    let (c, q) = setup();
+    c.parse_irc(":srv 001 me :Welcome");
+    sent(&q);
+    c.parse_irc(":srv 433 me taken :Nickname is already in use");
+    assert_eq!(c.my_nick(), "me");
+    assert!(sent(&q).is_empty(), "po 001 433 negali siųsti NICK me_");
+}
+
+#[test]
+fn nick_in_use_during_registration_tries_alternative() {
+    let (c, q) = setup();
+    c.parse_irc(":srv 433 * me :Nickname is already in use");
+    assert_eq!(c.my_nick(), "me_");
+    assert_eq!(sent(&q), vec!["NICK me_"]);
+}
+
+#[test]
+fn welcome_adopts_server_assigned_nick() {
+    let (c, _q) = setup();
+    c.mu.lock().nick = "verylongnick".into();
+    c.parse_irc(":srv 001 verylong :Welcome");
+    assert_eq!(c.my_nick(), "verylong");
+}
+
+#[test]
+fn reconnect_rejoins_channels_and_clears_stale_nicks() {
+    let (c, q) = setup();
+    c.parse_irc(":srv 001 me :Welcome");
+    c.parse_irc(":me!u@h JOIN #a");
+    c.parse_irc(":srv 353 me = #a :me bob");
+    c.parse_irc(":me!u@h JOIN #b");
+    c.parse_irc(":op!u@h KICK #b me :lauk");
+    c.parse_irc(":bob!u@h PRIVMSG me :labas");
+    sent(&q);
+    c.mu.lock().note_disconnect();
+    {
+        let st = c.mu.lock();
+        let i = st.find_ch("#a").unwrap();
+        assert!(st.channels[i].nicks.is_empty(), "seni nick'ai liko");
+    }
+    c.parse_irc(":srv 001 me :Welcome");
+    let out = sent(&q);
+    assert!(out.contains(&"JOIN #a".to_string()), "{out:?}");
+    assert!(
+        !out.iter().any(|l| l == "JOIN #b"),
+        "išmestas kanalas: {out:?}"
+    );
+    assert!(!out.iter().any(|l| l.contains("bob")), "{out:?}");
+    // Antras 001 be atsijungimo nekartoja JOIN.
+    c.parse_irc(":srv 001 me :Welcome");
+    assert!(!sent(&q).iter().any(|l| l.starts_with("JOIN")));
+}
+
+#[test]
+fn kick_of_self_clears_nick_list() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #k");
+    c.parse_irc(":srv 353 me = #k :me bob");
+    c.parse_irc(":op!u@h KICK #k me :lauk");
+    let st = c.mu.lock();
+    let i = st.find_ch("#k").unwrap();
+    assert!(
+        st.channels[i].nicks.is_empty(),
+        "{:?}",
+        st.channels[i].nicks
+    );
+}

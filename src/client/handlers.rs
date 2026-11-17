@@ -382,7 +382,7 @@ impl Client {
 
             "431" => self.err_msg("Nenurodytas slapyvardis"),
             "432" => self.err_msg(&format!("Netinkamas slapyvardis: {}", p(1))),
-            "433" => self.on_nick_in_use(),
+            "433" => self.on_nick_in_use(p(1)),
 
             "ERROR" => {
                 let m = p(0);
@@ -497,12 +497,20 @@ impl Client {
             let mut st = self.mu.lock();
             st.reconnect_delay = Duration::from_secs(5);
             st.nick_attempts = 0;
+            st.registered = true;
+            // 001 pirmasis parametras — serverio PRISKIRTAS nick (gali būti
+            // sutrumpintas iki NICKLEN ar pakeistas 433 sekos metu).
+            if let Some(n) = params.first() {
+                if crate::validate::is_valid_nick(n) {
+                    st.nick = n.clone();
+                }
+            }
         }
         if params.len() > 1 {
             self.server_msg(&params[1..].join(" "));
         }
-        let (pass, auto_join, perform, monitor) = {
-            let st = self.mu.lock();
+        let (pass, auto_join, perform, monitor, rejoin) = {
+            let mut st = self.mu.lock();
             // NickServ password and `perform` (often "IDENTIFY …") belong to
             // the configured server only.
             let creds = st.creds_allowed();
@@ -519,6 +527,7 @@ impl Client {
                     Vec::new()
                 },
                 st.monitor_list.clone(),
+                std::mem::take(&mut st.rejoin),
             )
         };
         // IDENTIFY only with an explicit NickServ password: sasl_pass belongs to
@@ -530,6 +539,21 @@ impl Client {
         for ch in &auto_join {
             self.send(&format!("JOIN {ch}"));
         }
+        // Po pakartotinio prisijungimo grįžtame į kanalus, kuriuose buvome
+        // (ir į /join be ryšio atidarytus) — anksčiau jų langai likdavo
+        // „mirę“ (be JOIN, žinutės → 442/404).
+        let mut joined: Vec<String> = Vec::new();
+        for ch in rejoin {
+            let dup = auto_join.iter().chain(joined.iter()).any(|a| {
+                a.split_whitespace()
+                    .next()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(&ch))
+            });
+            if !dup && self.is_channel(&ch) {
+                self.send(&format!("JOIN {ch}"));
+                joined.push(ch);
+            }
+        }
         for cmd in &perform {
             self.run_perform(cmd);
         }
@@ -538,7 +562,16 @@ impl Client {
         }
     }
 
-    fn on_nick_in_use(&self) {
+    fn on_nick_in_use(&self, wanted: &str) {
+        if self.mu.lock().registered {
+            // Po registracijos 433 atsako į /nick: dabartinis nick nesikeičia,
+            // automatinis „nick_“ bandymas čia būtų nepageidaujamas pervadinimas.
+            self.err_msg(&format!(
+                "Slapyvardis {} jau naudojamas",
+                sanitize_text(wanted)
+            ));
+            return;
+        }
         self.err_msg("Slapyvardis jau naudojamas!");
         let (cand, nick) = {
             let mut st = self.mu.lock();
@@ -677,7 +710,12 @@ impl Client {
             // find, not ensure: KICK must not create windows.
             let found = match st.find_ch(ch) {
                 Some(i) => {
-                    st.channels[i].remove_nick(kicked, None);
+                    if self.nick_equal(kicked, &me) {
+                        // Mus išmetė: kanale nebesame — senas sąrašas melagingas.
+                        st.channels[i].clear_nicks();
+                    } else {
+                        st.channels[i].remove_nick(kicked, None);
+                    }
                     true
                 }
                 None => false,

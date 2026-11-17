@@ -141,8 +141,8 @@ fn validation_errors_do_not_send() {
     let (c, q) = connected();
     c.handle_cmd("connect", "not a server 1");
     c.handle_cmd("connect", "irc.example.org 0");
-    c.handle_cmd("connect", "irc.example.org 6667 bad nick");
-    c.handle_cmd("nick", "a b");
+    c.handle_cmd("connect", "irc.example.org 6667 bad!nick");
+    c.handle_cmd("nick", "bad!nick");
     c.handle_cmd("join", "");
     c.handle_cmd("msg", "onlynick");
     c.handle_cmd("kick", "");
@@ -152,7 +152,8 @@ fn validation_errors_do_not_send() {
     let t = server_texts(&c);
     assert!(t.iter().any(|l| l.contains("Nežinoma komanda: /nope")));
     assert!(t.iter().any(|l| l.contains("porto numeris")));
-    assert!(sent(&q).is_empty());
+    let out = sent(&q);
+    assert!(out.is_empty(), "{out:?}");
 }
 
 #[test]
@@ -365,4 +366,28 @@ fn help_and_command_errors_show_in_the_active_window() {
     // *server*.
     c.err_msg("tinklo klaida");
     assert!(server_texts(&c).iter().any(|t| t == "tinklo klaida"));
+}
+
+#[test]
+fn nick_change_waits_for_server_after_registration() {
+    let (c, q) = connected();
+    let me = c.my_nick();
+    c.parse_irc(&format!(":srv 001 {me} :Welcome"));
+    sent(&q);
+    c.handle_cmd("nick", "naujas");
+    assert_eq!(sent(&q), vec!["NICK naujas"]);
+    assert_eq!(c.my_nick(), me, "nick pakeistas be serverio patvirtinimo");
+    c.parse_irc(&format!(":{me}!u@h NICK naujas"));
+    assert_eq!(c.my_nick(), "naujas");
+}
+
+#[test]
+fn join_while_offline_is_joined_after_registration() {
+    let (c, q) = connected();
+    c.mu.lock().connected = false;
+    c.handle_cmd("join", "#offline");
+    c.mu.lock().connected = true;
+    let me = c.my_nick();
+    c.parse_irc(&format!(":srv 001 {me} :Welcome"));
+    assert!(sent(&q).iter().any(|l| l == "JOIN #offline"));
 }

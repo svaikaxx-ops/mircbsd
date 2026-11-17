@@ -129,6 +129,12 @@ pub struct State {
     pub sasl_ok: bool,
     pub sasl_pending: bool,
     pub nick_attempts: u32,
+    /// 001 gautas šiame ryšyje (po jo 433 — tik klaida, ne automatinis
+    /// nick keitimas; /nick laukia serverio NICK patvirtinimo).
+    pub registered: bool,
+    /// Kanalai, į kuriuos grįžtama po (pakartotinės) registracijos: pildoma
+    /// nutrūkus ryšiui (kanalai, kuriuose buvome) ir /join be ryšio.
+    pub rejoin: Vec<String>,
     /// Connection epoch: /connect and /reconnect bump it; stale threads exit.
     pub connect_gen: i64,
     pub cap_available: HashSet<String>,
@@ -267,6 +273,8 @@ impl Client {
             sasl_ok: false,
             sasl_pending: false,
             nick_attempts: 0,
+            registered: false,
+            rejoin: Vec::new(),
             connect_gen: 0,
             cap_available: HashSet::new(),
             last_urls: Vec::new(),
@@ -449,6 +457,26 @@ impl State {
     /// credentials (no server in the config) keep the old behaviour.
     pub fn creds_allowed(&self) -> bool {
         self.cred_server.is_empty() || self.server.eq_ignore_ascii_case(&self.cred_server)
+    }
+
+    /// Ryšys nutrūko: įsimename kanalus, kuriuose buvome (grįšime po 001),
+    /// ir išvalome nick'ų sąrašus — jie nebeatitinka tikrovės (be JOIN/PART
+    /// srauto senas sąrašas liktų amžinai, o po grįžimo 353 jį tik papildytų).
+    pub fn note_disconnect(&mut self) {
+        self.registered = false;
+        let me = self.nick.clone();
+        let mut rejoin = std::mem::take(&mut self.rejoin);
+        for ch in self.channels.iter_mut() {
+            if ch.name != SERVER_WINDOW
+                && !ch.is_private
+                && ch.has_nick(&me)
+                && !rejoin.iter().any(|r| r.eq_ignore_ascii_case(&ch.name))
+            {
+                rejoin.push(ch.name.clone());
+            }
+            ch.clear_nicks();
+        }
+        self.rejoin = rejoin;
     }
 
     /// Insert the "new messages" separator before the first unread message.

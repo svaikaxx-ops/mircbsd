@@ -830,7 +830,13 @@ impl Client {
             st.cap_sasl = false;
             st.sasl_ok = false;
             st.sasl_pending = false;
+            st.registered = false;
+            st.nick_attempts = 0;
+            st.monitor_online.clear();
         }
+        // Naujas ryšys (galbūt kitas serveris per /connect): seno serverio
+        // ISUPPORT (CHANTYPES, PREFIX, CASEMAPPING, limitai) nebegalioja.
+        *self.isup.write() = crate::proto::isupport::Isup::default();
         self.server_msg("Prisijungta! Registruojamasi...");
         self.queue_redraw();
 
@@ -869,6 +875,7 @@ impl Client {
                 st.connected = false;
                 st.conn = None;
                 st.write = None;
+                st.note_disconnect();
             }
             stale
         };

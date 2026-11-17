@@ -424,3 +424,27 @@ fn tls_without_pinning_rejects_self_signed() {
     let _ = srv.join();
     assert!(rx.try_iter().next().is_none());
 }
+
+#[test]
+fn new_connection_resets_previous_server_isupport() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let srv = std::thread::spawn(move || {
+        let (s, _) = listener.accept().unwrap();
+        serve_irc(s, tx);
+    });
+    let c = test_client(port, false);
+    // Ankstesnio serverio 005: tik „&“ kanalai ir ascii casemapping.
+    c.apply_isupport(&["CHANTYPES=&", "CASEMAPPING=ascii", "NICKLEN=5"]);
+    c.start_connect();
+    wait_until("welcome", || {
+        server_texts(&c).iter().any(|t| t == "Welcome")
+    });
+    assert!(c.is_channel("#rust"), "senas CHANTYPES liko po naujo ryšio");
+    assert_eq!(c.casemapping(), "rfc1459");
+    assert_eq!(c.nick_len_limit(), 30);
+    c.send("QUIT :bye");
+    c.finish_writes(Duration::from_secs(3));
+    srv.join().unwrap();
+}
