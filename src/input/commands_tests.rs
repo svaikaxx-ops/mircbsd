@@ -516,3 +516,80 @@ fn join_before_welcome_waits_for_registration() {
         "{out:?}"
     );
 }
+
+/// Every message text in every window (scrollback, which `/search` reads).
+fn all_texts(c: &Client) -> Vec<String> {
+    let st = c.mu.lock();
+    st.channels
+        .iter()
+        .flat_map(|ch| ch.messages.iter().map(|m| m.text.clone()))
+        .collect()
+}
+
+#[test]
+fn own_secrets_are_masked_on_screen_but_sent_unchanged() {
+    let (c, q) = connected();
+    open_active(&c, "#chan");
+    for (cmd, args, wire) in [
+        (
+            "msg",
+            "NickServ IDENTIFY hunter2",
+            "PRIVMSG NickServ :IDENTIFY hunter2",
+        ),
+        (
+            "msg",
+            "NickServ REGISTER hunter2 a@b.lt",
+            "PRIVMSG NickServ :REGISTER hunter2 a@b.lt",
+        ),
+        (
+            "msg",
+            "ChanServ IDENTIFY #chan hunter2",
+            "PRIVMSG ChanServ :IDENTIFY #chan hunter2",
+        ),
+        (
+            "msg",
+            "NickServ GHOST bob hunter2",
+            "PRIVMSG NickServ :GHOST bob hunter2",
+        ),
+        (
+            "notice",
+            "NickServ IDENTIFY hunter2",
+            "NOTICE NickServ :IDENTIFY hunter2",
+        ),
+    ] {
+        c.handle_cmd(cmd, args);
+        let out = sent(&q);
+        assert!(out.iter().any(|l| l == wire), "{wire:?} not sent: {out:?}");
+    }
+    // Plain line typed into a NickServ query window.
+    c.handle_cmd("query", "NickServ");
+    c.handle_input("identify hunter2");
+    assert!(sent(&q)
+        .iter()
+        .any(|l| l == "PRIVMSG NickServ :identify hunter2"));
+
+    let shown = all_texts(&c);
+    assert!(
+        !shown.iter().any(|t| t.contains("hunter2")),
+        "password on screen: {shown:?}"
+    );
+    assert!(texts(&c, "NickServ")
+        .iter()
+        .any(|t| t == "[slaptažodis paslėptas]"));
+    // /search finds nothing (it reads the same stored messages).
+    // (The result line itself quotes the query, so check the verdict.)
+    c.handle_input("/search all hunter2");
+    let shown = all_texts(&c);
+    assert!(
+        shown.iter().any(|t| t.contains("nieko nerasta")),
+        "{shown:?}"
+    );
+
+    // Ordinary chat is not masked.
+    c.handle_cmd("msg", "bob please identify the bug");
+    assert!(texts(&c, "bob")
+        .iter()
+        .any(|t| t == "please identify the bug"));
+    c.handle_cmd("msg", "NickServ INFO bob");
+    assert!(texts(&c, "NickServ").iter().any(|t| t == "INFO bob"));
+}

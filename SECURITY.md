@@ -69,8 +69,9 @@ dienų — kas įvyks anksčiau.
 - **Kredencialai**: PASS, SASL PLAIN, NickServ IDENTIFY ir `perform`
   siunčiami **tik konfigūracijoje nurodytam serveriui** (ne `/connect kitas`);
   į neprašytą `AUTHENTICATE +` slaptažodis neatiduodamas; be TLS rodomas
-  įspėjimas. Slaptažodžių komandos neįrašomos į `history`, paslepiamos
-  žurnaluose ir JSON eksporte (euristika — žr. README).
+  įspėjimas. Slaptažodžių komandos neįrašomos į `history` (nei į ↑ atmintį,
+  nei į failą), paslepiamos ekrano aide (taigi ir `/search`), žurnaluose ir
+  JSON eksporte; serveriui siunčiamos nepakeistos (euristika — žr. README).
 - **Failų sistema**: kelio komponentai iš tinklo sanitizuojami (`/`, `..`);
   failai kuriami `0600`, katalogai `0700`, rašymas atominis (laikinas failas
   + rename); žurnalo failas atidaromas su `O_NOFOLLOW`, katalogai turi
@@ -93,7 +94,8 @@ dienų — kas įvyks anksčiau.
   `tls_pin=` iš patikimo šaltinio.
 - Priešiškas serveris mato viską, ką siunčiate jam, ir gali siųsti daug
   duomenų: atminties naudojimas ribojamas tik langų × `maxmessages`.
-- Slaptažodžių atpažinimas istorijai/žurnalams remiasi komandų forma.
+- Slaptažodžių atpažinimas istorijai/ekranui/žurnalams remiasi komandų forma
+  ir gavėju (`*Serv` paslaugos) — neatpažinta forma rodoma kaip įvesta.
 - Konfigūracijos failo teisių klientas nekeičia (tik įspėja, jei jis su
   slaptažodžiais skaitomas kitiems).
 
