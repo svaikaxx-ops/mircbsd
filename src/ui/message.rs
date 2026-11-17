@@ -685,3 +685,7 @@ pub fn changed_day(a: &DateTime<Utc>, b: &DateTime<Utc>) -> bool {
 #[cfg(test)]
 #[path = "message_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "wrap_tests.rs"]
+mod wrap_tests;

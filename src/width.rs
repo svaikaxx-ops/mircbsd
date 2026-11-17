@@ -448,3 +448,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "width_tests.rs"]
+mod more_tests;
