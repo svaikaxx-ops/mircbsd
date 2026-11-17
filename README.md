@@ -134,7 +134,7 @@ FreeBSD rodo `amd64`. FreeBSD vietoj `curl -LO` – `fetch`, vietoj
 diegimui – `install -m755` (be `-D`).
 
 ```sh
-VER=v0.5.3                          # naujausia versija – žr. Releases
+VER=v0.5.4                          # naujausia versija – žr. Releases
 T=x86_64-unknown-linux-musl         # arba aarch64-unknown-linux-musl / armv7-… / arm-unknown-linux-musleabihf
 URL=https://github.com/svaikaxx-ops/mircbsd/releases/download/$VER
 cd /tmp

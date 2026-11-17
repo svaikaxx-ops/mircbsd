@@ -89,8 +89,12 @@ jobs:
           file "$bin"
           if [ "${{ matrix.android }}" = "true" ]; then
             file "$bin" | grep -q "Android" || { echo "ne Android binaris"; exit 1; }
-            cross run --release --locked --target ${{ matrix.target }} -- --version | tee ver.txt
-            grep -q "^mircbsd " ver.txt
+            # Paleidžiama Android 9 sistemoje (qemu) tame pačiame cross atvaizde
+            # (Cross.toml); `cross run` argumentų neperduoda, todėl tiesiogiai.
+            img=$(sed -n 's/^image = "\(.*\)"$/\1/p' Cross.toml)
+            docker run --rm -v "$PWD/target:/target:ro" "$img" \
+              /android-runner aarch64 "/$bin" --version 2>/dev/null | tee ver.txt
+            grep -q "^mircbsd [0-9]" ver.txt
           else
             ${{ matrix.qemu }} "$bin" --version
           fi

@@ -4,7 +4,7 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
-## [Neišleista]
+## [0.5.4] – 2026-11-17 – Android / Termux
 
 ### Nauja
 
@@ -17,6 +17,12 @@ pagal [SemVer](https://semver.org/).
   kompiliuoti iš šaltinio.
 - **Termux integracija** — `/open` per `termux-open-url`, pranešimai per
   `termux-notification` (termux-api), jei jie yra; kitaip – kaip anksčiau.
+
+### Pataisyta
+
+- **Lenktynės testuose** — lag statuso juostos testas tikrino raudoną spalvą
+  be `TEST_LOCK`, o NO_COLOR testas lygiagrečiai perjungia globalų NO_COLOR
+  (FreeBSD CI kartais krisdavo).
 
 ## [0.5.3] – 2026-11-17 – lag, show_joins, kanalų raktai, FreeBSD, jiff
 
