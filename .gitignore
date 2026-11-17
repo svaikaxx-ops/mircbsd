@@ -2,3 +2,5 @@
 /mircbsd
 *.log
 __pycache__/
+.claude/
+.cursor/
