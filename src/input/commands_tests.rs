@@ -399,3 +399,23 @@ fn msg_while_offline_is_not_shown_as_sent() {
     assert!(c.find_ch("bob").is_none(), "žinutė parodyta kaip išsiųsta");
     assert!(server_texts(&c).iter().any(|l| l.contains("Neprisijungta")));
 }
+
+#[test]
+fn display_settings_invalidate_render_cache() {
+    let c = client();
+    open_active(&c, "#chan");
+    for (key, value) in [("tscolor", "gray"), ("highlight_color", "red")] {
+        {
+            let mut st = c.mu.lock();
+            let ch = st.active_chan_mut().unwrap();
+            ch.rendered_gen = 5;
+            ch.rendered = vec!["12:00 senas".into()];
+        }
+        // Numatytosios reikšmės — globali tema nepasikeičia kitiems testams.
+        assert!(c.apply_setting_live(key, value).is_some());
+        let st = c.mu.lock();
+        let ch = st.active_chan().unwrap();
+        assert_eq!(ch.rendered_gen, -1, "{key}: cache neišvalytas");
+        assert!(ch.rendered.is_empty());
+    }
+}

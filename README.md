@@ -156,7 +156,8 @@ Formatas: `raktas=reikšmė`, `#` – komentaras. Visi raktai su paaiškinimais 
 atgal į config failą) šie raktai: `theme`, `nick_colors`, `timestamps`,
 `ts_format`, `tscolor`, `highlight_color`, `notifications`, `mouse`,
 `maxmessages`, `reconnect`, `ctcpversion`. Ryšio ir slaptažodžių raktai per
-`/set` nekeičiami.
+`/set` nekeičiami. Bool reikšmės (ir config faile): `true`/`false`,
+`on`/`off`, `yes`/`no`, `1`/`0`.
 
 ### Spalvos
 
