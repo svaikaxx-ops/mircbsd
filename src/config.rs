@@ -93,6 +93,13 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
         Ok(f) => f,
         Err(_) => return (cfg, warnings),
     };
+    #[cfg(unix)]
+    let readable_by_others = {
+        use std::os::unix::fs::PermissionsExt;
+        file.metadata()
+            .map(|m| m.permissions().mode() & 0o077 != 0)
+            .unwrap_or(false)
+    };
 
     let reader = BufReader::new(file);
     for line in reader.lines() {
@@ -191,6 +198,19 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
             "theme" => cfg.theme = v.to_ascii_lowercase(),
             _ => {}
         }
+    }
+
+    // Passwords in a group/world-readable file: tell the user (the file is
+    // only ever rewritten 0600 by `/set`, never chmod-ed behind their back).
+    #[cfg(unix)]
+    if readable_by_others
+        && (!cfg.server_pass.is_empty() || !cfg.sasl_pass.is_empty() || !cfg.nick_serv.is_empty())
+    {
+        warnings.push(format!(
+            "{} su slaptažodžiais skaitomas kitiems naudotojams — chmod 600 {}",
+            path.display(),
+            path.display()
+        ));
     }
 
     (cfg, warnings)
@@ -502,6 +522,33 @@ mod tests {
         assert!(warnings
             .iter()
             .any(|warning| warning.contains("perskaityti")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readable_config_with_passwords_warns() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "mircbsd-config-perm-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret");
+        std::fs::write(&secret, "nick=a\nsasl=hunter2\n").unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let (_, warns) = load_config(&secret);
+        assert!(warns.iter().any(|w| w.contains("chmod 600")), "{warns:?}");
+
+        // 0600, or no passwords at all: no warning.
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(load_config(&secret).1.is_empty());
+        let plain = dir.join("plain");
+        std::fs::write(&plain, "nick=a\n").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_config(&plain).1.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
