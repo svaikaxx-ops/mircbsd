@@ -421,8 +421,11 @@ Veiksmai: `chan-next`, `chan-prev`, `complete`, `hist-up`, `hist-down`,
   patys redaktoriumi, teises keisti nėra ko.
 - **Slaptažodžiai nekeliauja į istoriją** – eilutės su `IDENTIFY` (pvz.
   `/msg nickserv IDENTIFY pass`), SASL `AUTHENTICATE` bei `/join` su kanalo
-  raktu nėra saugomos `history` faile. Atpažintos „NickServ“ slaptažodžių
-  komandos paslepiamos žurnale ir JSON eksporte. Slaptų duomenų atpažinimas
+  raktu nėra saugomos nei ↑ istorijoje, nei `history` faile. Atpažintos
+  NickServ/ChanServ (bet kurios `*Serv` paslaugos) slaptažodžių komandos —
+  `IDENTIFY`, `REGISTER`, `SET PASSWORD`, `GHOST/RECOVER <nick> <slapt.>` —
+  ekrane (taigi ir `/search`), žurnale ir JSON eksporte rodomos kaip
+  „[slaptažodis paslėptas]“; serveriui siunčiamos nepakeistos. Slaptų duomenų atpažinimas
   remiasi komandų forma, todėl kitų servisų ar neįprastų komandų atveju jo
   nereikėtų laikyti garantuotu.
 - **Terminalo valdymo simbolių apsauga** – visos tinklo žinutės išvalomos prieš
