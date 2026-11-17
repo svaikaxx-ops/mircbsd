@@ -19,7 +19,7 @@ pub mod types;
 pub use types::{Channel, Client, Message, MsgType, State};
 
 /// Application version (CTCP VERSION, UI).
-pub const VERSION: &str = "0.4.8";
+pub const VERSION: &str = "0.5.0";
 
 /// IRC line limit in bytes (RFC 1459/2812), CRLF included.
 pub const MAX_LINE_BYTES: usize = 512;

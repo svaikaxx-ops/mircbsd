@@ -4,7 +4,7 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
-## [Neišleista]
+## [0.5.0] – 2026-11-17 – paruošimas viešam leidimui
 
 ### Pakeista – sąsaja
 

@@ -379,7 +379,6 @@ IRC protokolą, `input` – komandas ir klavišus, `ui` – atvaizdavimą, o
 
 ## Versija
 
-v0.4.8 – naujos funkcijos (žr. CHANGELOG.md): SASL EXTERNAL, paieškos
-navigacija (`n`/`p` + /search all + /logsearch), `/set` su įrašymu į config,
-`/exportjson` (JSON eksportas), tema (dark/light), MONITOR + `/notify`,
-klavišų perrašymai (`keys` failas), TLS atspaudo pinning (TOFU).
+v0.5.0 – pirmasis viešas leidimas: saugumo auditas, reconnect su kanalų
+atkūrimu, siaurų terminalų palaikymas, `NO_COLOR`, `--help`/`--version`,
+↑/↓ visada komandų istorija. Visi pakeitimai – [CHANGELOG.md](CHANGELOG.md).

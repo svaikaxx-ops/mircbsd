@@ -6,8 +6,8 @@ Saugumo pataisymai leidžiami tik naujausiai išleistai versijai.
 
 | Versija                  | Palaikoma |
 | ------------------------ | --------- |
-| 0.4.x (Rust, naujausia)  | taip      |
-| < 0.4.8 ir Go versijos   | ne        |
+| 0.5.x (naujausia)        | taip      |
+| < 0.5.0 ir Go versijos   | ne        |
 
 Prieš pranešdami patikrinkite, ar klaida kartojasi naujausioje versijoje
 (`main` šakoje).

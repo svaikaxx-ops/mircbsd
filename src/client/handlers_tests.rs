@@ -108,7 +108,8 @@ fn ctcp_version_and_ping_reply() {
     let long = "x".repeat(200);
     c.parse_irc(&format!(":bob!u@h PRIVMSG me :\x01PING {long}\x01"));
     let s = sent(&q);
-    assert!(s[0].starts_with("NOTICE bob :\x01VERSION mircBSD 0.4.8"));
+    let want = format!("NOTICE bob :\x01VERSION mircBSD {}", crate::client::VERSION);
+    assert!(s[0].starts_with(&want), "{}", s[0]);
     assert!(s[1].len() < 100, "{}", s[1].len());
 }
 
