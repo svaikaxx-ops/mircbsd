@@ -320,8 +320,14 @@ pub fn unescape_key_seq(s: &str) -> Result<Vec<u8>, String> {
             }
             b'x' => {
                 if i + 4 <= bytes.len() {
-                    let hex = &s[i + 2..i + 4];
-                    let v = u8::from_str_radix(hex, 16)
+                    // Bytes, not `&s[..]`: a non-ASCII letter after `\x` is not
+                    // a char boundary and slicing the str would panic.
+                    let hex_bytes = &bytes[i + 2..i + 4];
+                    let hex = String::from_utf8_lossy(hex_bytes);
+                    if !hex_bytes.iter().all(u8::is_ascii_hexdigit) {
+                        return Err(format!("nevalidus \\xXX: \\x{hex}"));
+                    }
+                    let v = u8::from_str_radix(&hex, 16)
                         .map_err(|_| format!("nevalidus \\xXX: \\x{hex}"))?;
                     out.push(v);
                     i += 4;
@@ -466,7 +472,7 @@ pub fn parse_bool_value(v: &str) -> (bool, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::load_config;
+    use super::{load_config, unescape_key_seq};
     use std::io::Write;
 
     #[test]
@@ -496,5 +502,14 @@ mod tests {
         assert!(warnings
             .iter()
             .any(|warning| warning.contains("perskaityti")));
+    }
+
+    #[test]
+    fn key_escape_with_non_ascii_after_x_is_an_error_not_a_panic() {
+        // `\xaé` sliced a str in the middle of "é" → panic at startup / `/keys`.
+        for bad in ["\\xaé", "\\xé", "\\xžž", "\\x"] {
+            assert!(unescape_key_seq(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(unescape_key_seq("\\x1bé").unwrap(), "\x1bé".as_bytes());
     }
 }
