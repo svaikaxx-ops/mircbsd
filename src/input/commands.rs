@@ -365,14 +365,17 @@ impl Client {
                 "ĮSPĖJIMAS: pasiektas kanalų limitas — kanalas „{hit}“ neatidarytas"
             ));
         }
-        if !self.is_connected() {
-            // Be ryšio: kanalas bus prijungtas po registracijos (001).
+        // Be ryšio ARBA dar neužsiregistravus (prieš 001 serveris JOIN atmeta
+        // su 451): kanalas įrašomas į laukiančiųjų sąrašą ir prijungiamas po 001.
+        let registered = {
             let mut st = self.mu.lock();
-            if !st.rejoin.iter().any(|r| r.eq_ignore_ascii_case(&ch_name)) {
+            let ready = st.connected && st.registered;
+            if !ready && !st.rejoin.iter().any(|r| r.eq_ignore_ascii_case(&ch_name)) {
                 st.rejoin.push(ch_name.clone());
             }
-        }
-        if self.is_connected() {
+            ready
+        };
+        if registered {
             if let Some(key) = key {
                 if !key.is_empty() {
                     if !is_valid_channel_key(key) {

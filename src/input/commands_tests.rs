@@ -500,3 +500,19 @@ fn channel_commands_outside_channel_window_send_nothing() {
     c.handle_cmd("op", "jonas");
     assert_eq!(sent(&q), vec!["MODE #k +o jonas"]);
 }
+
+#[test]
+fn join_before_welcome_waits_for_registration() {
+    let (c, q) = connected();
+    c.mu.lock().registered = false; // prisijungta, bet 001 dar nėra
+    c.handle_cmd("join", "#anksti");
+    assert!(sent(&q).is_empty(), "JOIN prieš 001 serveris atmestų (451)");
+    let me = c.my_nick();
+    c.parse_irc(&format!(":srv 001 {me} :Welcome"));
+    let out = sent(&q);
+    assert_eq!(
+        out.iter().filter(|l| l.as_str() == "JOIN #anksti").count(),
+        1,
+        "{out:?}"
+    );
+}
