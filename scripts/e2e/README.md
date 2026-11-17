@@ -23,7 +23,8 @@ neliečiamas (HOME ir XDG_CONFIG_HOME nukreipti į testavimo home).
 ## Failai (skriptai šiame kataloge)
 
 - `ansi.py` — ekrano emuliatorius (CUP/ED0/ED1/ED2/EL/ECH/OSC praleidimas,
-  apvyniojimas).
+  apvyniojimas, plotis pagal East Asian Width, nebaigtos escape sekos
+  buferizuojamos tarp read(), `resize`).
 - `server.py` — fake IRC serveris: CAP LS→REQ→ACK(visos cap'os)→END→
   001/005 (CHANTYPES, PREFIX, CHANMODES=beI,k,l,imnpst, CASEMAPPING=rfc1459,
   MONITOR=60, NICKLEN=30)→MOTD; JOIN echo + 353/366; **PONG** į kliento
@@ -31,7 +32,7 @@ neliečiamas (HOME ir XDG_CONFIG_HOME nukreipti į testavimo home).
   MONITOR +/−/CLEAR įrašymas.
 - `driver.py` — pty fork, ekrano tiektuvas + žaliavos buferis
   (raw_since žymėse), `wait_until`.
-- `check.py` — 24 patikros: prisijungimas (001+MOTD), keys įspėjimas,
+- `check.py` — 28 patikros: prisijungimas (001+MOTD), keys įspėjimas,
   PRIVMSG, IRC spalvų sanavimas, terminalo injekcija, apvyniojimas,
   PgUp/Shift+PgDn slinktis, n/p tuščiam inputui, switchCh paieškos būsenos
   išvalymas, /search all (rezultatai *server*), /logsearch (kūno atitiktis +
@@ -39,7 +40,15 @@ neliečiamas (HOME ir XDG_CONFIG_HOME nukreipti į testavimo home).
   ts_format write-back), **tema light — config + paletės persidažymas**
   (invalidateRenderCaches: 38;5;* SGR atsiranda žaliavoje), /notify
   (add→MONITOR +, 730 fold'ai, nevalidus nick), /exportjson (validus JSON),
-  /keys remap (search → ESC+S), Ctrl+L perbraižymas.
+  /keys remap (search → ESC+S), Ctrl+L perbraižymas; **25** platūs
+  simboliai/ZWJ/tab neperpildo eilučių (tekstas neatsiduria kanalų juostoje
+  ar už nick skirtuko), **26** KICK savęs, **27** SIGWINCH (100×30 →
+  nick skirtukas pasislenka 20 stulpelių), **28** serverio kritimas →
+  automatinis prisijungimas, registracijoje 433 → `testas_`, autojoin ir
+  žinutė nauja jungtimi. Nepavykus — kadras `fail-<nr>.txt`.
+- `ansi_selftest.py` — emuliatoriaus savitikra (paleidžiama pirma):
+  escape seka, perskelta per dvi pty read() dalis bet kurioje vietoje, duoda
+  tą patį kadrą; CJK/emoji = 2 ląstelės, derinamieji = 0.
 - `start.sh` — kompiliuoja ir paleidžia.
 
 ## Svarbios E2E pamokos (ne kartą patikrintos)

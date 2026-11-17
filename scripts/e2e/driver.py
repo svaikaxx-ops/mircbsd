@@ -98,6 +98,17 @@ class Driver:
     def keys(self, text):
         self.send(text.encode('utf-8'))
 
+    def resize(self, cols, rows):
+        """Pakeičia pty dydį ir siunčia SIGWINCH (kaip terminalo langas)."""
+        with self.lock:
+            self.screen.resize(cols, rows)
+        winsz = struct.pack('HHHH', rows, cols, 0, 0)
+        fcntl.ioctl(self.master, termios.TIOCSWINSZ, winsz)
+        try:
+            os.kill(self.pid, signal.SIGWINCH)
+        except OSError:
+            pass
+
     def mark_raw(self, name):
         with self.lock:
             self.marks[name] = len(self.raw)

@@ -14,6 +14,10 @@ class FakeServer:
         self.srv.listen(1)
         self.port = self.srv.getsockname()[1]
         self.mynick = mynick
+        self.nick_collisions = set()   # nick'ai, kuriems registracijoje → 433
+        self.connections = 0           # priimtų jungčių skaičius
+        self.cap_done = False
+        self.registered = False
         self.received = []
         self.monitor_ops = []          # MONITOR + / − eilutės
         self.monitor = set()           # stebimi mask'ai
@@ -28,9 +32,37 @@ class FakeServer:
         pass
 
     def _accept(self):
-        c, _ = self.srv.accept()
-        self.conn = c
-        self.live = True
+        # Kelios jungtys iš eilės: klientas jungiasi iš naujo po drop_client().
+        while True:
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            with self.lock:
+                self.connections += 1
+                self.cap_done = False
+                self.registered = False
+            self.conn = c
+            self.live = True
+            self._serve(c)
+            self.live = False
+
+    def drop_client(self):
+        """Nutraukia dabartinę jungtį (serverio „kritimas“)."""
+        c = self.conn
+        self.conn = None
+        if c is not None:
+            try:
+                c.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            c.close()
+
+    def count_received(self, sub):
+        with self.lock:
+            return sum(1 for _ts, l in self.received if sub in l)
+
+    def _serve(self, c):
         buf = b''
         while True:
             try:
@@ -57,10 +89,16 @@ class FakeServer:
                 req = ' '.join(parts[2:]).lstrip(':')
                 self.send_line('CAP * ACK :' + req)
             elif len(parts) > 1 and parts[1].upper() == 'END':
-                self.register()
+                self.cap_done = True
+                self.maybe_register()
             return
         if cmd == 'NICK' and len(parts) > 1:
-            self.mynick = parts[1].encode()
+            want = parts[1].lstrip(':')
+            if not self.registered and want in self.nick_collisions:
+                self.send_line(':fakas 433 * ' + want + ' :Nickname is already in use')
+                return
+            self.mynick = want.encode()
+            self.maybe_register()
             return
         if cmd == 'JOIN' and len(parts) > 1 and parts[1].startswith('#'):
             ch = parts[1]
@@ -92,6 +130,15 @@ class FakeServer:
             return
         if cmd in ('PART', 'QUIT', 'TOPIC', 'MODE', 'AWAY'):
             return
+
+    def maybe_register(self):
+        # 001 tik kai CAP baigtas IR nick priimtas (433 atveju — po naujo NICK).
+        if self.registered or not self.cap_done:
+            return
+        if self.mynick.decode('utf-8', 'replace') in self.nick_collisions:
+            return
+        self.registered = True
+        self.register()
 
     def register(self):
         n = self.mynick.decode('utf-8', 'replace')
