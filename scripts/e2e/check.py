@@ -82,8 +82,17 @@ def main():
             time.sleep(0.06)
 
     # ---------- 1. Prisijungimas ----------
+    def in_server_window(cond, timeout):
+        # Autojoin aktyviu padaro paskutinį kanalą (#antras): lėtoje VM
+        # (FreeBSD CI) langas persijungia anksčiau, nei pažiūrime — tada
+        # serverio pranešimų ieškome *server* lange, ne matomame kanale.
+        if driver.wait_until(cond, timeout=3):
+            return True
+        goto_srv()
+        return driver.wait_until(cond, timeout=timeout)
+
     def chk_connect():
-        ok = driver.wait_until(
+        ok = in_server_window(
             lambda: ('Welcome to the fake server' in S()
                      and 'E2E aplinkos fake' in S()), timeout=15)
         return ok, '001 + MOTD ekrane' if ok else S()[-400:]
@@ -91,7 +100,7 @@ def main():
     record('01 prisijungimas (001 + MOTD)', chk_connect)
 
     def chk_keys_warn():
-        ok = driver.wait_until(lambda: ' nežinomas veiksmas ' in S(), timeout=5)
+        ok = in_server_window(lambda: ' nežinomas veiksmas ' in S(), timeout=5)
         return ok, 'keys įspėjimas' if ok else S()[-300:]
 
     record('02 keys failo įspėjimas (nežinomas veiksmas)', chk_keys_warn)
@@ -673,7 +682,7 @@ def main():
     print('\n==== E2E: %d/%d patikrų praėjo ====' % (good, len(results)))
     for ok, name, note in results:
         if not ok:
-            print('  NEPRALAUŽĘ: %s — %s' % (name, note[:200]))
+            print('  NEPRAĖJO: %s — %s' % (name, note[:200]))
     d.quit()
     return 0 if good == len(results) else 1
 

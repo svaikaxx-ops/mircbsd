@@ -23,6 +23,9 @@ pagal [SemVer](https://semver.org/).
 - **Lenktynės testuose** — lag statuso juostos testas tikrino raudoną spalvą
   be `TEST_LOCK`, o NO_COLOR testas lygiagrečiai perjungia globalų NO_COLOR
   (FreeBSD CI kartais krisdavo).
+- **E2E 01/02 lenktynės** — patikros ieškojo serverio pranešimų matomame
+  lange, bet autojoin aktyviu padaro paskutinį kanalą; lėtoje VM langas
+  persijungdavo anksčiau. Dabar, jei nematoma, ieškoma `*server*` lange.
 
 ## [0.5.3] – 2026-11-17 – lag, show_joins, kanalų raktai, FreeBSD, jiff
 
