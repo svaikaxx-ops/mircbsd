@@ -561,7 +561,7 @@ impl Client {
             let dup = auto_join.iter().chain(joined.iter()).any(|a| {
                 a.split_whitespace()
                     .next()
-                    .is_some_and(|a| a.eq_ignore_ascii_case(&ch))
+                    .is_some_and(|a| self.nick_equal(a, &ch))
             });
             if !dup && self.is_channel(&ch) {
                 self.send(&format!("JOIN {ch}"));

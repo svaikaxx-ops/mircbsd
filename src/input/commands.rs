@@ -370,7 +370,7 @@ impl Client {
         let registered = {
             let mut st = self.mu.lock();
             let ready = st.connected && st.registered;
-            if !ready && !st.rejoin.iter().any(|r| r.eq_ignore_ascii_case(&ch_name)) {
+            if !ready && !st.rejoin.iter().any(|r| st.name_eq(r, &ch_name)) {
                 st.rejoin.push(ch_name.clone());
             }
             ready
@@ -768,7 +768,7 @@ impl Client {
             let kept: Vec<String> = st
                 .ignore_list
                 .iter()
-                .filter(|ig| !fold_eq(ig, nick))
+                .filter(|ig| !self.nick_equal(ig, nick))
                 .cloned()
                 .collect();
             st.ignore_list = kept;
@@ -1090,7 +1090,7 @@ impl Client {
             if !args.is_empty() {
                 let needle = sanitize_text(args);
                 for (i, ch) in st.channels.iter().enumerate() {
-                    if fold_eq(&ch.name, &needle) {
+                    if st.name_eq(&ch.name, &needle) {
                         idx = i;
                         break;
                     }
@@ -1101,7 +1101,9 @@ impl Client {
             }
             let ch_name = st.channels[idx].name.clone();
             st.remove_ch(idx);
-            st.rejoin.retain(|r| !r.eq_ignore_ascii_case(&ch_name));
+            let cm = st.casemapping.clone();
+            st.rejoin
+                .retain(|r| !crate::validate::nick_equal(r, &ch_name, &cm));
             (idx, ch_name)
         };
         let _ = idx;

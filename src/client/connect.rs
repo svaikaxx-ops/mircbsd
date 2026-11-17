@@ -843,7 +843,12 @@ impl Client {
         }
         // Naujas ryšys (galbūt kitas serveris per /connect): seno serverio
         // ISUPPORT (CHANTYPES, PREFIX, CASEMAPPING, limitai) nebegalioja.
-        *self.isup.write() = crate::proto::isupport::Isup::default();
+        let cm = {
+            let mut i = self.isup.write();
+            *i = crate::proto::isupport::Isup::default();
+            i.casemapping.clone()
+        };
+        self.mu.lock().casemapping = cm;
         self.server_msg("Prisijungta! Registruojamasi...");
         self.queue_redraw();
 
