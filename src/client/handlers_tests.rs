@@ -204,8 +204,7 @@ fn welcome_runs_autojoin_and_identify() {
         sent(&q),
         vec![
             "PRIVMSG NickServ :IDENTIFY pw",
-            "JOIN #a",
-            "JOIN #b",
+            "JOIN #a,#b",
             "MODE me +i",
             "MONITOR + x,y"
         ]

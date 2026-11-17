@@ -8,6 +8,7 @@
 //! * [`handlers`] — server line dispatch (`parse_irc`)
 //! * [`session`] — stop/shutdown, persistence helpers, `/clearlogs`, URL opener
 
+pub mod chan_keys;
 pub mod channels;
 pub mod connect;
 pub mod draw;

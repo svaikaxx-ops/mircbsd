@@ -138,6 +138,12 @@ pub struct State {
     /// Kanalai, į kuriuos grįžtama po (pakartotinės) registracijos: pildoma
     /// nutrūkus ryšiui (kanalai, kuriuose buvome) ir /join be ryšio.
     pub rejoin: Vec<String>,
+    /// Kanalų raktai (SLAPTI): (kanalas, raktas) iš /join, autojoin, MODE +k
+    /// ir 324. Naudojami laukiančiam JOIN ir grįžimui po pakartotinio
+    /// prisijungimo. Vec, ne HashMap: ieškoma per `name_eq`, todėl raktai
+    /// nepasensta pasikeitus CASEMAPPING. Niekada nerodomi ir nerašomi į
+    /// žurnalus. Žr. `State::chan_key`.
+    pub chan_keys: Vec<(String, String)>,
     /// Connection epoch: /connect and /reconnect bump it; stale threads exit.
     pub connect_gen: i64,
     pub cap_available: HashSet<String>,
@@ -151,7 +157,7 @@ pub struct State {
     pub custom_binds: HashMap<String, String>,
     pub highlight_words: Vec<String>,
 
-    /// Away throttle: lowercased nick → last notice time (bounded).
+    /// Away throttle: nick folded by CASEMAPPING (`fold_name`) → last notice time (bounded).
     pub away_notified: HashMap<String, DateTime<Utc>>,
 
     /// Where WHO / WHOIS replies go ("" = *server*).
@@ -284,6 +290,7 @@ impl Client {
             casemapping: "rfc1459".into(),
             registered: false,
             rejoin: Vec::new(),
+            chan_keys: Vec::new(),
             connect_gen: 0,
             cap_available: HashSet::new(),
             last_urls: Vec::new(),
@@ -394,7 +401,7 @@ impl Client {
             i.apply(tokens);
             i.casemapping.clone()
         };
-        self.mu.lock().casemapping = cm;
+        self.mu.lock().set_casemapping(cm);
     }
 
     /// Current server CASEMAPPING.

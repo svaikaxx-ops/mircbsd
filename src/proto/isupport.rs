@@ -75,8 +75,21 @@ impl Isup {
             } else if let Some(v) = tok.strip_prefix("CHANMODES=") {
                 self.chan_modes = v.to_string();
             } else if let Some(v) = tok.strip_prefix("CASEMAPPING=") {
-                if matches!(v, "ascii" | "rfc1459" | "strict-rfc1459") {
-                    self.casemapping = v.to_string();
+                // Žinomos reikšmės (žr. validate::CaseMap); nežinomos — lieka
+                // ankstesnė (numatytoji rfc1459).
+                let v = v.to_ascii_lowercase();
+                if matches!(
+                    v.as_str(),
+                    "ascii"
+                        | "rfc1459"
+                        | "strict-rfc1459"
+                        | "rfc8265"
+                        | "rfc7613"
+                        | "rfc7700"
+                        | "utf8"
+                        | "utf-8"
+                ) {
+                    self.casemapping = v;
                 }
             } else if let Some(v) = tok.strip_prefix("NETWORK=") {
                 self.network = v.to_string();

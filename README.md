@@ -38,6 +38,9 @@ Terminalo IRC klientas, parašytas Rust. Veikia **Debian** (Linux) ir FreeBSD.
 - TLS, SASL PLAIN / EXTERNAL, TLS atspaudo pinning (TOFU), automatinis
   jungimasis iš naujo, MONITOR (`/notify`).
 - Žurnalai pagal dieną, paieška žurnaluose, JSON eksportas.
+- Kanalų ir nick'ų palyginimas pagal serverio `CASEMAPPING`: `ascii`,
+  `rfc1459`, `strict-rfc1459` ir Unicode (`rfc8265` / `rfc7613` / `utf8` —
+  „#Žalgiris“ ≡ „#žalgiris“; apytikslis PRECIS be NFC ir pločio atvaizdavimo).
 - Apsauga nuo terminalo valdymo sekų ir IRC komandų injekcijos (žr.
   [Saugumas](#saugumas)).
 
@@ -228,7 +231,7 @@ Formatas: `raktas=reikšmė`, `#` – komentaras. Visi raktai su paaiškinimais 
 | `nickserv` | – | `IDENTIFY` slaptažodis (senasis būdas) |
 | `password` | – | Serverio slaptažodis (`PASS`, bouncer'iams) |
 | `tls_pinning` / `tls_pin` | `false` / – | TLS atspaudo pinning (TOFU) / rankinis atspaudas (sha256, SPKI) |
-| `autojoin` | – | Kanalai po prisijungimo (`#a,#b`) |
+| `autojoin` | – | Kanalai po prisijungimo (`#a,#b`; su raktu `#a raktas,#b`) |
 | `perform` | – | Komandos po prisijungimo (`/msg X a; /join #b`) |
 | `reconnect` | `true` | Jungtis iš naujo nutrūkus ryšiui |
 | `ctcpversion` | `true` | Atsakyti į CTCP VERSION |
@@ -301,7 +304,7 @@ Visos komandos taip pat matomos `/help` (skliaustuose – sinonimai).
 
 | Komanda | Aprašymas |
 |---------|-----------|
-| `/join #kanalas [raktas]` | Įeiti į kanalą (`/j`) |
+| `/join #kanalas [raktas]` | Įeiti į kanalą (`/j`). Raktas įsimenamas tik atmintyje (taip pat iš `MODE +k`) ir naudojamas jungiantis po prisijungimo ar ryšiui atsikūrus; `MODE +k` raktas rodomas kaip `***`; `/part` ir `-k` jį pamiršta |
 | `/part [priežastis]` | Išeiti iš kanalo (`/leave`) |
 | `/cycle [priežastis]` | Išeiti ir vėl įeiti |
 | `/close [langas]` | Uždaryti langą (+ PART; `/wc`) |

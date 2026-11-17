@@ -24,6 +24,34 @@ pagal [SemVer](https://semver.org/).
   `install.sh` (tik bazinės sistemos įrankiai, vietinis release veidrodis;
   tikroji release tikrinama nuo pirmos versijos su FreeBSD binariu).
 
+### Pataisyta
+
+- **Kanalų raktai nebedingsta** — `/join #kanalas raktas` be ryšio ar prieš
+  001 įrašydavo kanalą į laukiančiųjų sąrašą BE rakto, o grįžimas po
+  pakartotinio prisijungimo jungdavosi be raktų (serveris atmesdavo, 475).
+  Dabar raktas įsimenamas (tik atmintyje) iš `/join`, `autojoin`
+  (`#kanalas raktas`), `MODE +k` ir 324 (`RPL_CHANNELMODEIS`), pamirštamas
+  per `-k`, `/part`, `/close` ir išėjus iš kanalo. `/join` be rakto naudoja
+  įsimintą. Po 001 kanalai jungiami viena (ar keliomis) `JOIN #a,#b raktas`
+  eilutėmis: kanalai su raktais pirmi, sąrašai sulygiuoti, kiekviena eilutė
+  telpa į 512 baitų. Raktai su kableliu ar `:` pradžioje atmetami (sugadintų
+  JOIN sąrašą).
+- **Kanalo raktas nerodomas ir nerašomas į žurnalą** — `MODE #k +k raktas` ir
+  324 eilutėse raktas pakeičiamas `***` (anksčiau atsidurdavo lange, žurnale
+  ir `/exportjson`); 324 rodomas kanalo lange.
+
+- **Unicode `CASEMAPPING`** — serveriai, skelbiantys `CASEMAPPING=rfc8265`
+  (PRECIS, pvz. Ergo), `rfc7613` ar `utf8`, kanalus ir nick'us lygina pagal
+  Unicode mažąsias raides: „#Žalgiris“ ir „#žalgiris“ — tas pats kanalas, bet
+  klientas atidarydavo du langus (tokia reikšmė buvo atmetama ir likdavo
+  rfc1459). Dabar šioms reikšmėms naudojamas `char::to_lowercase` (apytikslis
+  PRECIS: be pločio atvaizdavimo ir NFC normalizavimo); palaikomas ir
+  `strict-rfc1459` (be `^`/`~`); nežinomos reikšmės — kaip anksčiau rfc1459.
+  Tas pats lankstymas visur: langų paieška, nick'ų rinkiniai, ignore (taip
+  pat kaukės), MONITOR, AWAY ribojimas, paminėjimai, Tab kandidatų
+  dublikatai. Pasikeitus casemapping'ui (005 ar naujas ryšys) jau atidarytų
+  langų nick'ų rinkiniai perstatomi.
+
 ### Žinoma
 
 - `cargo audit` ignoruoja RUSTSEC-2026-0543 („chrono is unmaintained“) —

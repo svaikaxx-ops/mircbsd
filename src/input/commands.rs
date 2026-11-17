@@ -280,6 +280,7 @@ impl Client {
                 // Kitas tinklas: seno serverio kanalų ten nejungiame.
                 st.note_disconnect();
                 st.rejoin.clear();
+                st.chan_keys.clear();
             }
             st.server = parts[0].to_string();
             st.port = parts[1].to_string();
@@ -335,6 +336,13 @@ impl Client {
             return;
         }
         let (raw_name, key) = split2(args);
+        let key = key.filter(|k| !k.is_empty());
+        if key.is_some_and(|k| !is_valid_channel_key(k)) {
+            self.err_msg(
+                "Netinkamas kanalo raktas (be tarpų, kablelių ir specialių simbolių; max 64)",
+            );
+            return;
+        }
         let mut ch_name = raw_name.to_string();
         if !self.is_channel(&ch_name) {
             ch_name.insert(0, '#');
@@ -378,28 +386,24 @@ impl Client {
         }
         // Be ryšio ARBA dar neužsiregistravus (prieš 001 serveris JOIN atmeta
         // su 451): kanalas įrašomas į laukiančiųjų sąrašą ir prijungiamas po 001.
-        let registered = {
+        // Raktas įsimenamas (slaptai) — jo reikės laukiančiam JOIN ir grįžtant
+        // po pakartotinio prisijungimo; be rakto naudojamas įsimintas.
+        let (registered, key) = {
             let mut st = self.mu.lock();
+            if let Some(k) = key {
+                st.set_chan_key(&ch_name, k);
+            }
             let ready = st.connected && st.registered;
             if !ready && !st.rejoin.iter().any(|r| st.name_eq(r, &ch_name)) {
                 st.rejoin.push(ch_name.clone());
             }
-            ready
+            (ready, st.chan_key(&ch_name).map(str::to_string))
         };
         if registered {
-            if let Some(key) = key {
-                if !key.is_empty() {
-                    if !is_valid_channel_key(key) {
-                        self.err_msg(
-                            "Netinkamas kanalo raktas (be tarpų ir specialių simbolių; max 64)",
-                        );
-                        return;
-                    }
-                    self.send(&format!("JOIN {ch_name} {key}"));
-                    return;
-                }
+            let joins = [(ch_name, key)];
+            for line in crate::client::chan_keys::join_lines(&joins) {
+                self.send(&line);
             }
-            self.send(&format!("JOIN {ch_name}"));
         }
     }
 
@@ -421,6 +425,14 @@ impl Client {
             return;
         };
         let msg = if args.is_empty() { "Viso gero!" } else { args };
+        {
+            // Išeinama sąmoningai: raktas pamirštamas, be ryšio — ir grįžimas.
+            let mut st = self.mu.lock();
+            st.forget_chan_key(&ch_name);
+            let cm = st.casemapping.clone();
+            st.rejoin
+                .retain(|r| !crate::validate::nick_equal(r, &ch_name, &cm));
+        }
         if self.is_connected() {
             self.send(&format!("PART {ch_name} :{msg}"));
         }
@@ -1126,6 +1138,7 @@ impl Client {
             let cm = st.casemapping.clone();
             st.rejoin
                 .retain(|r| !crate::validate::nick_equal(r, &ch_name, &cm));
+            st.forget_chan_key(&ch_name);
             (idx, ch_name)
         };
         let _ = idx;
@@ -1393,3 +1406,7 @@ fn help_lines(avail: i32) -> Vec<String> {
 #[cfg(test)]
 #[path = "commands_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "join_keys_tests.rs"]
+mod join_keys_tests;

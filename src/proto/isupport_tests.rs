@@ -100,12 +100,23 @@ fn chantypes_variants() {
 #[test]
 fn casemapping_whitelist() {
     let mut i = Isup::default();
-    for ok in ["ascii", "rfc1459", "strict-rfc1459"] {
+    for ok in [
+        "ascii",
+        "rfc1459",
+        "strict-rfc1459",
+        "rfc8265",
+        "rfc7613",
+        "utf8",
+    ] {
         i.apply(&[format!("CASEMAPPING={ok}")]);
         assert_eq!(i.casemapping, ok);
     }
-    i.apply(&["CASEMAPPING=rfc7613"]);
-    assert_eq!(i.casemapping, "strict-rfc1459");
+    // Nežinoma reikšmė — lieka ankstesnė.
+    i.apply(&["CASEMAPPING=ascii"]);
+    i.apply(&["CASEMAPPING=kazkas-naujo"]);
+    assert_eq!(i.casemapping, "ascii");
+    i.apply(&["CASEMAPPING=RFC8265"]);
+    assert_eq!(i.casemapping, "rfc8265");
 }
 
 #[test]

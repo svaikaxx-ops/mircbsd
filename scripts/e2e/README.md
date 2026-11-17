@@ -27,7 +27,7 @@ neliečiamas (HOME ir XDG_CONFIG_HOME nukreipti į testavimo home).
   buferizuojamos tarp read(), `resize`).
 - `server.py` — fake IRC serveris: CAP LS→REQ→ACK(visos cap'os)→END→
   001/005 (CHANTYPES, PREFIX, CHANMODES=beI,k,l,imnpst, CASEMAPPING=rfc1459,
-  MONITOR=60, NICKLEN=30)→MOTD; JOIN echo + 353/366; **PONG** į kliento
+  MONITOR=60, NICKLEN=30)→MOTD; JOIN echo + 353/366 (ir kelių kanalų `JOIN #a,#b`); **PONG** į kliento
   periodinį PING (BE JO klientas po timeout'o laiko jungtį mirusia!);
   MONITOR +/−/CLEAR įrašymas.
 - `driver.py` — pty fork, ekrano tiektuvas + žaliavos buferis
