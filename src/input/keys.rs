@@ -192,8 +192,8 @@ impl State {
                 .chars()
                 .collect();
             let pos = self.input_pos.min(self.input.len());
-            if self.input[pos..] == hint[..] {
-                self.input.truncate(pos);
+            if self.input[pos..].starts_with(&hint) {
+                self.input.drain(pos..pos + hint.len());
             }
         }
         self.tab_candidates.clear();
@@ -357,13 +357,15 @@ impl Client {
             return;
         }
 
-        // ---- SS3: F1–F4 ----
+        // ---- SS3: F1–F4, Home/End (programos klavišų režimas) ----
         if b.len() == 3 && b[0] == 0x1b && b[1] == b'O' {
             match b[2] {
                 b'P' => self.switch_ch(0),
                 b'Q' => self.switch_ch(1),
                 b'R' => self.switch_ch(2),
                 b'S' => self.switch_ch(3),
+                b'H' => self.move_cursor_edge(false),
+                b'F' => self.move_cursor_edge(true),
                 _ => {}
             }
             return;
@@ -502,6 +504,24 @@ impl Client {
             }
             _ => {}
         }
+        // Delete, Home/End `ESC [ n ~` formomis (rxvt, screen, tmux, Linux
+        // konsolė) — anksčiau ignoruoti.
+        match &b[2..] {
+            b"3~" => {
+                let mut st = self.mu.lock();
+                let pos = st.input_pos;
+                if pos < st.input.len() {
+                    st.input.remove(pos);
+                }
+                st.tab_candidates.clear();
+                drop(st);
+                self.queue_redraw();
+                return;
+            }
+            b"1~" | b"7~" => return self.move_cursor_edge(false),
+            b"4~" | b"8~" => return self.move_cursor_edge(true),
+            _ => {}
+        }
         // F1–F12 in their `ESC [ nn ~` forms.
         if b.len() >= 4 {
             let idx = match &b[2..] {
@@ -523,6 +543,14 @@ impl Client {
                 self.switch_ch(i);
             }
         }
+    }
+
+    /// Home (`end == false`) / End: kursorius į eilutės pradžią / pabaigą.
+    fn move_cursor_edge(&self, end: bool) {
+        let mut st = self.mu.lock();
+        st.input_pos = if end { st.input.len() } else { 0 };
+        drop(st);
+        self.queue_redraw();
     }
 
     /// Typed characters and control keys (Enter, Tab, Backspace, Ctrl+…).

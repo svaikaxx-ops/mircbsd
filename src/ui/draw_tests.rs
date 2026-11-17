@@ -328,3 +328,53 @@ fn many_channels_scroll_arrows() {
     p.chan_scroll_off = -5;
     assert!(draw_frame(&p).is_some());
 }
+
+fn input_row(out: &str) -> (String, i32) {
+    // Paskutinė įvesties eilutė: tekstas po „> “ (be ANSI) ir kursoriaus stulpelis.
+    let start = out.rfind("\x1b[24;1H").unwrap();
+    let row = &out[start..];
+    let last_move = out.rfind("\x1b[24;").unwrap();
+    let tail = &out[last_move..];
+    let col: i32 = tail[5..tail.find('H').unwrap()].parse().unwrap();
+    let mut plain = String::new();
+    let mut it = row[..last_move - start].chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            for d in it.by_ref() {
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    (plain, col)
+}
+
+#[test]
+fn input_line_wide_chars_fit_and_cursor_follows_home() {
+    let channels = vec![ChanState {
+        name: "#a".into(),
+        ..Default::default()
+    }];
+    let nicks: Vec<String> = vec![];
+    let lines: Vec<String> = vec![];
+    // 60 plačių simbolių = 120 ląstelių > 80.
+    let input: Vec<char> = "界".repeat(60).chars().collect();
+    let mut p = params(&channels, &nicks, &lines, &input);
+    let f = draw_frame(&p).unwrap();
+    let (shown, col) = input_row(&f.output);
+    assert!(
+        crate::width::string_width(&shown) <= 80,
+        "eilutė per plati: {}",
+        crate::width::string_width(&shown)
+    );
+    assert!(col <= 80);
+    // Home: kursorius eilutės pradžioje, rodoma pradžia.
+    p.input_pos = 0;
+    let f = draw_frame(&p).unwrap();
+    let (shown, col) = input_row(&f.output);
+    assert_eq!(col, 3, "kursorius turi būti po „> “");
+    assert!(shown.starts_with("> 界"), "{shown:?}");
+}

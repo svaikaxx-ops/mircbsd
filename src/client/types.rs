@@ -189,6 +189,8 @@ pub struct State {
     pub tab_candidates: Vec<String>,
     pub tab_idx: usize,
     pub tab_prefix: String,
+    /// Įvesties tekstas už kursoriaus Tab pradžioje (išlaikomas užbaigiant).
+    pub tab_tail: String,
     pub keys_debug: bool,
     pub search_mode: bool,
     pub search_query: String,
@@ -312,6 +314,7 @@ impl Client {
             tab_candidates: Vec::new(),
             tab_idx: 0,
             tab_prefix: String::new(),
+            tab_tail: String::new(),
             keys_debug: false,
             search_mode: false,
             search_query: String::new(),
