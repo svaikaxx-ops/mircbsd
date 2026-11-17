@@ -55,6 +55,127 @@ jobs:
           dash scripts/install.sh --uninstall
           test ! -e "$HOME/.local/bin/mircbsd"
 
+  # FreeBSD 14 VM (vmactions): Rust iš pkg (Cargo pats tikrina rust-version
+  # 1.85 – senesnis kompiliatorius iškart nulaužtų darbą), unit + E2E testai
+  # ir install.sh su FreeBSD bazinės sistemos įrankiais (fetch, sha256).
+  freebsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: '14.4'
+          usesh: true
+          copyback: false
+          prepare: pkg install -y rust python3 bash
+          run: |
+            set -eu
+            freebsd-version
+            rustc --version
+            cargo --version
+
+            echo '::group::cargo test'
+            cargo test --locked
+            echo '::endgroup::'
+
+            echo '::group::E2E'
+            bash scripts/e2e/start.sh
+            echo '::endgroup::'
+
+            # --- install.sh ----------------------------------------------
+            # Tikroji release dar neturi FreeBSD binario (pirmas bus > v0.5.2),
+            # todėl skripto logika tikrinama su vietiniu release veidrodžiu:
+            # GitHub struktūra (/latest → 302 /tag/vX, /download/vX/…),
+            # archyvas supakuotas taip pat kaip release.yml.
+            echo '::group::install.sh (vietinis veidrodis)'
+            T=x86_64-unknown-freebsd
+            ver="v$(target/release/mircbsd --version | awk '{print $2}')"
+            name="mircbsd-$ver-$T"
+            srv="$(mktemp -d)"
+            mkdir -p "$srv/download/$ver/$name"
+            cp target/release/mircbsd README.md LICENSE CHANGELOG.md config.example "$srv/download/$ver/$name/"
+            (
+              cd "$srv/download/$ver"
+              tar -czf "$name.tar.gz" "$name"
+              rm -rf "$name"
+              printf '%s  %s\n' "$(sha256 -q "$name.tar.gz")" "$name.tar.gz" > "$name.tar.gz.sha256"
+            )
+            cat > "$srv/serve.py" <<'EOF'
+            import functools, http.server, sys
+            root, ver = sys.argv[1], sys.argv[2]
+            class H(http.server.SimpleHTTPRequestHandler):
+                def redirect(self):
+                    if self.path == "/latest":
+                        self.send_response(302)
+                        self.send_header("Location", "http://127.0.0.1:18080/tag/" + ver)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return True
+                    if self.path.startswith("/tag/"):
+                        self.send_response(200)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return True
+                    return False
+                def do_GET(self):
+                    if not self.redirect():
+                        super().do_GET()
+                def do_HEAD(self):
+                    if not self.redirect():
+                        super().do_HEAD()
+            http.server.ThreadingHTTPServer(("127.0.0.1", 18080),
+                functools.partial(H, directory=root)).serve_forever()
+            EOF
+            python3 "$srv/serve.py" "$srv" "$ver" &
+            srv_pid=$!
+            sleep 2
+
+            export HOME="$(mktemp -d)"
+            unset XDG_CONFIG_HOME
+            export MIRCBSD_RELEASES_URL=http://127.0.0.1:18080
+            # tik bazinė sistema: be /usr/local/bin (curl, wget, coreutils)
+            base=/bin:/sbin:/usr/bin:/usr/sbin
+            env PATH="$base" sh scripts/install.sh | tee out.txt
+            grep -q "įdiegta: $ver" out.txt
+            "$HOME/.local/bin/mircbsd" --version
+            env PATH="$base" sh scripts/install.sh | grep -q "jau įdiegta"
+            env PATH="$base" sh scripts/install.sh --force | grep -q "perįdiegta: $ver"
+            env PATH="$base" sh scripts/install.sh --version "$ver" --force --dir "$HOME/kitur" | grep -q "$HOME/kitur/mircbsd"
+            test "$(stat -f %Lp "$HOME/.config/mircbsd/config")" = 600
+            # sugadinta kontrolinė suma turi būti atmesta
+            printf '%064d  %s\n' 0 "$name.tar.gz" > "$srv/download/$ver/$name.tar.gz.sha256"
+            if env PATH="$base" sh scripts/install.sh --force 2>err.txt; then
+              echo "install.sh priėmė neteisingą sha256"; exit 1
+            fi
+            grep -q "sha256 nesutampa" err.txt
+            env PATH="$base" sh scripts/install.sh --uninstall
+            test ! -e "$HOME/.local/bin/mircbsd"
+            kill "$srv_pid"
+            unset MIRCBSD_RELEASES_URL
+            echo '::endgroup::'
+
+            # Tikroji GitHub release: privaloma nuo pirmos release po v0.5.2
+            # (ji jau turi FreeBSD binarį); senesnėms – aiškiai praleidžiama.
+            echo '::group::install.sh (tikroji release)'
+            rel=https://github.com/svaikaxx-ops/mircbsd/releases
+            latest="$(fetch -v -o /dev/null "$rel/latest" 2>&1 | sed -n 's/^.* redirect to *//p' | tail -n 1)"
+            latest="${latest##*/}"
+            echo "naujausia release: $latest"
+            case "$latest" in
+              v0.[0-4].*|v0.5.[0-2])
+                echo "::notice::release $latest dar neturi $T binario – tikrosios release patikra praleista (privaloma nuo pirmos release po v0.5.2)" ;;
+              v[0-9]*)
+                export HOME="$(mktemp -d)"
+                env PATH="$base" sh scripts/install.sh | tee out.txt
+                grep -q "įdiegta: $latest" out.txt
+                env PATH="$base" sh scripts/install.sh | grep -q "jau įdiegta"
+                env PATH="$base" sh scripts/install.sh --uninstall ;;
+              *) echo "nepavyko nustatyti naujausios release ('$latest')"; exit 1 ;;
+            esac
+            echo '::endgroup::'
+
   audit:
     runs-on: ubuntu-latest
     steps:

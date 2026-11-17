@@ -4,6 +4,26 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [Neišleista]
+
+### Nauja
+
+- **Release: `x86_64-unknown-freebsd`** — FreeBSD amd64 binaris,
+  kompiliuojamas natūraliai FreeBSD 14 VM (vmactions), supakuotas taip pat
+  kaip Linux binarai (`.tar.gz` + `.sha256` `sha256sum` formatu), su smoke
+  testu (`--version`, `file`).
+- **`scripts/install.sh` palaiko FreeBSD** (`uname -m` = `amd64`):
+  `fetch -o - …/install.sh | sh`; be curl/wget naudojamas bazinis `fetch`,
+  kontrolinei sumai — `sha256sum`, `shasum` arba FreeBSD `sha256`.
+  `MIRCBSD_RELEASES_URL` leidžia nurodyti kitą release šaltinį (veidrodį,
+  CI patikrą).
+
+### Pakeista
+
+- **CI: grąžintas `freebsd` darbas** — FreeBSD 14 VM: `cargo test`, E2E ir
+  `install.sh` (tik bazinės sistemos įrankiai, vietinis release veidrodis;
+  tikroji release tikrinama nuo pirmos versijos su FreeBSD binariu).
+
 ## [0.5.2] – 2026-11-17 – install.sh, ARMv6 (Pi Zero) binaris
 
 ### Nauja

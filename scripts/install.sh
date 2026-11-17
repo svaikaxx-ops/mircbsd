@@ -2,6 +2,7 @@
 # mircBSD diegimas / atnaujinimas iš GitHub release.
 #
 #   curl -fsSL https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh
+#   fetch -o - https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh   # FreeBSD
 #
 # Parinktys (perduodamos per `sh -s -- ...`):
 #   --version vX.Y.Z   konkreti versija (numatyta: naujausia)
@@ -12,10 +13,14 @@
 #
 # Tas pats skriptas ir diegia, ir atnaujina: konfigūracija
 # (~/.config/mircbsd) niekada neperrašoma.
+#
+# MIRCBSD_RELEASES_URL – kitas release šaltinis (veidrodis arba CI patikra su
+# vietiniu serveriu); turi būti GitHub struktūros: …/latest nukreipia į
+# …/tag/vX.Y.Z, failai …/download/vX.Y.Z/<archyvas>.
 set -eu
 
 REPO="svaikaxx-ops/mircbsd"
-BASE="https://github.com/$REPO/releases"
+BASE="${MIRCBSD_RELEASES_URL:-https://github.com/$REPO/releases}"
 
 VERSION=""
 DIR="${HOME}/.local/bin"
@@ -66,34 +71,49 @@ fi
 
 # --- platforma -----------------------------------------------------------
 os="$(uname -s)"
-[ "$os" = "Linux" ] || die "paruošti binarai tik Linux ($os: kompiliuokite iš šaltinio, žr. README)"
-
 arch="$(uname -m)"
-case "$arch" in
-    x86_64|amd64) TARGET="x86_64-unknown-linux-musl" ;;
-    aarch64|arm64) TARGET="aarch64-unknown-linux-musl" ;;
-    armv7l|armv7*|armv8l) TARGET="armv7-unknown-linux-musleabihf" ;;
-    armv6l|armv6*) TARGET="arm-unknown-linux-musleabihf" ;;   # Pi 1 / Zero / Zero W
-    *) die "nepalaikoma architektūra: $arch – kompiliuokite iš šaltinio (README)" ;;
+case "$os" in
+    Linux)
+        case "$arch" in
+            x86_64|amd64) TARGET="x86_64-unknown-linux-musl" ;;
+            aarch64|arm64) TARGET="aarch64-unknown-linux-musl" ;;
+            armv7l|armv7*|armv8l) TARGET="armv7-unknown-linux-musleabihf" ;;
+            armv6l|armv6*) TARGET="arm-unknown-linux-musleabihf" ;;   # Pi 1 / Zero / Zero W
+            *) die "nepalaikoma architektūra: $arch – kompiliuokite iš šaltinio (README)" ;;
+        esac ;;
+    FreeBSD)
+        case "$arch" in
+            amd64|x86_64) TARGET="x86_64-unknown-freebsd" ;;
+            *) die "FreeBSD $arch: paruošto binario nėra – kompiliuokite iš šaltinio (README)" ;;
+        esac ;;
+    *) die "paruošti binarai tik Linux ir FreeBSD ($os: kompiliuokite iš šaltinio, žr. README)" ;;
 esac
 
 # --- įrankiai ------------------------------------------------------------
+# download URL FAILAS; latest_url – kur nukreipia $BASE/latest (…/tag/vX.Y.Z)
 if command -v curl >/dev/null 2>&1; then
-    fetch() { curl -fsSL --retry 3 -o "$2" "$1"; }
+    download() { curl -fsSL --retry 3 -o "$2" "$1"; }
     latest_url() { curl -fsSLI -o /dev/null -w '%{url_effective}' "$BASE/latest"; }
 elif command -v wget >/dev/null 2>&1; then
-    fetch() { wget -q -O "$2" "$1"; }
+    download() { wget -q -O "$2" "$1"; }
     latest_url() { wget -q -S --spider "$BASE/latest" 2>&1 | sed -n 's/^ *[Ll]ocation: *//p' | tail -n 1 | tr -d '\r'; }
+elif command -v fetch >/dev/null 2>&1; then
+    # FreeBSD bazinė sistema: fetch(1) be curl/wget
+    download() { fetch -q -o "$2" "$1"; }
+    # fetch -v praneša kiekvieną nukreipimą: „302 redirect to URL“
+    latest_url() { fetch -v -o /dev/null "$BASE/latest" 2>&1 | sed -n 's/^.* redirect to *//p' | tail -n 1 | tr -d '\r'; }
 else
-    die "reikia curl arba wget"
+    die "reikia curl, wget arba fetch"
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then
     sha256() { sha256sum "$1" | cut -d' ' -f1; }
 elif command -v shasum >/dev/null 2>&1; then
     sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+elif command -v sha256 >/dev/null 2>&1; then
+    sha256() { command sha256 -q "$1"; }   # FreeBSD
 else
-    die "reikia sha256sum arba shasum"
+    die "reikia sha256sum, shasum arba sha256"
 fi
 command -v tar >/dev/null 2>&1 || die "reikia tar"
 
@@ -101,6 +121,7 @@ command -v tar >/dev/null 2>&1 || die "reikia tar"
 if [ -z "$VERSION" ]; then
     url="$(latest_url)" || die "nepavyko gauti naujausios versijos"
     VERSION="${url##*/}"
+    [ -n "$VERSION" ] || die "nepavyko gauti naujausios versijos ($BASE/latest)"
 fi
 case "$VERSION" in
     v[0-9]*) ;;
@@ -123,9 +144,9 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 say "atsisiunčiama $NAME ..."
-fetch "$BASE/download/$VERSION/$NAME.tar.gz" "$TMP/$NAME.tar.gz" ||
+download "$BASE/download/$VERSION/$NAME.tar.gz" "$TMP/$NAME.tar.gz" ||
     die "nepavyko atsisiųsti $VERSION ($TARGET) – ar tokia versija yra? $BASE"
-fetch "$BASE/download/$VERSION/$NAME.tar.gz.sha256" "$TMP/$NAME.tar.gz.sha256" ||
+download "$BASE/download/$VERSION/$NAME.tar.gz.sha256" "$TMP/$NAME.tar.gz.sha256" ||
     die "nepavyko atsisiųsti kontrolinės sumos"
 
 want="$(cut -d' ' -f1 "$TMP/$NAME.tar.gz.sha256")"
