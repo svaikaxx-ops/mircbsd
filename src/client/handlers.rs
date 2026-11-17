@@ -644,6 +644,7 @@ impl Client {
         let from = msg.from_nick();
         let mut st = self.mu.lock();
         let is_me = self.nick_equal(from, &st.nick);
+        let existed = st.find_ch(ch).is_some();
         let Some(i) = self.ensure_ch(&mut st, ch) else {
             // Rejected: invalid name (ignore) or channel budget (tell the user).
             let hit = Self::take_limit_warning(&mut st, ch);
@@ -657,10 +658,14 @@ impl Client {
             return;
         };
         st.channels[i].add_nick(from, None);
-        if is_me {
-            st.active_idx = i;
-        }
         drop(st);
+        // Į NAUJAI atidarytą kanalą pereinama per switch_ch (išsaugomas
+        // ankstesnio lango slinkimas; anksčiau active_idx keistas tiesiogiai ir
+        // naujas langas paveldėdavo seno scroll_off). Grįžimas į jau atidarytą
+        // langą (rejoin po pakartotinio prisijungimo) fokuso nevagia.
+        if is_me && !existed {
+            self.switch_ch(i);
+        }
 
         // extended-join: JOIN <channel> <account|*> <realname>
         let mut join_msg = String::new();

@@ -332,20 +332,26 @@ impl Client {
             ));
             return;
         }
-        let refused = {
+        let (opened, refused) = {
             let mut st = self.mu.lock();
-            if self.ensure_ch(&mut st, &ch_name).is_none() {
-                let hit = st.chan_limit_hit.clone();
-                if !hit.is_empty() && hit == sanitize_chan_name(&ch_name) {
-                    st.chan_limit_hit.clear();
-                    Some(hit)
-                } else {
-                    None
+            match self.ensure_ch(&mut st, &ch_name) {
+                Some(i) => (Some(i), None),
+                None => {
+                    let hit = st.chan_limit_hit.clone();
+                    if !hit.is_empty() && hit == sanitize_chan_name(&ch_name) {
+                        st.chan_limit_hit.clear();
+                        (None, Some(hit))
+                    } else {
+                        (None, None)
+                    }
                 }
-            } else {
-                None
             }
         };
+        // Vartotojo /join iškart rodo kanalo langą (serverio JOIN fokuso
+        // nebekeičia jau atidarytam langui — žr. on_join).
+        if let Some(i) = opened {
+            self.switch_ch(i);
+        }
         if let Some(hit) = refused {
             self.err_msg(&format!(
                 "ĮSPĖJIMAS: pasiektas kanalų limitas — kanalas „{hit}“ neatidarytas"

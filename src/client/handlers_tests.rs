@@ -511,3 +511,55 @@ fn action_highlight_uses_word_match_and_highlight_words() {
         .collect();
     assert_eq!(hl, vec![false, true]);
 }
+
+#[test]
+fn join_new_window_does_not_inherit_scroll_and_rejoin_keeps_focus() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #a");
+    c.mu.lock().scroll_off = 7; // vartotojas pasislinko #a
+    c.parse_irc(":me!u@h JOIN #b");
+    assert_eq!(c.active_name(), "#b");
+    assert_eq!(c.mu.lock().scroll_off, 0, "#b paveldėjo #a slinkimą");
+    // Grįžus į #a — jo slinkimas atstatytas.
+    let a = c.find_ch("#a").unwrap();
+    c.switch_ch(a);
+    assert_eq!(c.mu.lock().scroll_off, 7);
+    // Serverio JOIN į jau atidarytą langą (rejoin) fokuso nevagia.
+    c.parse_irc(":me!u@h JOIN #b");
+    assert_eq!(c.active_name(), "#a");
+}
+
+#[test]
+fn closing_active_window_restores_next_windows_scroll() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #a");
+    c.parse_irc(":me!u@h JOIN #b");
+    let a = c.find_ch("#a").unwrap();
+    c.mu.lock().channels[a].scroll_off = 0;
+    c.mu.lock().scroll_off = 9; // #b aktyvus, pasislinkęs
+    c.parse_irc(":me!u@h PART #b");
+    assert_eq!(c.mu.lock().scroll_off, 0);
+}
+
+#[test]
+fn only_one_unread_separator_per_window() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #a");
+    c.parse_irc(":me!u@h JOIN #b"); // aktyvus #b
+    let a = c.find_ch("#a").unwrap();
+    let b = c.find_ch("#b").unwrap();
+    for round in 0..3 {
+        c.parse_irc(&format!(":x!u@h PRIVMSG #a :senas {round}"));
+        c.switch_ch(b);
+        c.parse_irc(&format!(":x!u@h PRIVMSG #a :naujas {round}"));
+        c.switch_ch(a);
+    }
+    let n = texts(&c, "#a")
+        .iter()
+        .filter(|t| t.as_str() == "── naujos žinutės ──")
+        .count();
+    assert_eq!(n, 1);
+    let t = texts(&c, "#a");
+    let pos = t.iter().position(|t| t == "── naujos žinutės ──").unwrap();
+    assert_eq!(t[pos + 1], "naujas 2");
+}

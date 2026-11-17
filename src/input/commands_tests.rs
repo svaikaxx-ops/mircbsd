@@ -419,3 +419,16 @@ fn display_settings_invalidate_render_cache() {
         assert!(ch.rendered.is_empty());
     }
 }
+
+#[test]
+fn join_command_focuses_window_even_when_it_exists() {
+    let (c, q) = connected();
+    open_active(&c, "#kitas");
+    c.handle_cmd("join", "#naujas");
+    assert_eq!(c.active_name(), "#naujas");
+    assert!(sent(&q).iter().any(|l| l == "JOIN #naujas"));
+    open_active(&c, "#kitas");
+    // Serverio JOIN atsakas langą jau rado — fokusą vis tiek suteikė /join.
+    c.handle_cmd("join", "#naujas");
+    assert_eq!(c.active_name(), "#naujas");
+}

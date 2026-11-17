@@ -488,11 +488,23 @@ impl State {
             && target.unread_from > 0
             && (target.unread_from as usize) < target.messages.len()
         {
-            let at = target.unread_from as usize;
-            let sep = new_msg(Utc::now(), "", "── naujos žinutės ──", MsgType::Server);
+            let mut at = target.unread_from as usize;
+            // Vienintelė žyma: ankstesnė (jau perskaityta) pašalinama, kitaip
+            // kiekvienas apsilankymas palikdavo dar vieną „naujos žinutės“.
+            if let Some(old) = target.messages[..at].iter().rposition(is_unread_separator) {
+                target.messages.remove(old);
+                at -= 1;
+            }
+            let sep = new_msg(Utc::now(), "", UNREAD_SEPARATOR, MsgType::Server);
             target.messages.insert(at, sep);
             target.render_gen += 1;
             target.invalidate_render_cache();
         }
     }
+}
+
+const UNREAD_SEPARATOR: &str = "── naujos žinutės ──";
+
+fn is_unread_separator(m: &Message) -> bool {
+    m.msg_type == MsgType::Server && m.nick.is_empty() && m.text == UNREAD_SEPARATOR
 }
