@@ -260,8 +260,7 @@ impl Drop for RawTerm {
 /// Desktop notification via `notify-send` (`notifyDesktop`). Missing binary
 /// is ignored. `--` keeps a server-controlled title from being parsed as a flag.
 fn notify_desktop(title: &str, body: &str) {
-    let title = clip_runes(&sanitize_text(title), 60, false);
-    let body = clip_runes(&sanitize_text(body), 120, true);
+    let (title, body) = notify_texts(title, body);
     let mut child = match Command::new("notify-send")
         .args(["-a", "mircBSD", "-t", "5000", "--", &title, &body])
         .stdin(Stdio::null())
@@ -275,6 +274,29 @@ fn notify_desktop(title: &str, body: &str) {
     thread::spawn(move || {
         let _ = child.wait();
     });
+}
+
+/// Title and body for `notify-send`: sanitized and clipped. The BODY is
+/// interpreted as markup by freedesktop notification daemons (`<a href>`,
+/// `<img src>` …), so `&`, `<`, `>` from the network are escaped (after
+/// clipping, so an entity is never cut in half).
+fn notify_texts(title: &str, body: &str) -> (String, String) {
+    let title = clip_runes(&sanitize_text(title), 60, false);
+    let body = clip_runes(&sanitize_text(body), 120, true);
+    (title, escape_markup(&body))
+}
+
+fn escape_markup(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn clip_runes(s: &str, max: usize, ellipsis: bool) -> String {
@@ -631,6 +653,18 @@ mod tests {
         assert!(cfg.server_pass.is_empty() && cfg.sasl_pass.is_empty());
         assert!(cfg.nick_serv.is_empty() && cfg.perform.is_empty());
         assert_eq!(warns.len(), 1);
+    }
+
+    #[test]
+    fn notification_body_markup_is_escaped() {
+        let (title, body) = notify_texts(
+            "#c\x1b]0;x\x07",
+            "<evil> <a href=\"http://x\">spausk</a> <img src=\"/etc/x.png\"> & co",
+        );
+        assert_eq!(title, "#c]0;x");
+        assert!(!body.contains('<') && !body.contains('>'), "{body}");
+        assert!(body.starts_with("&lt;evil&gt; &lt;a href="), "{body}");
+        assert!(body.contains("&amp; co"), "{body}");
     }
 
     #[cfg(unix)]
