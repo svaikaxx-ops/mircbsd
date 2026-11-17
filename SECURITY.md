@@ -81,7 +81,9 @@ dienų — kas įvyks anksčiau.
   ar turintys paslėptų simbolių, neatidaromi;
   pranešimo kūnas ekranuojamas (žymėjimas).
 - **DoS**: eilutė ≤ 4096 baitų, ≤ 100 kanalų + 200 privačių langų,
-  ≤ 5000 nick'ų kanale, žinučių skaičius ribojamas (`maxmessages`), ribos
+  ≤ 5000 nick'ų kanale, žinučių skaičius lange ribojamas (`maxmessages`), o
+  visų langų žinučių suma — bendru biudžetu (`maxmemory`, numatyta 256 MB;
+  viršijus pirmiausia trumpinamas didžiausias langas), ribos
   AWAY/MONITOR/CAP rinkiniams, CTCP atsakymai ribojami (4 per 10 s),
   siuntimas — 5 eilutės/s; panika apdorojant serverio eilutę sugaunama.
 - **TLS**: rustls (TLS 1.2+, webpki šaknys). `tls_pinning=true` — TOFU pagal
@@ -92,8 +94,10 @@ dienų — kas įvyks anksčiau.
 - TOFU **neapsaugo pirmojo** prisijungimo: jei pirmas sertifikatas
   nepatvirtintas CA, rodomas įspėjimas, bet ryšys tęsiamas. Saugiausia —
   `tls_pin=` iš patikimo šaltinio.
-- Priešiškas serveris mato viską, ką siunčiate jam, ir gali siųsti daug
-  duomenų: atminties naudojimas ribojamas tik langų × `maxmessages`.
+- Priešiškas serveris mato viską, ką siunčiate jam. Daug siunčiamų duomenų
+  ribojama `maxmemory` biudžetu (tekstas + žinutės struktūra); į jį
+  neįskaičiuoti atvaizdavimo cache (tik rodomam langui) ir nick sąrašai
+  (atskiros ribos), todėl realus procesas užima šiek tiek daugiau.
 - Slaptažodžių atpažinimas istorijai/ekranui/žurnalams remiasi komandų forma
   ir gavėju (`*Serv` paslaugos) — neatpažinta forma rodoma kaip įvesta.
 - Konfigūracijos failo teisių klientas nekeičia (tik įspėja, jei jis su
@@ -122,4 +126,9 @@ cause configured credentials to be sent to a server other than the configured
 one. TLS uses rustls with webpki roots; optional TOFU SPKI pinning does not
 protect the very first connection (a warning is shown when that certificate is
 not CA-signed). Memory use against a hostile server is bounded by
-per-structure limits (windows × `maxmessages`, nick lists, CAP/MONITOR sets).
+per-structure limits (`maxmessages` per window, nick lists, CAP/MONITOR sets)
+and a global message budget across all windows (`maxmemory`, default 256 MB;
+the oldest lines of the largest window are trimmed first). Own passwords
+(NickServ/`*Serv` IDENTIFY, REGISTER, GHOST, PASS, OPER, …) are sent unchanged
+but masked on screen, in `/search`, logs and JSON export, and never stored in
+the input history.

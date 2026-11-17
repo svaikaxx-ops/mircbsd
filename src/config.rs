@@ -25,6 +25,8 @@ pub struct Config {
     pub highlight_words: Vec<String>,
     pub log_dir: String,
     pub max_messages: i32,
+    /// Global message-buffer budget over ALL windows, in MiB (`maxmemory`).
+    pub max_memory_mb: u32,
     pub reconnect: bool,
     pub ctcp_version: bool,
     pub notifications: bool,
@@ -88,6 +90,7 @@ pub fn default_config() -> Config {
         real_name: "mircBSD IRC Client".into(),
         log_dir: home.join("irclogs").to_string_lossy().into_owned(),
         max_messages: 5000,
+        max_memory_mb: DEFAULT_MAX_MEMORY_MB,
         reconnect: true,
         ctcp_version: true,
         notifications: true,
@@ -127,6 +130,26 @@ fn strip_surrounding_quotes(v: &str) -> &str {
 }
 
 /// Load config from `path`; missing file yields defaults. Validation warnings are returned.
+/// Default `maxmemory` (MiB): ~25× a busy everyday setup (30 windows ×
+/// 5000 lines × ~200 B), yet a hostile server can no longer push the client
+/// to 300 windows × 5000 × 4 KB ≈ 6 GB.
+pub const DEFAULT_MAX_MEMORY_MB: u32 = 256;
+pub const MIN_MAX_MEMORY_MB: u32 = 16;
+pub const MAX_MAX_MEMORY_MB: u32 = 65536;
+
+/// `maxmemory` value: whole MiB in `MIN_MAX_MEMORY_MB..=MAX_MAX_MEMORY_MB`.
+pub fn parse_max_memory(v: &str) -> Option<u32> {
+    v.trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|n| (MIN_MAX_MEMORY_MB..=MAX_MAX_MEMORY_MB).contains(n))
+}
+
+/// `maxmemory` MiB → bytes (saturating: 64 GiB does not fit a 32-bit usize).
+pub fn max_memory_bytes(mb: u32) -> usize {
+    (mb as usize).saturating_mul(1024 * 1024)
+}
+
 pub fn load_config(path: &Path) -> (Config, Vec<String>) {
     let mut warnings = Vec::new();
     let mut cfg = default_config();
@@ -208,6 +231,12 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
                 }
                 cfg.log_dir = logdir;
             }
+            "maxmemory" => match parse_max_memory(v) {
+                Some(n) => cfg.max_memory_mb = n,
+                None => warnings.push(format!(
+                    "Neteisingas maxmemory: {v} (MB, {MIN_MAX_MEMORY_MB}–{MAX_MAX_MEMORY_MB}; numatytas {DEFAULT_MAX_MEMORY_MB})"
+                )),
+            },
             "maxmessages" => {
                 if let Ok(n) = v.parse::<i32>() {
                     if n > 0 {
@@ -487,6 +516,7 @@ pub const SETTABLE_KEYS: &[&str] = &[
     "highlight_color",
     "nick_colors",
     "maxmessages",
+    "maxmemory",
     "theme",
 ];
 

@@ -43,6 +43,15 @@ pagal [SemVer](https://semver.org/).
   langas, į kurį rašoma.
 - **NickServ `GHOST`/`RECOVER`/`RELEASE <nick> <slaptažodis>`** — anksčiau
   nebuvo atpažįstami (istorija, žurnalai, ekranas).
+- **Bendra atminties riba (`maxmemory`, MB, numatyta 256)** — priešiškas
+  serveris galėjo atidaryti ~300 langų × `maxmessages` × iki 4 KB (≈ 6 GB).
+  Dabar visų langų žinučių suma ribojama: viršijus biudžetą, seniausios
+  DIDŽIAUSIO lango eilutės trinamos pirmos (iki 90 % biudžeto), todėl
+  užtvindyti langai trumpinami, o ramūs pokalbiai ir `*server*` išlieka;
+  kiekviename lange lieka bent naujausia eilutė. Atvaizdavimo cache
+  išvalomas. Keičiama per config ir `/set maxmemory` (16–65536; sumažinus
+  nukerpama iš karto). Langų skaičiaus ribos (100 kanalų + 200 privačių)
+  nepakeistos.
 
 ## [0.5.2] – 2026-11-17 – install.sh, ARMv6 (Pi Zero) binaris
 

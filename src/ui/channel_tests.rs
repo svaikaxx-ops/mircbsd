@@ -200,3 +200,49 @@ fn trim_shifts_unread_from() {
     c.add_msg(msg("8")); // 9 > 8 → nukerpamos 2 seniausios
     assert_eq!(c.messages[c.unread_from as usize].text, "6");
 }
+
+fn recount(c: &Channel) -> usize {
+    c.messages.iter().map(msg_cost).sum()
+}
+
+#[test]
+fn msg_bytes_stays_in_step_with_messages() {
+    let mut c = Channel::new("#t", 8);
+    for i in 0..20 {
+        c.add_msg(msg(&"x".repeat(i * 10)));
+        assert_eq!(c.msg_bytes, recount(&c), "after add {i}");
+    }
+    c.insert_msg(2, msg("žyma"));
+    assert_eq!(c.msg_bytes, recount(&c));
+    c.remove_msg(2);
+    assert_eq!(c.msg_bytes, recount(&c));
+    c.trim_oldest_bytes(1);
+    assert_eq!(c.msg_bytes, recount(&c));
+    c.clear_messages();
+    assert_eq!(c.msg_bytes, 0);
+}
+
+#[test]
+fn trim_oldest_bytes_keeps_newest_and_drops_cache() {
+    let mut c = Channel::new("#t", 100);
+    for i in 0..10 {
+        c.add_msg(msg(&i.to_string()));
+    }
+    c.rendered = vec!["0".into(); 10];
+    c.rendered_gen = c.render_gen;
+    c.rendered_msg_count = 10;
+    c.unread_from = 5;
+    let one = msg_cost(&c.messages[0]);
+    // Just over one message's worth → two oldest go.
+    assert_eq!(c.trim_oldest_bytes(one + 1), 2 * one);
+    assert_eq!(c.messages[0].text, "2");
+    assert_eq!(c.messages[c.unread_from as usize].text, "5");
+    assert_eq!(c.rendered_gen, -1);
+    assert_eq!(c.rendered_msg_count, 0);
+    assert!(c.rendered.is_empty());
+    // Asking for everything still keeps the newest line.
+    c.trim_oldest_bytes(usize::MAX);
+    assert_eq!(c.messages.len(), 1);
+    assert_eq!(c.messages[0].text, "9");
+    assert_eq!(c.trim_oldest_bytes(usize::MAX), 0);
+}

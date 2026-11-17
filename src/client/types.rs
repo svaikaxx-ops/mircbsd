@@ -170,6 +170,9 @@ pub struct State {
     pub channels: Vec<Channel>,
     pub active_idx: usize,
     pub max_messages: i32,
+    /// Global budget for stored messages over ALL windows, in bytes
+    /// (`maxmemory`); see `State::enforce_memory_budget`.
+    pub max_buffer_bytes: usize,
 
     /// Last channel whose message was dropped because of the channel limit.
     pub chan_limit_hit: String,
@@ -302,6 +305,7 @@ impl Client {
             )],
             active_idx: 0,
             max_messages: cfg.max_messages,
+            max_buffer_bytes: crate::config::max_memory_bytes(cfg.max_memory_mb),
             chan_limit_hit: String::new(),
             last_drawn: None,
             write: None,
@@ -503,11 +507,11 @@ impl State {
             // Vienintelė žyma: ankstesnė (jau perskaityta) pašalinama, kitaip
             // kiekvienas apsilankymas palikdavo dar vieną „naujos žinutės“.
             if let Some(old) = target.messages[..at].iter().rposition(is_unread_separator) {
-                target.messages.remove(old);
+                target.remove_msg(old);
                 at -= 1;
             }
             let sep = new_msg(Utc::now(), "", UNREAD_SEPARATOR, MsgType::Server);
-            target.messages.insert(at, sep);
+            target.insert_msg(at, sep);
             target.render_gen += 1;
             target.invalidate_render_cache();
         }

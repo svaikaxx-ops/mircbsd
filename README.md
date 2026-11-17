@@ -246,12 +246,13 @@ Formatas: `raktas=reikšmė`, `#` – komentaras. Visi raktai su paaiškinimais 
 | `notifications` | `true` | Desktop pranešimai (`notify-send`) apie paminėjimus neaktyviuose languose |
 | `mouse` | `true` | Pelė: ratukas slenka, paspaudimas kanalų sąraše perjungia langą |
 | `maxmessages` | `5000` | Kiek žinučių laikyti atmintyje kiekvienam langui |
+| `maxmemory` | `256` | Bendras visų langų žinučių biudžetas, MB (16–65536); viršijus pirmiausia trumpinamas didžiausias langas |
 | `logdir` | `~/irclogs` | Žurnalų katalogas |
 
 `/set` be argumentų parodo dabartines reikšmes. Keičiami gyvai (ir įrašomi
 atgal į config failą) šie raktai: `theme`, `nick_colors`, `timestamps`,
 `ts_format`, `tscolor`, `highlight_color`, `notifications`, `mouse`,
-`maxmessages`, `reconnect`, `ctcpversion`. Ryšio ir slaptažodžių raktai per
+`maxmessages`, `maxmemory`, `reconnect`, `ctcpversion`. Ryšio ir slaptažodžių raktai per
 `/set` nekeičiami. Bool reikšmės (ir config faile): `true`/`false`,
 `on`/`off`, `yes`/`no`, `1`/`0`.
 

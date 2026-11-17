@@ -33,6 +33,10 @@ reconnect=true
 # Maksimalus žinučių skaičius kanalų atmintyje (numatytasis: 5000)
 # maxmessages=5000
 
+# Bendras visų langų žinučių atminties biudžetas, MB (numatytasis: 256).
+# Viršijus — seniausios didžiausio lango eilutės trinamos pirmos.
+# maxmemory=256
+
 # Atsakyti į CTCP VERSION užklausas
 # ctcpversion=true
 
