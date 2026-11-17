@@ -36,6 +36,9 @@ pagal [SemVer](https://semver.org/).
   eilutėmis: kanalai su raktais pirmi, sąrašai sulygiuoti, kiekviena eilutė
   telpa į 512 baitų. Raktai su kableliu ar `:` pradžioje atmetami (sugadintų
   JOIN sąrašą).
+- **475 (neteisingas kanalo raktas)** — serveriui atmetus raktą, įsimintas
+  raktas pamirštamas (kitaip grįžimas po prisijungimo ir `/join` be rakto vis
+  bandytų tą patį); aiškus pranešimas be paties rakto vietoj žalio `[475]`.
 - **Kanalo raktas nerodomas ir nerašomas į žurnalą** — `MODE #k +k raktas` ir
   324 eilutėse raktas pakeičiamas `***` (anksčiau atsidurdavo lange, žurnale
   ir `/exportjson`); 324 rodomas kanalo lange.

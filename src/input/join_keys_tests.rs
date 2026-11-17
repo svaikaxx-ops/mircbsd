@@ -135,6 +135,34 @@ fn server_part_of_self_forgets_the_key() {
 }
 
 #[test]
+fn bad_key_475_forgets_remembered_key() {
+    let (c, q) = connected();
+    c.handle_cmd("join", "#k Blogas9");
+    assert_eq!(sent(&q), vec!["JOIN #k Blogas9"]);
+    c.parse_irc(":srv 475 me #k :Cannot join channel (+k)");
+    assert!(
+        c.mu.lock().chan_key("#k").is_none(),
+        "raktas turi būti pamirštas"
+    );
+    let texts = all_texts(&c);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("Neteisingas kanalo raktas: #k")),
+        "{texts:?}"
+    );
+    assert!(texts.iter().all(|t| !t.contains("Blogas9")), "{texts:?}");
+    // Kitas /join be rakto nebesiunčia seno, atmesto rakto.
+    c.handle_cmd("join", "#k");
+    assert_eq!(sent(&q), vec!["JOIN #k"]);
+    // Grįžimas po prisijungimo irgi be jo.
+    c.parse_irc(":srv 475 me #kitas :Cannot join channel (+k)");
+    assert!(all_texts(&c)
+        .iter()
+        .any(|t| t.contains("Kanalui #kitas reikia rakto")));
+}
+
+#[test]
 fn join_without_key_reuses_remembered_key() {
     let (c, q) = connected();
     let me = c.my_nick();

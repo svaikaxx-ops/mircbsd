@@ -405,6 +405,7 @@ impl Client {
             "431" => self.err_msg("Nenurodytas slapyvardis"),
             "432" => self.on_erroneous_nick(p(1)),
             "433" => self.on_nick_in_use(p(1)),
+            "475" => self.on_bad_channel_key(p(1)),
 
             "ERROR" => {
                 let m = p(0);
@@ -509,6 +510,28 @@ impl Client {
                     self.server_msg(&format!("[{}] {}", msg.cmd, params[1..].join(" ")));
                 }
             }
+        }
+    }
+
+    /// 475 ERR_BADCHANNELKEY: serveris atmetė raktą — įsimintas raktas
+    /// pamirštamas, kad grįžimas po pakartotinio prisijungimo ir `/join` be
+    /// rakto nebandytų jo vėl. Pats raktas pranešime nerodomas.
+    fn on_bad_channel_key(&self, chan: &str) {
+        let had_key = {
+            let mut st = self.mu.lock();
+            let had = st.chan_key(chan).is_some();
+            st.forget_chan_key(chan);
+            had
+        };
+        let chan = crate::sanitize::sanitize_text(chan);
+        if had_key {
+            self.err_msg(&format!(
+                "Neteisingas kanalo raktas: {chan} — įsimintas raktas pamirštas (/join {chan} <raktas>)"
+            ));
+        } else {
+            self.err_msg(&format!(
+                "Kanalui {chan} reikia rakto: /join {chan} <raktas>"
+            ));
         }
     }
 
