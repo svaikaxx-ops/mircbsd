@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::test_util::Rng;
-use chrono::Utc;
 
 fn visible(s: &str) -> String {
     // ESC [ ... galutinis baitas — pašalinam (tik CSI, kitų render nekuria).
@@ -121,7 +120,7 @@ fn render_lines_never_exceed_message_width() {
             .map(|_| *r.pick(&['a', 'ž', 'Z', '_']))
             .collect();
         let kind = *r.pick(&kinds);
-        let m = Message::new(Utc::now(), &nick, &text, kind, r.below(4) == 0);
+        let m = Message::new(crate::timeutil::now(), &nick, &text, kind, r.below(4) == 0);
         // Plotis su atsarga prefiksui (laikas + <nick> + body ≥ 8).
         let w = 30 + r.below(90) as i32;
         let lines = m.render_lines(w, "me");
@@ -141,11 +140,11 @@ fn render_lines_never_exceed_message_width() {
 #[test]
 fn tab_is_rendered_as_space() {
     // Tab plotis skaičiuojamas 0, o terminalas šoka iki 8 ląstelių.
-    let m = Message::new(Utc::now(), "n\tk", "a\tb", MsgType::Chat, false);
+    let m = Message::new(crate::timeutil::now(), "n\tk", "a\tb", MsgType::Chat, false);
     for l in m.render_lines(40, "me") {
         assert!(!l.contains('\t'), "{l:?}");
         assert!(visible(&l).contains("a b"), "{l:?}");
     }
-    let m = Message::new(Utc::now(), "n", "x\ty", MsgType::Server, false);
+    let m = Message::new(crate::timeutil::now(), "n", "x\ty", MsgType::Server, false);
     assert!(visible(&m.render_lines(40, "me")[0]).contains("x y"));
 }

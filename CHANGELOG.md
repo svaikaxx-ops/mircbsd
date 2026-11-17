@@ -52,10 +52,12 @@ pagal [SemVer](https://semver.org/).
   dublikatai. Pasikeitus casemapping'ui (005 ar naujas ryšys) jau atidarytų
   langų nick'ų rinkiniai perstatomi.
 
-### Žinoma
+### Pakeista
 
-- `cargo audit` ignoruoja RUSTSEC-2026-0543 („chrono is unmaintained“) —
-  tai ne pažeidžiamumas, pataisytos versijos nėra; žr. `.cargo/audit.toml`.
+- **`chrono` → `jiff`** — `chrono` nebeprižiūrimas (RUSTSEC-2026-0543). Visas
+  laiko kodas eina per naują modulį `src/timeutil.rs`; laiko juosta – `TZ`
+  arba `/etc/localtime`. Testai patikrinti 6 laiko juostose (įskaitant
+  +05:45, +12:45 ir pusvalandžio DST).
 
 ### Saugumas
 

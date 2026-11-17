@@ -4,9 +4,8 @@
 //! lock for state changes, drops it, and only then calls `add_msg`,
 //! `server_msg`, `err_msg` or `send` (which lock again).
 
+use crate::timeutil::Ts;
 use std::time::Duration;
-
-use chrono::{DateTime, Local, TimeZone, Utc};
 
 use crate::proto::caps::{
     authenticate_chunks, parse_cap_names, sasl_decide, sasl_plain_payload, wanted_caps, SaslInputs,
@@ -96,18 +95,18 @@ fn cut_utf8(s: &str, max: usize) -> &str {
 impl State {
     /// Bound `away_notified` (hostile servers can send AWAY from endless
     /// nicks): drop expired entries, then the oldest (`pruneAwayNotifiedLocked`).
-    pub fn prune_away_notified(&mut self, now: DateTime<Utc>) {
+    pub fn prune_away_notified(&mut self, now: Ts) {
         const SLACK: usize = MAX_AWAY_NOTIFIED / 4;
         if self.away_notified.len() <= MAX_AWAY_NOTIFIED + SLACK {
             return;
         }
-        let ttl = chrono::Duration::minutes(AWAY_THROTTLE_MINUTES);
+        let ttl = crate::timeutil::minutes(AWAY_THROTTLE_MINUTES);
         self.away_notified
-            .retain(|_, t| now.signed_duration_since(*t) < ttl);
+            .retain(|_, t| now.duration_since(*t) < ttl);
         if self.away_notified.len() <= MAX_AWAY_NOTIFIED {
             return;
         }
-        let mut entries: Vec<(String, DateTime<Utc>)> = self
+        let mut entries: Vec<(String, Ts)> = self
             .away_notified
             .iter()
             .map(|(k, t)| (k.clone(), *t))
@@ -148,7 +147,7 @@ impl Client {
 
     /// Dispatch an already parsed line.
     pub fn handle_line(&self, msg: &IrcLine) {
-        let now = msg.server_time().unwrap_or_else(Utc::now);
+        let now = msg.server_time().unwrap_or_else(crate::timeutil::now);
         let params = &msg.params;
         let from_nick = msg.from_nick();
         let prefix = msg.prefix.as_str();
@@ -375,8 +374,9 @@ impl Client {
                 let idle_str = format!("{}m {}s", idle / 60, idle % 60);
                 let mut signon_str = String::new();
                 if signon > 0 {
-                    if let Some(t) = Local.timestamp_opt(signon, 0).single() {
-                        signon_str = format!("  prisijungė: {}", t.format("%Y-%m-%d %H:%M"));
+                    if let Some(t) = crate::timeutil::from_unix(signon) {
+                        let t = crate::timeutil::local(t);
+                        signon_str = format!("  prisijungė: {}", t.strftime("%Y-%m-%d %H:%M"));
                     }
                 }
                 self.whois_reply_msg(&format!("│  Idle      : {idle_str}{signon_str}"));
@@ -666,7 +666,7 @@ impl Client {
         }
     }
 
-    fn on_join(&self, msg: &IrcLine, now: DateTime<Utc>) {
+    fn on_join(&self, msg: &IrcLine, now: Ts) {
         let ch = msg.param(0);
         let from = msg.from_nick();
         let mut st = self.mu.lock();
@@ -705,7 +705,7 @@ impl Client {
         self.add_msg(ch, new_msg(now, from, &join_msg, MsgType::Join));
     }
 
-    fn on_part(&self, msg: &IrcLine, now: DateTime<Utc>) {
+    fn on_part(&self, msg: &IrcLine, now: Ts) {
         let ch = msg.param(0);
         let reason = msg.param(1);
         let from = msg.from_nick();
@@ -734,7 +734,7 @@ impl Client {
         }
     }
 
-    fn on_quit(&self, msg: &IrcLine, now: DateTime<Utc>) {
+    fn on_quit(&self, msg: &IrcLine, now: Ts) {
         let reason = msg.param(0);
         let from = msg.from_nick();
         // O(1) set lookup per channel — never an O(n) scan per QUIT.
@@ -755,7 +755,7 @@ impl Client {
         }
     }
 
-    fn on_kick(&self, msg: &IrcLine, now: DateTime<Utc>) {
+    fn on_kick(&self, msg: &IrcLine, now: Ts) {
         let (ch, kicked, reason) = (msg.param(0), msg.param(1), msg.param(2));
         let from = msg.from_nick();
         let (me, found) = {
@@ -795,7 +795,7 @@ impl Client {
         self.queue_redraw();
     }
 
-    fn on_nick(&self, msg: &IrcLine, now: DateTime<Utc>) {
+    fn on_nick(&self, msg: &IrcLine, now: Ts) {
         let new_nick = msg.param(0);
         let from = msg.from_nick();
         if new_nick.is_empty() {
@@ -833,7 +833,7 @@ impl Client {
         self.server_msg(&format!("{from} → {new_nick}"));
     }
 
-    fn on_mode(&self, msg: &IrcLine, now: DateTime<Utc>) {
+    fn on_mode(&self, msg: &IrcLine, now: Ts) {
         let target = msg.param(0);
         let mode_str = msg.param(1);
         let params = &msg.params;
@@ -885,7 +885,7 @@ impl Client {
     /// 324 RPL_CHANNELMODEIS: `<me> <kanalas> <režimai> [argumentai…]`.
     /// Raktas (+k) įsimenamas ir rodomas paslėptas (anksčiau visa eilutė su
     /// raktu keliaudavo į *server* langą ir žurnalą).
-    fn on_channel_mode_is(&self, params: &[String], now: DateTime<Utc>) {
+    fn on_channel_mode_is(&self, params: &[String], now: Ts) {
         let (Some(chan), Some(mode_str)) = (params.get(1), params.get(2)) else {
             return;
         };
@@ -934,7 +934,7 @@ impl Client {
         }
     }
 
-    fn on_privmsg(&self, msg: &IrcLine, now: DateTime<Utc>) {
+    fn on_privmsg(&self, msg: &IrcLine, now: Ts) {
         // „@#kanalas“ anksčiau atidarydavo privatų langą „@#kanalas“.
         let target = self.statusmsg_target(msg.param(0));
         let text = msg.param(1);
@@ -1048,7 +1048,7 @@ impl Client {
         true
     }
 
-    fn on_away(&self, msg: &IrcLine, now: DateTime<Utc>) {
+    fn on_away(&self, msg: &IrcLine, now: Ts) {
         let from = msg.from_nick();
         if from.is_empty() {
             return;
@@ -1056,7 +1056,7 @@ impl Client {
         let reason = msg.param(0);
         let cm = self.casemapping();
         let key = crate::validate::fold_name(from, &cm);
-        let ttl = chrono::Duration::minutes(AWAY_THROTTLE_MINUTES);
+        let ttl = crate::timeutil::minutes(AWAY_THROTTLE_MINUTES);
 
         // (active window name, its nicks, signs) copied under the lock.
         let mut announce: Option<(String, Vec<String>, String, String)> = None;
@@ -1064,7 +1064,7 @@ impl Client {
             let mut st = self.mu.lock();
             if !reason.is_empty() {
                 let fresh = match st.away_notified.get(&key) {
-                    Some(last) => now.signed_duration_since(*last) >= ttl,
+                    Some(last) => now.duration_since(*last) >= ttl,
                     None => true,
                 };
                 if fresh {

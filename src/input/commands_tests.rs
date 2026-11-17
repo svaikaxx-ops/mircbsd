@@ -1,7 +1,6 @@
 use super::*;
 use crate::client::types::MsgType;
 use crate::input::testutil::*;
-use chrono::Utc;
 
 fn quiet_net(c: &Client) {
     let mut st = c.mu.lock();
@@ -120,7 +119,10 @@ fn away_clear_close_window_quit() {
     assert!(c.mu.lock().away.is_empty());
     assert!(sent(&q).iter().any(|l| l == "AWAY"));
 
-    c.add_msg("#chan", new_msg(Utc::now(), "a", "x", MsgType::Chat));
+    c.add_msg(
+        "#chan",
+        new_msg(crate::timeutil::now(), "a", "x", MsgType::Chat),
+    );
     c.handle_cmd("clear", "");
     assert!(texts(&c, "#chan").is_empty());
 
@@ -162,7 +164,7 @@ fn search_set_notify_urls_keys() {
     quiet_net(&c);
     c.add_msg(
         "*server*",
-        new_msg(Utc::now(), "bob", "rasta cia", MsgType::Chat),
+        new_msg(crate::timeutil::now(), "bob", "rasta cia", MsgType::Chat),
     );
     c.handle_cmd("search", "rasta");
     assert_eq!(c.mu.lock().last_search_query, "rasta");
@@ -222,7 +224,10 @@ fn export_and_clearlogs_use_the_log_dir() {
         st.server = "irc.example.org".into();
     }
     open_active(&c, "#k");
-    c.add_msg("#k", new_msg(Utc::now(), "bob", "eksportas", MsgType::Chat));
+    c.add_msg(
+        "#k",
+        new_msg(crate::timeutil::now(), "bob", "eksportas", MsgType::Chat),
+    );
     c.handle_cmd("exportjson", "#k");
     let t = server_texts(&c);
     assert!(
@@ -250,17 +255,20 @@ fn nickserv_export_redacts_credentials() {
     c.add_msg(
         "NickServ",
         new_msg(
-            Utc::now(),
+            crate::timeutil::now(),
             "me",
             "REGISTER secret user@example.org",
             MsgType::Chat,
         ),
     );
-    c.add_msg("NickServ", new_msg(Utc::now(), "me", "HELP", MsgType::Chat));
+    c.add_msg(
+        "NickServ",
+        new_msg(crate::timeutil::now(), "me", "HELP", MsgType::Chat),
+    );
     c.handle_cmd("exportjson", "NickServ");
     let path = dir.join("irc.example.org").join(format!(
         "NickServ-{}.json",
-        chrono::Local::now().format("%Y-%m-%d")
+        crate::timeutil::local_now().strftime("%Y-%m-%d")
     ));
     let contents = std::fs::read_to_string(path).unwrap();
     assert!(!contents.contains("secret"));

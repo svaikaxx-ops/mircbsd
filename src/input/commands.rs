@@ -7,8 +7,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
-
 #[path = "commands_settings.rs"]
 mod settings;
 
@@ -157,14 +155,14 @@ impl Client {
             if !secret {
                 self.add_msg(
                     &active_name,
-                    new_msg(Utc::now(), &nick, &part, MsgType::Chat),
+                    new_msg(crate::timeutil::now(), &nick, &part, MsgType::Chat),
                 );
             }
         }
         if secret {
             self.add_msg(
                 &active_name,
-                new_msg(Utc::now(), &nick, HIDDEN_SECRET, MsgType::Chat),
+                new_msg(crate::timeutil::now(), &nick, HIDDEN_SECRET, MsgType::Chat),
             );
         }
     }
@@ -515,7 +513,12 @@ impl Client {
         };
         self.add_msg(
             target,
-            new_msg(Utc::now(), &self.my_nick(), shown, MsgType::Chat),
+            new_msg(
+                crate::timeutil::now(),
+                &self.my_nick(),
+                shown,
+                MsgType::Chat,
+            ),
         );
     }
 
@@ -608,7 +611,12 @@ impl Client {
             self.send(&format!("PRIVMSG {active} :\u{1}ACTION {args}\u{1}"));
             self.add_msg(
                 &active,
-                new_msg(Utc::now(), &self.my_nick(), args, MsgType::Action),
+                new_msg(
+                    crate::timeutil::now(),
+                    &self.my_nick(),
+                    args,
+                    MsgType::Action,
+                ),
             );
         }
     }
@@ -1084,7 +1092,7 @@ impl Client {
             (st.width, name)
         };
         let ts = if timestamps_enabled() {
-            string_width(&format_go_time(&chrono::Local::now(), &ts_format())) + 1
+            string_width(&format_go_time(&crate::timeutil::local_now(), &ts_format())) + 1
         } else {
             0
         };
@@ -1252,7 +1260,7 @@ impl Client {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         }
-        let date = chrono::Local::now().format("%Y-%m-%d");
+        let date = crate::timeutil::local_now().strftime("%Y-%m-%d");
         let path = dir.join(format!("{name}-{date}.json"));
         let buf = messages_to_json_indent(&msgs);
         if let Err(e) = write_private(&path, buf.as_bytes()) {

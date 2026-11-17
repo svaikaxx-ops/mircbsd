@@ -1,5 +1,4 @@
 use super::*;
-use chrono::TimeZone;
 
 fn strip_ansi_for_test(s: &str) -> String {
     let mut out = String::new();
@@ -122,7 +121,7 @@ fn bounds_code_included_at_start() {
 
 #[test]
 fn json_marshal_matches_go_shape() {
-    let ts = Utc.with_ymd_and_hms(2026, 10, 21, 12, 30, 5).unwrap();
+    let ts = crate::timeutil::utc(2026, 10, 21, 12, 30, 5);
     let m = Message::new(ts, "al\x1bice", "\x02<hi>\x02 & bye", MsgType::Chat, true);
     assert_eq!(
         m.marshal_json(),
@@ -140,7 +139,7 @@ fn json_marshal_matches_go_shape() {
 
 #[test]
 fn go_time_layouts() {
-    let t = Local.with_ymd_and_hms(2026, 3, 5, 14, 7, 9).unwrap();
+    let t = crate::timeutil::local_at(2026, 3, 5, 14, 7, 9, 0);
     assert_eq!(format_go_time(&t, "15:04"), "14:07");
     assert_eq!(format_go_time(&t, "15:04:05"), "14:07:09");
     assert_eq!(format_go_time(&t, "2006-01-02"), "2026-03-05");
@@ -159,18 +158,9 @@ fn go_time_layouts() {
 
 #[test]
 fn changed_day_and_sep() {
-    let a = Local
-        .with_ymd_and_hms(2026, 10, 21, 23, 59, 30)
-        .unwrap()
-        .with_timezone(&Utc);
-    let b = Local
-        .with_ymd_and_hms(2026, 10, 22, 0, 0, 5)
-        .unwrap()
-        .with_timezone(&Utc);
-    let c = Local
-        .with_ymd_and_hms(2026, 10, 21, 0, 1, 0)
-        .unwrap()
-        .with_timezone(&Utc);
+    let a = crate::timeutil::local_at(2026, 10, 21, 23, 59, 30, 0).timestamp();
+    let b = crate::timeutil::local_at(2026, 10, 22, 0, 0, 5, 0).timestamp();
+    let c = crate::timeutil::local_at(2026, 10, 21, 0, 1, 0, 0).timestamp();
     assert!(changed_day(&a, &b));
     assert!(!changed_day(&a, &c));
     assert_eq!(
@@ -184,7 +174,7 @@ fn render_lines_chat_wraps_and_indents() {
     let _g = super::super::theme::TEST_LOCK.lock();
     super::super::theme::set_timestamps(false, "");
     super::super::theme::set_nick_colors(false);
-    let ts = Utc.with_ymd_and_hms(2026, 10, 21, 12, 0, 0).unwrap();
+    let ts = crate::timeutil::utc(2026, 10, 21, 12, 0, 0);
     let m = Message::new(
         ts,
         "bob",
@@ -205,7 +195,7 @@ fn render_lines_chat_wraps_and_indents() {
 fn render_lines_min_body_width_and_join() {
     let _g = super::super::theme::TEST_LOCK.lock();
     super::super::theme::set_timestamps(false, "");
-    let ts = Utc.with_ymd_and_hms(2026, 10, 21, 12, 0, 0).unwrap();
+    let ts = crate::timeutil::utc(2026, 10, 21, 12, 0, 0);
     let m = Message::new(ts, "x\x1b", "", MsgType::Join, false);
     let lines = m.render_lines(5, "me");
     // msg_w 5 → body width clamped to 8 → "--> x prisijungė" wraps.

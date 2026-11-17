@@ -2,16 +2,10 @@
 
 use super::*;
 use crate::test_util::Rng;
-use chrono::TimeZone;
 
 /// Go etaloninis laikas: Mon Jan 2 15:04:05.123456789 2006 (vietinis).
-fn reference() -> DateTime<Local> {
-    Local
-        .with_ymd_and_hms(2006, 1, 2, 15, 4, 5)
-        .earliest()
-        .unwrap()
-        .with_nanosecond(123_456_789)
-        .unwrap()
+fn reference() -> LocalTime {
+    crate::timeutil::local_at(2006, 1, 2, 15, 4, 5, 123_456_789)
 }
 
 #[test]
@@ -35,30 +29,18 @@ fn reference_time_formats_to_its_own_layout() {
 
 #[test]
 fn twelve_hour_and_am_pm() {
-    let am = Local
-        .with_ymd_and_hms(2024, 5, 6, 0, 7, 0)
-        .earliest()
-        .unwrap();
+    let am = crate::timeutil::local_at(2024, 5, 6, 0, 7, 0, 0);
     assert_eq!(format_go_time(&am, "3:04 PM pm"), "12:07 AM am");
     assert_eq!(format_go_time(&am, "03"), "12");
-    let noon = Local
-        .with_ymd_and_hms(2024, 5, 6, 12, 0, 0)
-        .earliest()
-        .unwrap();
+    let noon = crate::timeutil::local_at(2024, 5, 6, 12, 0, 0, 0);
     assert_eq!(format_go_time(&noon, "3PM"), "12PM");
-    let pm = Local
-        .with_ymd_and_hms(2024, 5, 6, 23, 59, 9)
-        .earliest()
-        .unwrap();
+    let pm = crate::timeutil::local_at(2024, 5, 6, 23, 59, 9, 0);
     assert_eq!(format_go_time(&pm, "03:04:5 pm"), "11:59:9 pm");
 }
 
 #[test]
 fn padded_days_and_year_day() {
-    let t = Local
-        .with_ymd_and_hms(2024, 2, 5, 1, 2, 3)
-        .earliest()
-        .unwrap();
+    let t = crate::timeutil::local_at(2024, 2, 5, 1, 2, 3, 0);
     assert_eq!(format_go_time(&t, "_2|02|2"), " 5|05|5");
     assert_eq!(format_go_time(&t, "002|__2"), "036| 36");
     // „_2006“ — pabraukimas ir metai, ne „_2“ diena.
@@ -71,10 +53,7 @@ fn fractional_seconds() {
     assert_eq!(format_go_time(&t, "05.000"), "05.123");
     assert_eq!(format_go_time(&t, "05,000000"), "05,123456");
     assert_eq!(format_go_time(&t, "05.999999999"), "05.123456789");
-    let whole = Local
-        .with_ymd_and_hms(2024, 1, 1, 0, 0, 7)
-        .earliest()
-        .unwrap();
+    let whole = crate::timeutil::local_at(2024, 1, 1, 0, 0, 7, 0);
     // .999 nukerpa nulius, o visiškai nulinė trupmena dingsta su skirtuku.
     assert_eq!(format_go_time(&whole, "5.999"), "7");
     assert_eq!(format_go_time(&whole, "5.000"), "7.000");
@@ -87,7 +66,7 @@ fn fractional_seconds() {
 #[test]
 fn zone_tokens_match_local_offset() {
     let t = reference();
-    let off = t.offset().local_minus_utc();
+    let off = t.offset().seconds();
     let sign = if off < 0 { '-' } else { '+' };
     let (h, m) = (off.abs() / 3600, (off.abs() % 3600) / 60);
     assert_eq!(format_go_time(&t, "-0700"), format!("{sign}{h:02}{m:02}"));

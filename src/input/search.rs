@@ -353,7 +353,6 @@ mod tests {
     use super::*;
     use crate::client::types::{new_msg, MsgType};
     use crate::input::testutil::*;
-    use chrono::Utc;
 
     #[test]
     fn glob_quote_escapes_metacharacters() {
@@ -375,12 +374,15 @@ mod tests {
         c.mu.lock().width = 80;
         c.add_msg(
             "*server*",
-            new_msg(Utc::now(), "a", "one alpha", MsgType::Chat),
+            new_msg(crate::timeutil::now(), "a", "one alpha", MsgType::Chat),
         );
-        c.add_msg("*server*", new_msg(Utc::now(), "b", "two", MsgType::Chat));
         c.add_msg(
             "*server*",
-            new_msg(Utc::now(), "c", "three alpha", MsgType::Chat),
+            new_msg(crate::timeutil::now(), "b", "two", MsgType::Chat),
+        );
+        c.add_msg(
+            "*server*",
+            new_msg(crate::timeutil::now(), "c", "three alpha", MsgType::Chat),
         );
         c.do_search("alpha");
         assert_eq!(c.mu.lock().search_result_idx, 2);
@@ -397,10 +399,10 @@ mod tests {
     fn search_scroll_counts_day_separators() {
         let c = client();
         c.mu.lock().width = 80;
-        let t0 = Utc::now() - chrono::Duration::days(10);
+        let t0 = crate::timeutil::now() - crate::timeutil::days(10);
         c.add_msg("*server*", new_msg(t0, "a", "rasta", MsgType::Chat));
         for d in 1..=3 {
-            let t = t0 + chrono::Duration::days(2 * d);
+            let t = t0 + crate::timeutil::days(2 * d);
             c.add_msg("*server*", new_msg(t, "b", "kita", MsgType::Chat));
         }
         c.do_search("rasta");
@@ -414,11 +416,11 @@ mod tests {
         open_active(&c, "#chan");
         c.add_msg(
             "#chan",
-            new_msg(Utc::now(), "bob", "raktas cia", MsgType::Chat),
+            new_msg(crate::timeutil::now(), "bob", "raktas cia", MsgType::Chat),
         );
         c.add_msg(
             "*server*",
-            new_msg(Utc::now(), "", "kitas", MsgType::Server),
+            new_msg(crate::timeutil::now(), "", "kitas", MsgType::Server),
         );
         c.search_all_channels("raktas");
         let t = server_texts(&c);

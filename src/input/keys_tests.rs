@@ -230,7 +230,7 @@ fn search_prompt_enter_runs_search() {
     let c = client();
     c.add_msg(
         "*server*",
-        new_msg(Utc::now(), "bob", "rasta cia", MsgType::Chat),
+        new_msg(crate::timeutil::now(), "bob", "rasta cia", MsgType::Chat),
     );
     c.handle_key(b"\x12");
     c.handle_key(b"rasta");

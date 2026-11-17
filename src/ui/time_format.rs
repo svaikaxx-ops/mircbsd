@@ -1,6 +1,6 @@
 //! Formatting of timestamps using Go time layouts.
 
-use chrono::{DateTime, Datelike, Local, Timelike};
+use crate::timeutil::LocalTime;
 
 // ---- Go time layout formatting ----
 
@@ -42,30 +42,31 @@ fn is_digit_at(s: &[u8], i: usize) -> bool {
 
 /// Formats a time using a Go time layout (`time.Format`), e.g. `15:04`,
 /// `2006-01-02 15:04:05`, `Jan _2 3:04PM`. `ts_format` is a Go layout, so
-/// the Rust port needs its own formatter (chrono uses strftime).
+/// the Rust port needs its own formatter (Rust libraries use strftime).
 ///
 /// Supported elements: year (`2006`, `06`), month (`01`, `1`, `Jan`,
 /// `January`), day (`02`, `2`, `_2`, `002`/`__2` day of year), weekday
 /// (`Mon`, `Monday`), hour (`15`, `03`, `3`), minute (`04`, `4`), second
 /// (`05`, `5`), `PM`/`pm`, fractional seconds (`.000`, `.999`, `,000`),
 /// numeric zones (`-0700`, `-07:00`, `-07`, `Z0700`, `Z07:00`, `Z07`, …) and
-/// `MST` (rendered as a numeric offset — chrono has no zone abbreviations).
-pub fn format_go_time(t: &DateTime<Local>, layout: &str) -> String {
+/// `MST` (rendered as a numeric offset — zone abbreviations are not used).
+pub fn format_go_time(t: &LocalTime, layout: &str) -> String {
     let l = layout.as_bytes();
     let mut out = String::with_capacity(layout.len() + 8);
     let mut lit_start = 0usize; // start of pending literal run
     let mut i = 0usize;
 
-    let year = t.year();
+    // Tie patys tipai, kaip anksčiau (i32/u32) — likusi logika nepakitusi.
+    let year = i32::from(t.year());
     let month = t.month() as usize;
-    let day = t.day();
-    let hour = t.hour();
-    let min = t.minute();
-    let sec = t.second();
-    let nano = t.nanosecond() % 1_000_000_000; // drop leap-second overflow
-    let wday = t.weekday().num_days_from_sunday() as usize;
-    let yday = t.ordinal();
-    let off = t.offset().local_minus_utc();
+    let day = t.day() as u32;
+    let hour = t.hour() as u32;
+    let min = t.minute() as u32;
+    let sec = t.second() as u32;
+    let nano = t.subsec_nanosecond() as u32;
+    let wday = t.weekday().to_sunday_zero_offset() as usize;
+    let yday = t.day_of_year() as u32;
+    let off = t.offset().seconds();
 
     macro_rules! flush {
         ($upto:expr) => {

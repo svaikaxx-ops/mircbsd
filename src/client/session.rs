@@ -249,7 +249,7 @@ fn is_ymd_date(d: &str) -> bool {
         d[5..7].parse::<u32>().unwrap_or(0),
         d[8..10].parse::<u32>().unwrap_or(0),
     );
-    chrono::NaiveDate::from_ymd_opt(y, m, day).is_some()
+    crate::timeutil::valid_date(y, m, day)
 }
 
 /// Split `text` into parts that each fit a `PRIVMSG <target> :` line within

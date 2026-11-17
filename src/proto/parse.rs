@@ -5,9 +5,8 @@
 //! (consecutive spaces yield empty parameters) and a trailing parameter
 //! starts with `:`.
 
+use crate::timeutil::Ts;
 use std::collections::HashMap;
-
-use chrono::{DateTime, Utc};
 
 /// A parsed IRC line.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -33,7 +32,7 @@ impl IrcLine {
     }
 
     /// `time=` tag (IRCv3 server-time) when present and valid.
-    pub fn server_time(&self) -> Option<DateTime<Utc>> {
+    pub fn server_time(&self) -> Option<Ts> {
         server_time(&self.tags)
     }
 }
@@ -91,11 +90,8 @@ pub fn unescape_tag_value(v: &str) -> String {
 }
 
 /// Parse the `time` tag (RFC 3339 with fractional seconds) into local time.
-pub fn server_time(tags: &HashMap<String, String>) -> Option<DateTime<Utc>> {
-    let raw = tags.get("time")?;
-    DateTime::parse_from_rfc3339(raw)
-        .ok()
-        .map(|t| t.with_timezone(&Utc))
+pub fn server_time(tags: &HashMap<String, String>) -> Option<Ts> {
+    crate::timeutil::parse_rfc3339(tags.get("time")?)
 }
 
 /// Parse one IRC line (without CRLF). Returns `None` for empty or malformed

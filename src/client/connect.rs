@@ -932,7 +932,10 @@ impl Client {
                     return;
                 }
                 // Straight to THIS connection's queue; full queue → skip.
-                let _ = handle.try_send(format!("PING :{}", chrono::Utc::now().timestamp()));
+                let _ = handle.try_send(format!(
+                    "PING :{}",
+                    crate::timeutil::unix(crate::timeutil::now())
+                ));
             }
 
             match stream.read(&mut buf) {

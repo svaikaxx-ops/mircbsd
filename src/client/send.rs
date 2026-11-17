@@ -207,7 +207,7 @@ impl Client {
                 self.add_msg(
                     "*server*",
                     new_msg(
-                        chrono::Utc::now(),
+                        crate::timeutil::now(),
                         "",
                         "ĮSPĖJIMAS: siuntimo eilė pilna, žinutė prarasta",
                         MsgType::Error,

@@ -2,7 +2,6 @@
 //! (ne `$HOME`), kiekvienas testas savo.
 
 use super::*;
-use chrono::{TimeZone, Utc};
 use mircbsd::ui::Message;
 
 struct Tmp(std::path::PathBuf);
@@ -36,7 +35,7 @@ fn entry(dir: &str, chan: &str, kind: MsgType, nick: &str, text: &str) -> LogEnt
         server: "irc.example.org".into(),
         chan_name: chan.into(),
         msg: Message::new(
-            Utc.with_ymd_and_hms(2026, 3, 5, 12, 0, 0).unwrap(),
+            mircbsd::timeutil::utc(2026, 3, 5, 12, 0, 0),
             nick,
             text,
             kind,
@@ -146,9 +145,7 @@ fn write_log_entry_creates_private_file_and_appends() {
     .unwrap();
     assert_eq!(files.len(), 1);
     let day = format_go_time(
-        &Utc.with_ymd_and_hms(2026, 3, 5, 12, 0, 0)
-            .unwrap()
-            .with_timezone(&Local),
+        &mircbsd::timeutil::local(mircbsd::timeutil::utc(2026, 3, 5, 12, 0, 0)),
         "2006-01-02",
     );
     let p =
@@ -203,7 +200,7 @@ fn day_rollover_replaces_open_handle_and_close_filters() {
     let mut files = HashMap::new();
     let mut e = entry(&d.s(), "#a", MsgType::Chat, "a", "x");
     write_log_entry(&mut files, &e).unwrap();
-    e.msg.ts = Utc.with_ymd_and_hms(2026, 3, 7, 12, 0, 0).unwrap();
+    e.msg.ts = mircbsd::timeutil::utc(2026, 3, 7, 12, 0, 0);
     write_log_entry(&mut files, &e).unwrap();
     assert_eq!(files.len(), 1, "senos dienos rankena uždaryta");
     write_log_entry(&mut files, &entry(&d.s(), "#b", MsgType::Chat, "a", "x")).unwrap();

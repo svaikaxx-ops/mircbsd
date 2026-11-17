@@ -93,7 +93,7 @@ fn set_maxmemory_range_persist_and_trims_at_once() {
         c.add_msg(
             "#a",
             crate::client::types::new_msg(
-                chrono::Utc::now(),
+                crate::timeutil::now(),
                 "n",
                 &format!("{i} {big}"),
                 crate::client::types::MsgType::Chat,

@@ -387,7 +387,7 @@ mod tests {
         c.add_msg(
             "#chan",
             crate::client::types::new_msg(
-                chrono::Utc::now(),
+                crate::timeutil::now(),
                 "Zorro",
                 "hi",
                 crate::ui::MsgType::Chat,

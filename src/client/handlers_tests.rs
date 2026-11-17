@@ -255,12 +255,7 @@ fn server_time_tag_sets_timestamp() {
     let st = c.mu.lock();
     let i = st.find_ch("bob").unwrap();
     let ts = st.channels[i].messages[0].ts;
-    assert_eq!(
-        ts.with_timezone(&chrono::Utc)
-            .format("%Y-%m-%d")
-            .to_string(),
-        "2020-01-02"
-    );
+    assert_eq!(ts.strftime("%Y-%m-%d").to_string(), "2020-01-02");
 }
 
 #[test]

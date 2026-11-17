@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex as StdMutex, Once};
 use std::thread;
 use std::time::Duration;
 
-use chrono::Local;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use crossterm::tty::IsTty;
 use parking_lot::Mutex;
@@ -514,7 +513,7 @@ fn write_log_entry(files: &mut HashMap<String, File>, e: &LogEntry) -> io::Resul
     if e.log_dir.is_empty() {
         return Ok(());
     }
-    let local = e.msg.ts.with_timezone(&Local);
+    let local = mircbsd::timeutil::local(e.msg.ts);
     let day = format_go_time(&local, "2006-01-02");
     let chan = sanitize_path(&e.chan_name);
     let prefix = format!("{}/{chan}/", e.server);
@@ -600,7 +599,7 @@ fn restrict_dir(path: &Path) {
 
 /// One log line (`logMessage`). Passwords are replaced, never written.
 fn format_log_line(e: &LogEntry) -> String {
-    let local = e.msg.ts.with_timezone(&Local);
+    let local = mircbsd::timeutil::local(e.msg.ts);
     let ts = format_go_time(&local, "2006-01-02 15:04:05");
     let plain = sanitize_text(&strip_irc_format(&e.msg.text));
     let nick = sanitize_text(&e.msg.nick);
@@ -845,7 +844,13 @@ mod tests {
                 log_dir: String::new(),
                 server: "irc.example.org".into(),
                 chan_name: "NickServ".into(),
-                msg: Message::new(chrono::Utc::now(), "my-nick", secret, MsgType::Chat, false),
+                msg: Message::new(
+                    mircbsd::timeutil::now(),
+                    "my-nick",
+                    secret,
+                    MsgType::Chat,
+                    false,
+                ),
             };
             let line = format_log_line(&entry);
             assert!(!line.contains("secret"));

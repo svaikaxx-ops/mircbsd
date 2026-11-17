@@ -139,7 +139,7 @@ fn lazy_set_rebuild_and_clear() {
 
 #[test]
 fn add_msg_trims_oldest_quarter() {
-    let ts = chrono::Utc::now();
+    let ts = crate::timeutil::now();
     let mut c = Channel::new("#t", 8);
     c.rendered = vec!["x".into()];
     c.rendered_gen = 3;
@@ -171,7 +171,7 @@ fn add_msg_trims_oldest_quarter() {
 
 fn msg(text: &str) -> Message {
     Message::new(
-        chrono::Utc::now(),
+        crate::timeutil::now(),
         "n",
         text,
         crate::ui::MsgType::Chat,

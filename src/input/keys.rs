@@ -9,8 +9,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
-
 use crate::client::session::{split_for_privmsg, term_write};
 use crate::client::types::{new_msg, Client, MsgType, State, SERVER_WINDOW};
 use crate::config::key_actions;
@@ -414,7 +412,12 @@ impl Client {
                 self.send(&format!("PRIVMSG {active_name} :{part}"));
                 self.add_msg(
                     &active_name,
-                    new_msg(Utc::now(), &self.my_nick(), &part, MsgType::Chat),
+                    new_msg(
+                        crate::timeutil::now(),
+                        &self.my_nick(),
+                        &part,
+                        MsgType::Chat,
+                    ),
                 );
             }
         }

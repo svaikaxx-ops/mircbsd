@@ -8,8 +8,6 @@
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
-
 use crate::sanitize::{sanitize_chan_name, sanitize_text};
 use crate::validate::wildcard_match_cm;
 
@@ -414,7 +412,7 @@ impl Client {
     pub fn server_msg(&self, text: &str) {
         self.add_msg(
             SERVER_WINDOW,
-            new_msg(Utc::now(), "", text, MsgType::Server),
+            new_msg(crate::timeutil::now(), "", text, MsgType::Server),
         );
     }
 
@@ -423,7 +421,7 @@ impl Client {
     /// looking at: otherwise a typo in a channel ("Nežinoma komanda") only
     /// bumps the `*server*` unread counter and seems to do nothing.
     pub fn err_msg(&self, text: &str) {
-        let m = new_msg(Utc::now(), "", text, MsgType::Error);
+        let m = new_msg(crate::timeutil::now(), "", text, MsgType::Error);
         if CMD_FEEDBACK.with(|f| f.get()) {
             if let Some(m) = self.show_in_active(m) {
                 self.add_msg(SERVER_WINDOW, m);
@@ -436,7 +434,7 @@ impl Client {
     /// Informational line for the user in the ACTIVE window (`/help`); in
     /// the `*server*` window it is an ordinary server line.
     pub fn active_info_msg(&self, text: &str) {
-        let m = new_msg(Utc::now(), "", text, MsgType::Server);
+        let m = new_msg(crate::timeutil::now(), "", text, MsgType::Server);
         if let Some(m) = self.show_in_active(m) {
             self.add_msg(SERVER_WINDOW, m);
         }
@@ -478,7 +476,10 @@ impl Client {
         } else {
             target
         };
-        self.add_msg(target, new_msg(Utc::now(), "", text, MsgType::Server));
+        self.add_msg(
+            target,
+            new_msg(crate::timeutil::now(), "", text, MsgType::Server),
+        );
     }
 }
 
@@ -541,7 +542,10 @@ mod tests {
     #[test]
     fn add_msg_counts_unread_in_background() {
         let c = client();
-        c.add_msg("#bg", new_msg(Utc::now(), "n", "hi", MsgType::Chat));
+        c.add_msg(
+            "#bg",
+            new_msg(crate::timeutil::now(), "n", "hi", MsgType::Chat),
+        );
         let st = c.mu.lock();
         let i = st.find_ch("#bg").unwrap();
         assert_eq!(st.channels[i].unread, 1);
@@ -560,8 +564,14 @@ mod tests {
     #[test]
     fn switch_ch_resets_unread_state() {
         let c = client();
-        c.add_msg("#bg", new_msg(Utc::now(), "n", "one", MsgType::Chat));
-        c.add_msg("#bg", new_msg(Utc::now(), "n", "two", MsgType::Chat));
+        c.add_msg(
+            "#bg",
+            new_msg(crate::timeutil::now(), "n", "one", MsgType::Chat),
+        );
+        c.add_msg(
+            "#bg",
+            new_msg(crate::timeutil::now(), "n", "two", MsgType::Chat),
+        );
         c.mu.lock().height = 30;
         let idx = c.find_ch("#bg").unwrap();
         c.switch_ch(idx);
@@ -579,7 +589,12 @@ mod tests {
         for i in 0..5 {
             c.add_msg(
                 "friend",
-                new_msg(Utc::now(), "friend", &format!("f{i}"), MsgType::Chat),
+                new_msg(
+                    crate::timeutil::now(),
+                    "friend",
+                    &format!("f{i}"),
+                    MsgType::Chat,
+                ),
             );
         }
         // 150 private windows × 40 lines × ~3 KB ≈ 18 MB, nine times the budget.

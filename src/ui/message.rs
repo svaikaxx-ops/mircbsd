@@ -2,7 +2,7 @@
 //! mIRC formatting → ANSI, word wrapping by terminal cells, URL
 //! highlighting, per-message render lines, JSON export and day separators.
 
-use chrono::{DateTime, Datelike, Local, Utc};
+use crate::timeutil::Ts;
 use serde::Serialize;
 
 #[path = "time_format.rs"]
@@ -176,7 +176,7 @@ impl std::fmt::Display for MsgType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
-    pub ts: DateTime<Utc>,
+    pub ts: Ts,
     pub nick: String,
     pub text: String,
     pub msg_type: MsgType,
@@ -203,7 +203,7 @@ fn is_false(b: &bool) -> bool {
 
 impl Message {
     pub fn new(
-        ts: DateTime<Utc>,
+        ts: Ts,
         nick: impl Into<String>,
         text: impl Into<String>,
         msg_type: MsgType,
@@ -220,7 +220,7 @@ impl Message {
 
     fn wire(&self) -> Wire {
         Wire {
-            ts: self.ts.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            ts: self.ts.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
             nick: sanitize_text(&self.nick),
             kind: self.msg_type.as_str(),
             text: sanitize_text(&strip_irc_format(&self.text)),
@@ -265,7 +265,7 @@ impl Message {
         // Timestamp — configurable (timestamps=true|false, ts_format).
         // When disabled: smaller prefix, wider text.
         if timestamps_enabled() {
-            let local = self.ts.with_timezone(&Local);
+            let local = crate::timeutil::local(self.ts);
             let formatted = format_go_time(&local, &ts_format());
             ts_len = string_width(&formatted) + 1;
             if ts_color.is_empty() {
@@ -665,8 +665,8 @@ pub fn plain_to_original_bounds(
 // ---- Day separators ----
 
 /// Day-change marker line (`daySepLine`, v0.4.7).
-pub fn day_sep_line(t: &DateTime<Utc>) -> String {
-    let local = t.with_timezone(&Local);
+pub fn day_sep_line(t: &Ts) -> String {
+    let local = crate::timeutil::local(*t);
     format!(
         "{}── {} ──{}",
         ANSI_DARK_GRAY,
@@ -676,10 +676,8 @@ pub fn day_sep_line(t: &DateTime<Utc>) -> String {
 }
 
 /// Do two message times fall on different DAYS (local time)? (`changedDay`)
-pub fn changed_day(a: &DateTime<Utc>, b: &DateTime<Utc>) -> bool {
-    let a = a.with_timezone(&Local);
-    let b = b.with_timezone(&Local);
-    a.year() != b.year() || a.ordinal() != b.ordinal()
+pub fn changed_day(a: &Ts, b: &Ts) -> bool {
+    crate::timeutil::changed_local_day(*a, *b)
 }
 
 #[cfg(test)]

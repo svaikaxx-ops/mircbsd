@@ -1,7 +1,0 @@
-# cargo audit konfigūracija (naudoja ir CI `cargo audit -D warnings`).
-[advisories]
-ignore = [
-    # chrono 0.4 „unmaintained“ (ne pažeidžiamumas, pataisytos versijos nėra).
-    # Naudojamas tik laiko žymoms formatuoti; pakeitimas — atskiras darbas.
-    "RUSTSEC-2026-0543",
-]

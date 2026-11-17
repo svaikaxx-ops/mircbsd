@@ -1,6 +1,5 @@
 use super::*;
 use crate::ui::message::{Message, MsgType};
-use chrono::{TimeZone, Utc};
 
 #[test]
 fn clamp_status_fits_width() {
@@ -91,14 +90,8 @@ fn too_small_frame_explains_the_minimum() {
 fn cache_is_incremental_and_inserts_day_separators() {
     let _g = crate::ui::theme::TEST_LOCK.lock();
     let mut ch = Channel::new("#t", 0);
-    let t1 = chrono::Local
-        .with_ymd_and_hms(2026, 10, 21, 23, 0, 0)
-        .unwrap()
-        .with_timezone(&Utc);
-    let t2 = chrono::Local
-        .with_ymd_and_hms(2026, 10, 22, 0, 30, 0)
-        .unwrap()
-        .with_timezone(&Utc);
+    let t1 = crate::timeutil::local_at(2026, 10, 21, 23, 0, 0, 0).timestamp();
+    let t2 = crate::timeutil::local_at(2026, 10, 22, 0, 30, 0, 0).timestamp();
     ch.add_msg(Message::new(t1, "a", "one", MsgType::Chat, false));
     update_render_cache(&mut ch, 60, "me");
     assert_eq!(ch.rendered.len(), 1);

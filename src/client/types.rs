@@ -10,6 +10,7 @@
 //!
 //! `Message` / `Channel` / `MsgType` come from [`crate::ui`].
 
+use crate::timeutil::Ts;
 use std::collections::{HashMap, HashSet};
 use std::net::TcpStream;
 use std::sync::atomic::AtomicBool;
@@ -17,7 +18,6 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::config::{expand_home_path, Config};
@@ -34,18 +34,12 @@ pub const SERVER_WINDOW: &str = "*server*";
 pub use crate::ui::{Channel, Message, MsgType};
 
 /// Plain message (no highlight) — shorthand for `Message::new(.., false)`.
-pub fn new_msg(ts: DateTime<Utc>, nick: &str, text: &str, msg_type: MsgType) -> Message {
+pub fn new_msg(ts: Ts, nick: &str, text: &str, msg_type: MsgType) -> Message {
     Message::new(ts, nick, text, msg_type, false)
 }
 
 /// Message with an explicit highlight flag.
-pub fn new_msg_hl(
-    ts: DateTime<Utc>,
-    nick: &str,
-    text: &str,
-    msg_type: MsgType,
-    hl: bool,
-) -> Message {
+pub fn new_msg_hl(ts: Ts, nick: &str, text: &str, msg_type: MsgType, hl: bool) -> Message {
     Message::new(ts, nick, text, msg_type, hl)
 }
 
@@ -158,7 +152,7 @@ pub struct State {
     pub highlight_words: Vec<String>,
 
     /// Away throttle: nick folded by CASEMAPPING (`fold_name`) → last notice time (bounded).
-    pub away_notified: HashMap<String, DateTime<Utc>>,
+    pub away_notified: HashMap<String, Ts>,
 
     /// Where WHO / WHOIS replies go ("" = *server*).
     pub who_chan: String,
@@ -517,7 +511,12 @@ impl State {
                 target.remove_msg(old);
                 at -= 1;
             }
-            let sep = new_msg(Utc::now(), "", UNREAD_SEPARATOR, MsgType::Server);
+            let sep = new_msg(
+                crate::timeutil::now(),
+                "",
+                UNREAD_SEPARATOR,
+                MsgType::Server,
+            );
             target.insert_msg(at, sep);
             target.render_gen += 1;
             target.invalidate_render_cache();

@@ -6,6 +6,7 @@ pub mod input;
 pub mod persist;
 pub mod proto;
 pub mod sanitize;
+pub mod timeutil;
 pub mod ui;
 pub mod validate;
 pub mod width;
