@@ -120,3 +120,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "sanitize_tests.rs"]
+mod more_tests;

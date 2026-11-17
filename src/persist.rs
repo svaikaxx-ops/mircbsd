@@ -218,3 +218,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "persist_tests.rs"]
+mod more_tests;

@@ -551,6 +551,10 @@ pub fn parse_bool_value(v: &str) -> (bool, bool) {
 }
 
 #[cfg(test)]
+#[path = "config_tests.rs"]
+mod more_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{load_config, unescape_key_seq};
     use std::io::Write;
