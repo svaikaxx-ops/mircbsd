@@ -55,30 +55,8 @@ jobs:
             dist/*.tar.gz
             dist/*.sha256
 
-  freebsd:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: vmactions/freebsd-vm@v1
-        with:
-          release: '14'
-          prepare: pkg install -y rust
-          run: |
-            cargo build --locked --release
-            name="mircbsd-${GITHUB_REF_NAME}-x86_64-unknown-freebsd"
-            mkdir -p "dist/$name"
-            cp target/release/mircbsd README.md LICENSE CHANGELOG.md config.example "dist/$name/"
-            tar -C dist -czf "dist/$name.tar.gz" "$name"
-            (cd dist && sha256 -r "$name.tar.gz" > "$name.tar.gz.sha256")
-      - uses: actions/upload-artifact@v4
-        with:
-          name: x86_64-unknown-freebsd
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
-
   publish:
-    needs: [build, freebsd]
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: write

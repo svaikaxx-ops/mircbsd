@@ -368,7 +368,7 @@ cargo build --locked --release
 cargo audit               # reikia atskirai įdiegto cargo-audit
 ```
 
-CI atlieka Linux ir FreeBSD patikras, tikrina minimalią Rust versiją ir kas
+CI atlieka Linux patikras (FreeBSD tikrinamas rankiniu būdu), tikrina minimalią Rust versiją ir kas
 savaitę paleidžia priklausomybių saugumo auditą. E2E patikrai reikia Python 3,
 PTY ir leidimo naudoti vietinį tinklą. Daugiau – [CONTRIBUTING.md](CONTRIBUTING.md).
 

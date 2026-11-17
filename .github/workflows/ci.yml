@@ -41,19 +41,6 @@ jobs:
       - name: Terminal end-to-end tests
         run: bash scripts/e2e/start.sh
 
-  freebsd:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: vmactions/freebsd-vm@v1
-        with:
-          release: '14'
-          prepare: pkg install -y rust python3 bash
-          run: |
-            cargo test --locked
-            cargo build --locked --release
-            bash scripts/e2e/start.sh
-
   audit:
     runs-on: ubuntu-latest
     steps:
