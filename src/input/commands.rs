@@ -1086,17 +1086,17 @@ impl Client {
     /// Text cells a server line has in the active window: the message
     /// column minus the timestamp prefix.
     fn active_text_width(&self) -> i32 {
-        let (w, name) = {
+        let (w, name, sidebar) = {
             let st = self.mu.lock();
             let name = st.active_chan().map(|c| c.name.clone()).unwrap_or_default();
-            (st.width, name)
+            (st.width, name, st.sidebar)
         };
         let ts = if timestamps_enabled() {
             string_width(&format_go_time(&crate::timeutil::local_now(), &ts_format())) + 1
         } else {
             0
         };
-        msg_width(w, self.is_channel(&name)) - ts
+        msg_width(w, self.is_channel(&name), sidebar) - ts
     }
 
     fn cmd_window(&self, args: &str) {
@@ -1373,6 +1373,7 @@ fn help_lines(avail: i32) -> Vec<String> {
                 ("↑ / ↓", "komandų istorija"),
                 ("Ctrl+N / Ctrl+P", "kitas / ankstesnis langas"),
                 ("Alt+1…9, F1…F12", "langas pagal numerį"),
+                ("Alt+B", "rodyti / slėpti kanalų sąrašą"),
                 ("Tab", "užbaigti nick, komandą, kanalą"),
                 ("Ctrl+R", "paieška"),
                 ("Ctrl+←/→, Ctrl+W", "per žodį / ištrinti žodį"),

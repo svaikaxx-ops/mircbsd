@@ -352,6 +352,8 @@ fn mouse_wheel_and_clicks() {
         // Go's test client uses height 40; with height 0 a click scrolls
         // the channel list and the next click lands on the wrong row.
         st.height = 40;
+        // sidebar=auto: kanalų sąrašas matomas tik ≥ 80 stulpelių.
+        st.width = 120;
         st.channels = vec![
             Channel::new("#a", 100),
             Channel::new("#b", 100),
@@ -475,4 +477,36 @@ fn secret_typed_into_service_window_skips_history() {
     );
     c.handle_key(b"info bob\r");
     assert_eq!(c.mu.lock().history, vec!["info bob"]);
+}
+
+#[test]
+fn alt_b_toggles_sidebar_and_hidden_list_ignores_clicks() {
+    use crate::ui::draw::SidebarMode;
+    let c = client();
+    {
+        let mut st = c.mu.lock();
+        st.width = 72; // telefonas: auto → paslėpta
+        st.height = 40;
+        st.msg_area_top = 3;
+        st.channels = vec![Channel::new("#a", 100), Channel::new("#b", 100)];
+        st.mouse = true;
+        let ch = &mut st.channels[0];
+        ch.rendered_gen = 5;
+        ch.rendered = vec!["senas".into()];
+    }
+    // Paslėptas sąrašas: spragtelėjimas kairėje — pranešimų sritis, ne langas.
+    c.handle_mouse(b"\x1b[<0;5;4m");
+    assert_eq!(c.mu.lock().active_idx, 0);
+    c.handle_key(b"\x1bb");
+    {
+        let st = c.mu.lock();
+        assert_eq!(st.sidebar, SidebarMode::On);
+        // Pranešimų plotis pasikeitė — istorija perpiešiama.
+        assert_eq!(st.channels[0].rendered_gen, -1);
+    }
+    // Dabar sąrašas matomas: tas pats spragtelėjimas perjungia į #b.
+    c.handle_mouse(b"\x1b[<0;5;4m");
+    assert_eq!(c.mu.lock().active_idx, 1);
+    c.handle_key(b"\x1bB");
+    assert_eq!(c.mu.lock().sidebar, SidebarMode::Off);
 }

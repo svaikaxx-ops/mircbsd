@@ -27,6 +27,7 @@ impl Client {
             "maxmemory" => (self.mu.lock().max_buffer_bytes / (1024 * 1024)).to_string(),
             "theme" => if theme_dark_mode() { "dark" } else { "light" }.to_string(),
             "show_joins" => show_joins().as_str().to_string(),
+            "sidebar" => self.mu.lock().sidebar.as_str().to_string(),
             _ => String::new(),
         };
         self.server_msg(&format!("{key} = {v}"));
@@ -128,6 +129,18 @@ impl Client {
                     return None;
                 }
                 set_theme(value);
+                self.invalidate_render_caches();
+            }
+            "sidebar" => {
+                let Some(mode) = crate::ui::draw::SidebarMode::parse(value) else {
+                    self.err_msg(&format!(
+                        "Reikšmė turi būti auto, on arba off: {}",
+                        sanitize_text(value)
+                    ));
+                    return None;
+                };
+                self.mu.lock().sidebar = mode;
+                // Pranešimų stulpelio plotis pasikeitė — perpiešti istoriją.
                 self.invalidate_render_caches();
             }
             "show_joins" => {

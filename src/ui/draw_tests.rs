@@ -21,11 +21,11 @@ fn clamp_status_fits_width() {
 
 #[test]
 fn widths_and_rows() {
-    assert_eq!(msg_width(100, false), 100 - 18 - 2);
-    assert_eq!(msg_width(100, true), 100 - 18 - 2 - 17);
+    assert_eq!(msg_width(100, false, SidebarMode::On), 100 - 18 - 2);
+    assert_eq!(msg_width(100, true, SidebarMode::On), 100 - 18 - 2 - 17);
     // Narrow: the channel list shrinks and the nick list is hidden.
-    assert_eq!(msg_width(50, true), 50 - 12 - 2);
-    assert_eq!(msg_width(20, true), 10);
+    assert_eq!(msg_width(50, true, SidebarMode::On), 50 - 12 - 2);
+    assert_eq!(msg_width(20, true, SidebarMode::On), 10);
     assert_eq!(msg_area_top(false, false), 2);
     assert_eq!(msg_area_top(true, true), 4);
 }
@@ -33,15 +33,15 @@ fn widths_and_rows() {
 #[test]
 fn responsive_layout() {
     // 80 columns still has room for the nick list (43-cell messages).
-    let l = layout(80, true);
+    let l = layout(80, true, SidebarMode::On);
     assert_eq!((l.chan_w, l.nick_w, l.msg_w), (18, 16, 43));
     // Below 77 the nick list would squeeze messages under 40 cells.
-    assert_eq!(layout(76, true).nick_w, 0);
-    assert_eq!(layout(76, true).msg_w, 76 - 18 - 2);
+    assert_eq!(layout(76, true, SidebarMode::On).nick_w, 0);
+    assert_eq!(layout(76, true, SidebarMode::On).msg_w, 76 - 18 - 2);
     // Query / server windows never show it.
-    assert_eq!(layout(200, false).nick_w, 0);
-    assert_eq!(chan_list_width(59), CHAN_LIST_WIDTH_NARROW);
-    assert_eq!(chan_list_width(60), CHAN_LIST_WIDTH);
+    assert_eq!(layout(200, false, SidebarMode::On).nick_w, 0);
+    assert_eq!(chan_list_width(59, SidebarMode::On), CHAN_LIST_WIDTH_NARROW);
+    assert_eq!(chan_list_width(60, SidebarMode::On), CHAN_LIST_WIDTH);
 }
 
 #[test]
@@ -320,6 +320,7 @@ fn params<'a>(
         search_mode: false,
         search_query: "",
         lag: None,
+        sidebar: SidebarMode::On,
     }
 }
 
@@ -522,4 +523,113 @@ fn input_line_wide_chars_fit_and_cursor_follows_home() {
     let (shown, col) = input_row(&f.output);
     assert_eq!(col, 3, "kursorius turi būti po „> “");
     assert!(shown.starts_with("> 界"), "{shown:?}");
+}
+
+// ---- sidebar=auto|on|off (telefonai / Termux) ----
+
+#[test]
+fn sidebar_mode_parse_visible_toggle() {
+    assert_eq!(SidebarMode::parse(" AUTO "), Some(SidebarMode::Auto));
+    assert_eq!(SidebarMode::parse("on"), Some(SidebarMode::On));
+    assert_eq!(SidebarMode::parse("no"), Some(SidebarMode::Off));
+    assert_eq!(SidebarMode::parse("kartais"), None);
+    assert_eq!(SidebarMode::default(), SidebarMode::Auto);
+    // auto: slepiama siauresniame nei 80 (telefonas ~72), rodoma nuo 80.
+    assert!(!SidebarMode::Auto.visible(79));
+    assert!(SidebarMode::Auto.visible(80));
+    assert!(SidebarMode::On.visible(40));
+    assert!(!SidebarMode::Off.visible(200));
+    // Alt+B: priešinga tam, kas matoma.
+    assert_eq!(SidebarMode::Auto.toggled(72), SidebarMode::On);
+    assert_eq!(SidebarMode::Auto.toggled(120), SidebarMode::Off);
+    assert_eq!(SidebarMode::On.toggled(72), SidebarMode::Off);
+    assert_eq!(SidebarMode::Off.toggled(120), SidebarMode::On);
+}
+
+#[test]
+fn hidden_sidebar_gives_messages_the_full_width() {
+    assert_eq!(chan_list_width(72, SidebarMode::Auto), 0);
+    assert_eq!(chan_list_width(72, SidebarMode::On), CHAN_LIST_WIDTH);
+    assert_eq!(chan_list_width(120, SidebarMode::Auto), CHAN_LIST_WIDTH);
+    // Be sąrašo: visas plotis minus vienas atsarginis stulpelis (kaip ir su
+    // sąrašu) — telefone 72 stulpeliai → 71, o ne 52.
+    let l = layout(72, false, SidebarMode::Auto);
+    assert_eq!((l.chan_w, l.nick_w, l.msg_w), (0, 0, 71));
+    assert_eq!(layout(72, false, SidebarMode::On).msg_w, 72 - 18 - 2);
+    // Nick sąrašas grįžta, kai vietos užtenka.
+    let l = layout(79, true, SidebarMode::Off);
+    assert_eq!((l.chan_w, l.nick_w), (0, NICK_LIST_WIDTH));
+    assert_eq!(l.msg_w, 79 - 1 - (NICK_LIST_WIDTH + 1));
+}
+
+#[test]
+fn activity_marker_lists_other_unread_windows() {
+    let mk = |name: &str, unread: i32, highlight: i32| ChanState {
+        name: name.into(),
+        unread,
+        highlight,
+        ..Default::default()
+    };
+    let chans = vec![
+        mk("*server*", 1, 0),
+        mk("#a", 0, 0),
+        mk("#b", 4, 2),
+        mk("#c", 3, 0),
+    ];
+    // Aktyvus (#c) neįtraukiamas; „!“ — paminėjimas.
+    assert_eq!(activity_marker(&chans, 3), " [1 !3]");
+    assert_eq!(activity_marker(&chans[1..2], 0), "");
+    let many: Vec<ChanState> = (0..10).map(|i| mk(&format!("#{i}"), 1, 0)).collect();
+    assert_eq!(activity_marker(&many, 0), " [2 3 4 5 6 7 +]");
+}
+
+#[test]
+fn frame_without_sidebar_starts_messages_at_column_one() {
+    let mut channels = vec![
+        ChanState {
+            name: "*server*".into(),
+            ..Default::default()
+        },
+        ChanState {
+            name: "#rust".into(),
+            ..Default::default()
+        },
+        ChanState {
+            name: "#kitas".into(),
+            unread: 2,
+            highlight: 1,
+            ..Default::default()
+        },
+    ];
+    let nicks: Vec<String> = vec![];
+    let lines = vec!["\x1b[0mpirma eilute".to_string()];
+    let input: Vec<char> = vec![];
+    let mut p = params(&channels, &nicks, &lines, &input);
+    p.width = 72;
+    p.active_idx = 1;
+    p.show_nicks = false;
+    p.sidebar = SidebarMode::Auto;
+    let f = draw_frame(&p).unwrap();
+    let top = f.msg_area_top;
+    // Pranešimas — 1 stulpelyje; kanalų sąrašo ir jo „│“ nėra.
+    assert!(
+        f.output.contains(&format!(
+            "\x1b[{top};1H\x1b[71X\x1b[{top};1H\x1b[0mpirma eilute"
+        )),
+        "{:?}",
+        f.output
+    );
+    assert!(!f.output.contains("1:*server*"));
+    assert!(!f.output.contains('│'));
+    assert!(!f.output.contains('┴'));
+    // Aktyvumas — statuso juostoje prie lango vardo.
+    assert!(f.output.contains("| #rust [!3] "), "{:?}", f.output);
+
+    // Tas pats su sidebar=on: sąrašas grįžta, žymos nebėra.
+    p.sidebar = SidebarMode::On;
+    let f = draw_frame(&p).unwrap();
+    assert!(f.output.contains("1:*server*"));
+    assert!(f.output.contains('│'));
+    assert!(!f.output.contains("[!3]"));
+    channels.clear();
 }

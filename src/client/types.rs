@@ -179,6 +179,8 @@ pub struct State {
     /// Global budget for stored messages over ALL windows, in bytes
     /// (`maxmemory`); see `State::enforce_memory_budget`.
     pub max_buffer_bytes: usize,
+    /// Kanalų sąrašo režimas (`sidebar`; Alt+B perjungia šiai sesijai).
+    pub sidebar: crate::ui::draw::SidebarMode,
 
     /// Last channel whose message was dropped because of the channel limit.
     pub chan_limit_hit: String,
@@ -316,6 +318,7 @@ impl Client {
             active_idx: 0,
             max_messages: cfg.max_messages,
             max_buffer_bytes: crate::config::max_memory_bytes(cfg.max_memory_mb),
+            sidebar: cfg.sidebar,
             chan_limit_hit: String::new(),
             last_drawn: None,
             write: None,

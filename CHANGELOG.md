@@ -4,6 +4,23 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [Neišleista]
+
+### Nauja
+
+- **`sidebar=auto|on|off`** (config + `/set`, įrašoma atgal) — kanalų
+  sąrašas kairėje. `auto` (numatyta) slepia jį siauresniame nei 80
+  stulpelių terminale (telefonas, Termux): pranešimams lieka visas plotis
+  (72 stulpeliuose — 71 vietoj 52). Paslėpus, kitų langų aktyvumas
+  rodomas statuso juostoje prie lango vardo: `#rust [2 !5]` (`!` —
+  paminėjimas, daugiausia 6, toliau `+`). Pelės spragtelėjimai kairėje
+  tada nebeperjungia langų.
+- **`Alt+B`** — kanalų sąrašą parodyti / paslėpti šiai sesijai.
+- **README: Termux papildomų klavišų eilutė** (`termux.properties`) su
+  langų perjungimu, `Alt+B`, PgUp/PgDn.
+- **E2E 33** — 72×30 „telefono“ ekranas: sąrašas paslėptas, pranešimai nuo
+  1 stulpelio, aktyvumo žyma, `Alt+B` rodo / slepia.
+
 ## [0.5.4] – 2026-11-17 – Android / Termux
 
 ### Nauja

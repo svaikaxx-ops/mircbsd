@@ -213,3 +213,27 @@ fn set_without_value_shows_and_without_args_lists() {
         assert!(t.iter().any(|l| l.starts_with(&format!("{k} = "))), "{k}");
     }
 }
+
+#[test]
+fn set_sidebar_validates_applies_and_persists() {
+    use crate::ui::draw::SidebarMode;
+    let _g = config_dir_lock();
+    fresh_config();
+    let c = client();
+    c.handle_input("/set sidebar kartais");
+    assert_eq!(config_text(), "");
+    assert!(server_texts(&c)
+        .iter()
+        .any(|t| t.contains("auto, on arba off")));
+    assert_eq!(c.mu.lock().sidebar, SidebarMode::Auto);
+    c.handle_input("/set sidebar off");
+    assert_eq!(c.mu.lock().sidebar, SidebarMode::Off);
+    assert!(config_text().contains("sidebar=off"), "{}", config_text());
+    assert_eq!(
+        load_config(&config_path().unwrap()).0.sidebar,
+        SidebarMode::Off
+    );
+    c.handle_input("/set sidebar");
+    assert!(server_texts(&c).iter().any(|t| t == "sidebar = off"));
+    fresh_config();
+}

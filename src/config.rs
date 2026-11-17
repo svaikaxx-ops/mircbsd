@@ -44,6 +44,8 @@ pub struct Config {
     pub theme: String,
     /// Kitų join/part/quit/nick eilutės: `all`, `smart` arba `none`.
     pub show_joins: String,
+    /// Kanalų sąrašas: auto (slepiamas < 80 stulpelių) / on / off.
+    pub sidebar: crate::ui::draw::SidebarMode,
 }
 
 /// `$HOME` (netuščias). Testuose — izoliuotas laikinas katalogas, kad
@@ -101,6 +103,7 @@ pub fn default_config() -> Config {
         ts_format: "15:04".into(),
         nick_colors: true,
         show_joins: "all".into(),
+        sidebar: crate::ui::draw::SidebarMode::Auto,
         ..Config::default()
     }
 }
@@ -291,6 +294,13 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
             }
             "tls_pin" => cfg.tls_pin = v.trim().to_ascii_lowercase(),
             "theme" => cfg.theme = v.to_ascii_lowercase(),
+            "sidebar" => match crate::ui::draw::SidebarMode::parse(v) {
+                Some(m) => cfg.sidebar = m,
+                None => warnings.push(format!(
+                    "Neteisinga sidebar reikšmė: {v} (laukta auto/on/off; paliekama {})",
+                    cfg.sidebar.as_str()
+                )),
+            },
             "show_joins" => match crate::ui::JoinFilter::parse(v) {
                 Some(f) => cfg.show_joins = f.as_str().to_string(),
                 None => warnings.push(format!(
@@ -529,6 +539,7 @@ pub const SETTABLE_KEYS: &[&str] = &[
     "maxmemory",
     "theme",
     "show_joins",
+    "sidebar",
 ];
 
 pub fn is_settable(key: &str) -> bool {

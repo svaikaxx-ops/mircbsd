@@ -677,6 +677,36 @@ def main():
 
     record('32 lag auga laukiant PONG, ≥5 s paryškintas', chk_lag_grows)
 
+    # ---------- 33. Telefonas (Termux): kanalų sąrašas paslėptas, Alt+B ----------
+    def chk_phone_sidebar():
+        goto_testas()
+        d.resize(72, 30)
+        botmsg('#antras', 'kitame lange')
+        botmsg('#testas', 'TELEFONAS-ZINUTE')
+        hidden = driver.wait_until(
+            lambda: 'TELEFONAS-ZINUTE' in S() and '1:*server*' not in S()
+            and '| #testas [' in d.screen.line(0), timeout=8)
+        row = next((d.screen.line(r) for r in range(30)
+                    if 'TELEFONAS-ZINUTE' in d.screen.line(r)), '')
+        # Be sąrašo pranešimas prasideda 1 stulpelyje (laiko žyma), ne po „│“.
+        # (Dešinėje gali būti nick sąrašo „│“ — tikrinama tik kairė pusė.)
+        at_left = row[:2].isdigit() and '│' not in row[:30]
+        bar = d.screen.line(0)
+        save_frame('frame-72x30.txt')
+        d.keys('\x1bb')
+        shown = driver.wait_until(lambda: '1:*server*' in S(), timeout=5)
+        d.keys('\x1bb')
+        hidden2 = driver.wait_until(lambda: '1:*server*' not in S(), timeout=5)
+        d.keys('\x1bb')  # grąžinti (paskui 120 stulpelių — matomas)
+        d.resize(120, 40)
+        driver.wait_until(lambda: '1:*server*' in S(), timeout=8)
+        ok = hidden and at_left and shown and hidden2
+        return ok, 'paslėpta, %r, Alt+B rodo/slepia' % bar.strip()[:60] if ok else \
+            'paslėpta=%s kairėje=%s(%r) Alt+B=%s/%s: %r' % (
+                hidden, at_left, row[:30], shown, hidden2, bar)
+
+    record('33 telefonas: sąrašas paslėptas, aktyvumas, Alt+B', chk_phone_sidebar)
+
     # ---------- Rezultatai ----------
     good = sum(1 for ok, _n, _ in results if ok)
     print('\n==== E2E: %d/%d patikrų praėjo ====' % (good, len(results)))

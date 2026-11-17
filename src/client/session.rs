@@ -159,6 +159,18 @@ impl Client {
     /// After a theme / colour / timestamp change: cached lines carry the OLD
     /// SGR codes, so drop every channel's render cache and redraw
     /// (`invalidateRenderCaches`).
+    /// Alt+B: kanalų sąrašą rodyti / slėpti šiai sesijai (į config
+    /// nerašoma; nuolatinis — `/set sidebar`). Pranešimų stulpelio plotis
+    /// keičiasi, todėl istorija perpiešiama.
+    pub fn toggle_sidebar(&self) {
+        {
+            let mut st = self.mu.lock();
+            let w = st.width;
+            st.sidebar = st.sidebar.toggled(w);
+        }
+        self.invalidate_render_caches();
+    }
+
     pub fn invalidate_render_caches(&self) {
         {
             let mut st = self.mu.lock();

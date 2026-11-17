@@ -377,6 +377,12 @@ impl Client {
             return;
         }
 
+        // ---- Alt+B: kanalų sąrašas rodyti / slėpti (šiai sesijai) ----
+        if b == b"\x1bb" || b == b"\x1bB" {
+            self.toggle_sidebar();
+            return;
+        }
+
         // ---- Alt+1..Alt+9: window by number ----
         if b.len() == 2 && b[0] == 0x1b && (b'1'..=b'9').contains(&b[1]) {
             self.switch_ch((b[1] - b'1') as usize);
@@ -803,7 +809,7 @@ impl Client {
                         st.channels.len() as i64,
                         st.chan_scroll_off as i64,
                         // The list narrows on small terminals (responsive layout).
-                        chan_list_width(st.width) as i64,
+                        chan_list_width(st.width, st.sidebar) as i64,
                     )
                 };
                 let idx = y - top + chan_scroll;

@@ -40,6 +40,7 @@ struct DrawSnap {
     search_mode: bool,
     search_query: String,
     lag: Option<std::time::Duration>,
+    sidebar: crate::ui::draw::SidebarMode,
 }
 
 impl Client {
@@ -86,6 +87,7 @@ impl Client {
             search_mode: snap.search_mode,
             search_query: &snap.search_query,
             lag: snap.lag,
+            sidebar: snap.sidebar,
         };
         let Some(frame) = draw_frame(&params) else {
             return;
@@ -116,7 +118,7 @@ impl Client {
         // and would overlap the `mu` borrow, so read `isup` directly.
         let show_nicks = self.isup.read().is_channel(&active_name);
         let my_nick = st.nick.clone();
-        let msg_w = msg_width(st.width, show_nicks);
+        let msg_w = msg_width(st.width, show_nicks, st.sidebar);
         update_render_cache(&mut st.channels[active_idx], msg_w, &my_nick);
 
         let was_drawn = st.last_drawn.as_deref() == Some(active_name.as_str());
@@ -159,6 +161,7 @@ impl Client {
             search_mode: st.search_mode,
             search_query: st.search_query.clone(),
             lag: st.lag_shown(Instant::now()),
+            sidebar: st.sidebar,
         })
     }
 }

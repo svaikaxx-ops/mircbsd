@@ -329,7 +329,7 @@ fn scroll_to_message(c: &Client, st: &mut State, ch_idx: usize, i: usize) {
     let name = st.channels[ch_idx].name.clone();
     // Same geometry as the frame (responsive layout: the nick list may be
     // hidden on a narrow terminal).
-    let msg_w = msg_width(st.width, c.is_channel(&name));
+    let msg_w = msg_width(st.width, c.is_channel(&name), st.sidebar);
     let my_nick = st.nick.clone();
     let ch = &st.channels[ch_idx];
     let found_count = ch.messages[i].render_lines(msg_w, &my_nick).len() as i32;

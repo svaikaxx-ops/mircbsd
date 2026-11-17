@@ -58,12 +58,65 @@ pub struct Layout {
     pub msg_w: i32,
 }
 
-/// Responsive layout: the channel list shrinks on narrow terminals and the
-/// nick list disappears when it would squeeze the messages below
-/// [`MIN_MSG_WIDTH_WITH_NICKS`].
-pub fn layout(w: i32, show_nicks: bool) -> Layout {
-    let chan_w = chan_list_width(w);
-    let base = w - chan_w - 2;
+/// Kanalų sąrašo (šoninės juostos) rodymas: `auto` — tik kai terminalas
+/// ne siauresnis nei [`SIDEBAR_AUTO_MIN_WIDTH`] (telefonai, Termux), `on` —
+/// visada, `off` — niekada. Paslėpus, langų aktyvumas rodomas statuso juostoje.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarMode {
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+/// `sidebar=auto`: siauresniame terminale kanalų sąrašas slepiamas.
+pub const SIDEBAR_AUTO_MIN_WIDTH: i32 = 80;
+
+impl SidebarMode {
+    pub fn parse(v: &str) -> Option<Self> {
+        match v.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "on" | "true" | "yes" | "1" => Some(Self::On),
+            "off" | "false" | "no" | "0" => Some(Self::Off),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    /// Ar kanalų sąrašas rodomas `w` stulpelių terminale.
+    pub fn visible(self, w: i32) -> bool {
+        match self {
+            Self::On => true,
+            Self::Off => false,
+            Self::Auto => w >= SIDEBAR_AUTO_MIN_WIDTH,
+        }
+    }
+
+    /// Alt+B: priešinga tam, kas dabar matoma (auto → on/off pagal plotį).
+    pub fn toggled(self, w: i32) -> Self {
+        if self.visible(w) {
+            Self::Off
+        } else {
+            Self::On
+        }
+    }
+}
+
+/// Responsive layout: the channel list shrinks on narrow terminals (or is
+/// hidden, see [`SidebarMode`]) and the nick list disappears when it would
+/// squeeze the messages below [`MIN_MSG_WIDTH_WITH_NICKS`].
+pub fn layout(w: i32, show_nicks: bool, sidebar: SidebarMode) -> Layout {
+    let chan_w = chan_list_width(w, sidebar);
+    // Kairė dalis prieš pranešimus: sąrašas + jo „│“ (paslėpus — nieko).
+    let left = if chan_w > 0 { chan_w + 1 } else { 0 };
+    let base = w - left - 1;
     let nick_w = if show_nicks && base - (NICK_LIST_WIDTH + 1) >= MIN_MSG_WIDTH_WITH_NICKS {
         NICK_LIST_WIDTH
     } else {
@@ -78,9 +131,11 @@ pub fn layout(w: i32, show_nicks: bool) -> Layout {
 }
 
 /// Channel list width for a terminal `w` columns wide (mouse hit-testing
-/// uses the same value).
-pub fn chan_list_width(w: i32) -> i32 {
-    if w < NARROW_WIDTH {
+/// uses the same value); 0 when the list is hidden.
+pub fn chan_list_width(w: i32, sidebar: SidebarMode) -> i32 {
+    if !sidebar.visible(w) {
+        0
+    } else if w < NARROW_WIDTH {
         CHAN_LIST_WIDTH_NARROW
     } else {
         CHAN_LIST_WIDTH
@@ -120,8 +175,8 @@ pub fn clamp_status_left(status_left: &str, status_right: &str, w: i32) -> (Stri
 
 /// Width of the message column (`msgW`): the window minus the channel list,
 /// its separator and the nick panel (if [`layout`] shows it); at least 10.
-pub fn msg_width(w: i32, show_nicks: bool) -> i32 {
-    layout(w, show_nicks).msg_w
+pub fn msg_width(w: i32, show_nicks: bool, sidebar: SidebarMode) -> i32 {
+    layout(w, show_nicks, sidebar).msg_w
 }
 
 /// Picks the status bar hint that still leaves room for `left`:
@@ -288,6 +343,33 @@ pub struct FrameParams<'a> {
     pub search_query: &'a str,
     /// Rodomas lag ([`lag_shown`]); `None` — nerodomas.
     pub lag: Option<Duration>,
+    /// Kanalų sąrašo režimas (`sidebar`, Alt+B).
+    pub sidebar: SidebarMode,
+}
+
+/// Paslėpus kanalų sąrašą — kitų langų aktyvumas statuso juostai:
+/// `[2 !5]` (numeris; `!` — paminėjimas). Daugiausia 6, toliau `+`.
+pub fn activity_marker(channels: &[ChanState], active_idx: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut more = false;
+    for (i, ch) in channels.iter().enumerate() {
+        if i == active_idx || ch.unread == 0 {
+            continue;
+        }
+        if parts.len() == 6 {
+            more = true;
+            break;
+        }
+        let bang = if ch.highlight > 0 { "!" } else { "" };
+        parts.push(format!("{bang}{}", i + 1));
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    if more {
+        parts.push("+".into());
+    }
+    format!(" [{}]", parts.join(" "))
 }
 
 /// Result of [`draw_frame`].
@@ -459,13 +541,13 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
         }
     }
     let lag_txt = p.lag.filter(|_| p.connected).map(format_lag);
-    let (status_left, lag_seg) = status_left_lag(
-        &who,
-        &srv,
-        &sanitize_text(p.active_name),
-        lag_txt.as_deref(),
-        w,
-    );
+    // Paslėptas kanalų sąrašas — kitų langų aktyvumas prie lango vardo
+    // (lango vardas statuso juostoje išlieka ilgiausiai).
+    let mut shown_name = sanitize_text(p.active_name);
+    if !p.sidebar.visible(w) {
+        shown_name.push_str(&activity_marker(p.channels, p.active_idx));
+    }
+    let (status_left, lag_seg) = status_left_lag(&who, &srv, &shown_name, lag_txt.as_deref(), w);
     let status_right = status_right_for(&format!("{status_left}{lag_seg}"), w);
     // Clip the left part to the free space: a long channel name (a hostile
     // server has no length limit) would wrap the bar onto a second row and
@@ -531,7 +613,7 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
     //
     // SCROLLING: there can be more channels than rows (up to 100). Scroll
     // offset (chan_scroll_off) + ▲▼ arrows.
-    let lay = layout(w, p.show_nicks);
+    let lay = layout(w, p.show_nicks, p.sidebar);
     let chan_w = lay.chan_w;
     let accent = accent_color();
     let n_chan = channels.len() as i32;
@@ -540,7 +622,7 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
     // Window numbers (for /win N, F1–F12, Alt+1–9) right-aligned to the
     // widest number so the names line up past window 9.
     let num_w = n_chan.max(1).to_string().len();
-    for i in 0..msg_rows {
+    for i in 0..(if chan_w > 0 { msg_rows } else { 0 }) {
         let r = msg_area_top + i;
         out.push_str(&move_to(r, 1));
         out.push_str(&erase(chan_w));
@@ -617,7 +699,7 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
         out.push_str(ANSI_RESET);
     }
     // Channel list arrows (more channels than rows).
-    if max_chan_scroll > 0 {
+    if chan_w > 0 && max_chan_scroll > 0 {
         if chan_scroll > 0 {
             out.push_str(&move_to(msg_area_top, chan_w));
             out.push_str(accent);
@@ -642,7 +724,7 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
     let scroll_off = p.scroll_off.max(0);
     let start_line = (total_lines - msg_rows - scroll_off).max(0);
 
-    let msg_col_start = chan_w + 2;
+    let msg_col_start = if chan_w > 0 { chan_w + 2 } else { 1 };
     let msg_col_end = w - nick_panel_w;
     for i in 0..msg_rows {
         let r = msg_area_top + i;
@@ -740,11 +822,13 @@ pub fn draw_frame(p: &FrameParams) -> Option<Frame> {
         0
     };
     for col in 1..=w {
-        out.push(if col == chan_w + 1 || col == nick_sep_col {
-            '┴'
-        } else {
-            '─'
-        });
+        out.push(
+            if (chan_w > 0 && col == chan_w + 1) || col == nick_sep_col {
+                '┴'
+            } else {
+                '─'
+            },
+        );
     }
     out.push_str(ANSI_RESET);
 

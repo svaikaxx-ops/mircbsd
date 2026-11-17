@@ -367,3 +367,15 @@ fn key_action_names_are_sorted_and_complete() {
     assert_eq!(names.len(), key_actions().len());
     assert!(names.contains(&"search".to_string()));
 }
+
+#[test]
+fn sidebar_is_validated() {
+    use crate::ui::draw::SidebarMode;
+    let (c, w) = load_str("sidebar=OFF\n");
+    assert_eq!(c.sidebar, SidebarMode::Off);
+    assert!(w.is_empty(), "{w:?}");
+    let (c, w) = load_str("sidebar=kartais\n");
+    assert_eq!(c.sidebar, SidebarMode::Auto);
+    assert!(w.iter().any(|l| l.contains("sidebar")), "{w:?}");
+    assert_eq!(crate::config::default_config().sidebar, SidebarMode::Auto);
+}

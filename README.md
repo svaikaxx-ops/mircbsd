@@ -108,6 +108,19 @@ nerastų (nėra `/etc/resolv.conf`).
 - `/open` atidaro nuorodas Android naršyklėje (`termux-open-url`).
 - Pranešimai apie paminėjimus – per `termux-notification`: reikia
   `pkg install termux-api` ir programėlės **Termux:API**.
+- Telefono ekrane (siauriau nei 80 stulpelių) kanalų sąrašas automatiškai
+  paslepiamas – pranešimams lieka visas plotis, o kitų langų aktyvumas
+  rodomas statuso juostoje (`#rust [2 !5]`). `Alt+B` sąrašą parodo / paslepia.
+- Patogi papildomų klavišų eilutė – `~/.termux/termux.properties`
+  (įsigalioja po `termux-reload-settings`):
+
+  ```properties
+  extra-keys = [['ESC', 'TAB', {macro: "CTRL p", display: '◀'}, {macro: "CTRL n", display: '▶'}, {macro: "ALT b", display: '☰'}, 'UP', 'PGUP'], \
+                ['CTRL', 'ALT', '/', 'LEFT', 'DOWN', 'RIGHT', 'PGDN']]
+  ```
+
+  `◀` / `▶` – ankstesnis / kitas langas, `☰` – kanalų sąrašas, `PGUP` /
+  `PGDN` – slinkti istoriją, `UP` / `DOWN` – komandų istorija.
 - 32 bitų Android telefonams paruošto binario nėra – kompiliuokite Termux'e:
   `pkg install rust git`, tada `cargo build --release` (žr. „Diegimas iš
   šaltinio“).
@@ -265,6 +278,7 @@ Formatas: `raktas=reikšmė`, `#` – komentaras. Visi raktai su paaiškinimais 
 |--------|-----------|-----------|
 | `theme` | `dark` | `light` – šviesiems fonams (tamsesnės nick'ų, mIRC ir akcentų spalvos) |
 | `nick_colors` | `true` | Kiekvienas nick – sava spalva |
+| `sidebar` | `auto` | Kanalų sąrašas kairėje: `auto` – slepiamas siauresniame nei 80 stulpelių terminale (telefonas, Termux), `on` – visada, `off` – niekada. Paslėpus, kitų langų aktyvumas rodomas statuso juostoje prie lango vardo: `#rust [2 !5]` (lango numeris; `!` – paminėjimas). `Alt+B` perjungia |
 | `show_joins` | `all` | Kitų join/part/quit/nick eilutės: `all` – visos, `smart` – tik nick'ų, kalbėjusių kanale per pastarąsias 10 min., `none` – jokių. Paslėptos eilutės lieka žurnaluose ir nedidina neperskaitytų skaitiklio; išmetimai (KICK) rodomi visada |
 | `timestamps` / `ts_format` | `true` / `15:04` | Laiko žymos ir jų formatas (pvz. `15:04:05`) |
 | `tscolor` | `gray` | Laiko žymos spalva: `gray`, `blue`, `green`, `cyan`, `none` |
@@ -277,7 +291,7 @@ Formatas: `raktas=reikšmė`, `#` – komentaras. Visi raktai su paaiškinimais 
 | `logdir` | `~/irclogs` | Žurnalų katalogas |
 
 `/set` be argumentų parodo dabartines reikšmes. Keičiami gyvai (ir įrašomi
-atgal į config failą) šie raktai: `theme`, `nick_colors`, `show_joins`,
+atgal į config failą) šie raktai: `theme`, `nick_colors`, `show_joins`, `sidebar`,
 `timestamps`, `ts_format`, `tscolor`, `highlight_color`, `notifications`,
 `mouse`, `maxmessages`, `maxmemory`, `reconnect`, `ctcpversion`. Ryšio ir slaptažodžių raktai per
 `/set` nekeičiami. Bool reikšmės (ir config faile): `true`/`false`,
@@ -393,6 +407,7 @@ Visos komandos taip pat matomos `/help` (skliaustuose – sinonimai).
 | `↑` / `↓` | Komandų istorija (visada; žinutės slenkamos PgUp/PgDn arba pelės ratuku) |
 | `Ctrl+N` / `Ctrl+P` | Kitas / ankstesnis langas |
 | `Alt+1`…`Alt+9`, `F1`…`F12` | Langas pagal numerį |
+| `Alt+B` | Rodyti / slėpti kanalų sąrašą (šiai sesijai; nuolat – `/set sidebar`) |
 | `Tab` | Užbaigti nick'ą, komandą, kanalą (kartojant – kitas variantas) |
 | `Ctrl+R` | Paieška (`Enter` – ieškoti, kartojant – toliau atgal; `Esc` – uždaryti) |
 | `n` / `p` | Po paieškos, kai įvesties eilutė tuščia – kitas / ankstesnis rezultatas |

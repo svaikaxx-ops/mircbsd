@@ -66,6 +66,10 @@ reconnect=true
 # Paslėptos eilutės lieka žurnaluose. Keičiama ir gyvai: /set show_joins smart
 # show_joins=all
 
+# Kanalų sąrašas kairėje: auto (slepiamas < 80 stulpelių — telefonas,
+# Termux), on, off. Alt+B perjungia; gyvai: /set sidebar off
+# sidebar=auto
+
 # Laiko žymos prie žinučių (15:04 formatu, numatytai įjungta)
 # timestamps=true
 # ts_format=15:04
