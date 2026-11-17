@@ -257,13 +257,7 @@ impl Client {
                 }
                 // Kanalo NOTICE (taip pat STATUSMSG „@#kanalas“) — į to kanalo
                 // langą, jei jis atidarytas; kitaip (ir asmeniniai) — *server*.
-                let target = p(0);
-                let chan = if self.is_channel(target) {
-                    target
-                } else {
-                    let signs = self.isup.read().prefix_signs.clone();
-                    target.trim_start_matches(|c: char| signs.contains(c))
-                };
+                let chan = self.statusmsg_target(p(0));
                 let dest = if self.is_channel(chan) && self.find_ch(chan).is_some() {
                     chan
                 } else {
@@ -809,6 +803,14 @@ impl Client {
         let mode_str = msg.param(1);
         let params = &msg.params;
         if !self.is_channel(target) {
+            // Vartotojo režimai (MODE mano_nick +i) anksčiau dingdavo be žinios.
+            if params.len() > 1 {
+                self.server_msg(&format!(
+                    "Mode {}: {}",
+                    sanitize_text(target),
+                    sanitize_text(&params[1..].join(" "))
+                ));
+            }
             return;
         }
         let (_, signs, modes, _, chan_modes) = self.isup_snapshot();
@@ -855,8 +857,24 @@ impl Client {
 
     // ---- messages ----
 
+    /// STATUSMSG tikslas („@#kanalas“, „+#kanalas“) → kanalo vardas; kiti
+    /// tikslai nekeičiami.
+    fn statusmsg_target<'a>(&self, target: &'a str) -> &'a str {
+        if self.is_channel(target) {
+            return target;
+        }
+        let signs = self.isup.read().prefix_signs.clone();
+        let chan = target.trim_start_matches(|c: char| signs.contains(c));
+        if chan.len() != target.len() && self.is_channel(chan) {
+            chan
+        } else {
+            target
+        }
+    }
+
     fn on_privmsg(&self, msg: &IrcLine, now: DateTime<Utc>) {
-        let target = msg.param(0);
+        // „@#kanalas“ anksčiau atidarydavo privatų langą „@#kanalas“.
+        let target = self.statusmsg_target(msg.param(0));
         let text = msg.param(1);
         let from = msg.from_nick();
         let me = self.my_nick();

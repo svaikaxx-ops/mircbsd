@@ -563,3 +563,14 @@ fn only_one_unread_separator_per_window() {
     let pos = t.iter().position(|t| t == "── naujos žinutės ──").unwrap();
     assert_eq!(t[pos + 1], "naujas 2");
 }
+
+#[test]
+fn statusmsg_privmsg_goes_to_channel_and_user_mode_is_shown() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #s");
+    c.parse_irc(":op!u@h PRIVMSG @#s :tik opams");
+    assert!(c.find_ch("@#s").is_none(), "atidarytas langas „@#s“");
+    assert!(texts(&c, "#s").contains(&"tik opams".to_string()));
+    c.parse_irc(":me MODE me :+iw");
+    assert!(texts(&c, SERVER_WINDOW).iter().any(|t| t == "Mode me: +iw"));
+}
