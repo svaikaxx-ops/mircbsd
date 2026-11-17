@@ -391,3 +391,11 @@ fn join_while_offline_is_joined_after_registration() {
     c.parse_irc(&format!(":srv 001 {me} :Welcome"));
     assert!(sent(&q).iter().any(|l| l == "JOIN #offline"));
 }
+
+#[test]
+fn msg_while_offline_is_not_shown_as_sent() {
+    let c = client();
+    c.handle_cmd("msg", "bob labas");
+    assert!(c.find_ch("bob").is_none(), "žinutė parodyta kaip išsiųsta");
+    assert!(server_texts(&c).iter().any(|l| l.contains("Neprisijungta")));
+}

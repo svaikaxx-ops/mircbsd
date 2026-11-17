@@ -458,3 +458,56 @@ fn kick_of_self_clears_nick_list() {
         st.channels[i].nicks
     );
 }
+
+#[test]
+fn contains_nick_checks_every_occurrence() {
+    assert!(contains_nick("bobby, bob?", "bob"));
+    assert!(contains_nick("žžbob bob", "bob"));
+    assert!(!contains_nick("bobby bobas", "bob"));
+}
+
+#[test]
+fn channel_notice_goes_to_channel_window() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #n");
+    c.parse_irc(":ChanServ!s@s NOTICE #n :kanalo pranešimas");
+    c.parse_irc(":op!s@s NOTICE @#n :tik opams");
+    c.parse_irc(":srv NOTICE me :asmeninis");
+    c.parse_irc(":x!s@s NOTICE #kitas :be lango");
+    let t = texts(&c, "#n");
+    assert!(t.contains(&"kanalo pranešimas".to_string()), "{t:?}");
+    assert!(t.contains(&"tik opams".to_string()), "{t:?}");
+    let s = texts(&c, SERVER_WINDOW);
+    assert!(s.contains(&"asmeninis".to_string()));
+    assert!(s.contains(&"be lango".to_string()));
+    assert!(c.find_ch("#kitas").is_none());
+}
+
+#[test]
+fn nick_change_renames_private_window() {
+    let (c, _q) = setup();
+    c.parse_irc(":alice!u@h PRIVMSG me :labas");
+    c.parse_irc(":alice!u@h NICK alisa");
+    assert!(c.find_ch("alice").is_none());
+    c.parse_irc(":alisa!u@h PRIVMSG me :vėl");
+    let t = texts(&c, "alisa");
+    assert_eq!(t.len(), 3, "{t:?}"); // labas, NICK, vėl — vienas langas
+}
+
+#[test]
+fn action_highlight_uses_word_match_and_highlight_words() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #a");
+    c.mu.lock().highlight_words = vec!["rust".into()];
+    c.parse_irc(":x!u@h PRIVMSG #a :\x01ACTION meets meme\x01");
+    c.parse_irc(":x!u@h PRIVMSG #a :\x01ACTION loves Rust\x01");
+    let st = c.mu.lock();
+    let i = st.find_ch("#a").unwrap();
+    let hl: Vec<bool> = st.channels[i]
+        .messages
+        .iter()
+        .filter(|m| m.msg_type == MsgType::Action)
+        .map(|m| m.highlight)
+        .collect();
+    assert_eq!(hl, vec![false, true]);
+}

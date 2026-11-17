@@ -440,10 +440,13 @@ impl Client {
             self.err_msg("Netinkamas gavėjas (raidės, skaičiai ir .-_ ; max 100)");
             return;
         }
-        if self.is_connected() {
-            for part in split_for_privmsg(target, text) {
-                self.send(&format!("PRIVMSG {target} :{part}"));
-            }
+        if !self.is_connected() {
+            // Anksčiau žinutė be ryšio vis tiek būdavo parodoma kaip išsiųsta.
+            self.err_msg("Neprisijungta");
+            return;
+        }
+        for part in split_for_privmsg(target, text) {
+            self.send(&format!("PRIVMSG {target} :{part}"));
         }
         {
             let mut st = self.mu.lock();

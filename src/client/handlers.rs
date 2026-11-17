@@ -29,21 +29,30 @@ const AWAY_THROTTLE_MINUTES: i64 = 10;
 /// Most capability names kept from one `CAP LS`/`NEW` round.
 const MAX_CAP_NAMES: usize = 1024;
 
-/// Does `text` mention `nick` as a whole word (case-insensitive, first occurrence)?
+/// Does `text` mention `nick` as a whole word (case-insensitive)?
+///
+/// Tikrinamos VISOS vietos: „bobby, bob“ turi paryškinti „bob“ (anksčiau
+/// žiūrėta tik į pirmą atitikmenį „bobby“ ir highlight dingdavo).
 pub fn contains_nick(text: &str, nick: &str) -> bool {
     if nick.is_empty() {
         return false;
     }
     let text_low = text.to_lowercase();
     let nick_low = nick.to_lowercase();
-    let Some(idx) = text_low.find(&nick_low) else {
-        return false;
-    };
     let tb = text_low.as_bytes();
-    let before = idx == 0 || !is_nick_char(tb[idx - 1] as char);
-    let end = idx + nick_low.len();
-    let after = end >= tb.len() || !is_nick_char(tb[end] as char);
-    before && after
+    let mut from = 0;
+    while let Some(off) = text_low[from..].find(&nick_low) {
+        let idx = from + off;
+        let before = idx == 0 || !is_nick_char(tb[idx - 1] as char);
+        let end = idx + nick_low.len();
+        let after = end >= tb.len() || !is_nick_char(tb[end] as char);
+        if before && after {
+            return true;
+        }
+        // Kitas simbolis (ne baitas) — find grąžina simbolio ribą.
+        from = idx + text_low[idx..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
 }
 
 /// RFC nick characters: letters, digits and ``_-[]\`^{}|``.
@@ -246,10 +255,21 @@ impl Client {
                 if self.is_ignored(prefix) {
                     return;
                 }
-                self.add_msg(
-                    SERVER_WINDOW,
-                    new_msg(now, from_nick, p(1), MsgType::Notice),
-                );
+                // Kanalo NOTICE (taip pat STATUSMSG „@#kanalas“) — į to kanalo
+                // langą, jei jis atidarytas; kitaip (ir asmeniniai) — *server*.
+                let target = p(0);
+                let chan = if self.is_channel(target) {
+                    target
+                } else {
+                    let signs = self.isup.read().prefix_signs.clone();
+                    target.trim_start_matches(|c: char| signs.contains(c))
+                };
+                let dest = if self.is_channel(chan) && self.find_ch(chan).is_some() {
+                    chan
+                } else {
+                    SERVER_WINDOW
+                };
+                self.add_msg(dest, new_msg(now, from_nick, p(1), MsgType::Notice));
             }
 
             "332" => {
@@ -753,10 +773,22 @@ impl Client {
                 st.nick = new_nick.to_string();
             }
             let mut names = Vec::new();
+            let is_chan = |n: &str| self.is_channel(n);
             for ch in st.channels.iter_mut() {
                 if ch.has_nick(from) {
                     ch.rename_nick(from, new_nick, None);
                     names.push(ch.name.clone());
+                } else if ch.name != SERVER_WINDOW
+                    && !is_chan(&ch.name)
+                    && self.nick_equal(&ch.name, from)
+                {
+                    // Privatus langas seka pašnekovo nick'ą (kitaip jo
+                    // tolesnės žinutės atidarytų naują langą).
+                    let renamed = crate::sanitize::sanitize_chan_name(new_nick);
+                    if !renamed.is_empty() {
+                        ch.name = renamed;
+                        names.push(ch.name.clone());
+                    }
                 }
             }
             names
@@ -844,9 +876,17 @@ impl Client {
                 } else {
                     target
                 };
-                let hl = strip_irc_format(action)
-                    .to_lowercase()
-                    .contains(&me.to_lowercase());
+                // Ta pati taisyklė kaip PRIVMSG: PM, nick kaip žodis, highlight_words.
+                let plain = strip_irc_format(action);
+                let plain_low = plain.to_lowercase();
+                let hl = self.nick_equal(target, &me)
+                    || contains_nick(&plain, &me)
+                    || self
+                        .mu
+                        .lock()
+                        .highlight_words
+                        .iter()
+                        .any(|w| plain_low.contains(&w.to_lowercase()));
                 self.add_msg(dest, new_msg_hl(now, from, action, MsgType::Action, hl));
             } else if inner.starts_with("VERSION") {
                 let enabled = self.mu.lock().ctcp_version;
