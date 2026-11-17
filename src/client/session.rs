@@ -307,18 +307,8 @@ pub fn open_url(url: &str) -> Result<(), String> {
     if !is_safe_url(url) {
         return Err("netinkamas URL".into());
     }
-    let candidates: Vec<(&str, Vec<&str>)> = match std::env::consts::OS {
-        "macos" => vec![("open", vec![])],
-        "windows" => vec![("rundll32", vec!["url.dll,FileProtocolHandler"])],
-        _ => vec![
-            ("xdg-open", vec![]),
-            ("gio", vec!["open"]),
-            ("sensible-browser", vec![]),
-            ("x-www-browser", vec![]),
-            ("www-browser", vec![]),
-            ("firefox", vec![]),
-        ],
-    };
+    let termux = is_termux();
+    let candidates = opener_candidates(std::env::consts::OS, termux);
     let mut tried = Vec::new();
     for (name, args) in &candidates {
         tried.push(*name);
@@ -340,16 +330,69 @@ pub fn open_url(url: &str) -> Result<(), String> {
             return Ok(());
         }
     }
+    let hint = if termux {
+        "Termux: pkg install termux-tools"
+    } else {
+        "Debian: apt install xdg-utils"
+    };
     Err(format!(
-        "naršyklės įrankis nerastas (bandė: {}). Debian: apt install xdg-utils",
+        "naršyklės įrankis nerastas (bandė: {}). {hint}",
         tried.join(", ")
     ))
+}
+
+/// Ar veikiama Termux (Android) aplinkoje: Termux nustato `TERMUX_VERSION`
+/// ir `PREFIX=/data/data/com.termux/files/usr`.
+pub fn is_termux() -> bool {
+    cfg!(target_os = "android")
+        || std::env::var_os("TERMUX_VERSION").is_some()
+        || std::env::var("PREFIX").is_ok_and(|p| p.contains("com.termux"))
+}
+
+/// URL atidarymo įrankiai pagal OS, tikrinimo tvarka. Termux'e pirmas —
+/// `termux-open-url` (termux-tools, atidaro Android naršyklėje).
+pub fn opener_candidates(os: &str, termux: bool) -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut v: Vec<(&'static str, Vec<&'static str>)> = match os {
+        "macos" => vec![("open", vec![])],
+        "windows" => vec![("rundll32", vec!["url.dll,FileProtocolHandler"])],
+        _ => vec![
+            ("xdg-open", vec![]),
+            ("gio", vec!["open"]),
+            ("sensible-browser", vec![]),
+            ("x-www-browser", vec![]),
+            ("www-browser", vec![]),
+            ("firefox", vec![]),
+        ],
+    };
+    if termux || os == "android" {
+        v.insert(0, ("termux-open-url", vec![]));
+    }
+    v
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::default_config;
+
+    #[test]
+    fn termux_opener_goes_first() {
+        fn names(v: Vec<(&'static str, Vec<&'static str>)>) -> Vec<&'static str> {
+            v.into_iter().map(|(n, _)| n).collect()
+        }
+        let linux = names(opener_candidates("linux", false));
+        assert_eq!(linux[0], "xdg-open");
+        assert!(!linux.contains(&"termux-open-url"));
+        assert_eq!(
+            names(opener_candidates("linux", true))[0],
+            "termux-open-url"
+        );
+        assert_eq!(
+            names(opener_candidates("android", false))[0],
+            "termux-open-url"
+        );
+        assert_eq!(names(opener_candidates("macos", false)), vec!["open"]);
+    }
 
     #[test]
     fn channel_log_file_is_exact() {

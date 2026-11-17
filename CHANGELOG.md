@@ -4,6 +4,20 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [Neišleista]
+
+### Nauja
+
+- **Android / Termux** — release binaris `aarch64-linux-android` (bionic:
+  Android DNS ir laiko juosta `persist.sys.timezone`; statinis musl binaris
+  Android'e neranda `/etc/resolv.conf`). Kompiliuojamas per `cross`,
+  paleidžiamas `cross run` Android atvaizde prieš publikavimą.
+- **`install.sh` atpažįsta Termux** (`TERMUX_VERSION` / `$PREFIX`): diegia
+  Android binarį į `$PREFIX/bin` (be sudo); 32 bitų Android – aiški nuoroda
+  kompiliuoti iš šaltinio.
+- **Termux integracija** — `/open` per `termux-open-url`, pranešimai per
+  `termux-notification` (termux-api), jei jie yra; kitaip – kaip anksčiau.
+
 ## [0.5.3] – 2026-11-17 – lag, show_joins, kanalų raktai, FreeBSD, jiff
 
 ### Nauja

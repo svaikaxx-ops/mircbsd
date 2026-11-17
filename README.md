@@ -90,6 +90,28 @@ FreeBSD `sha256`). Jei skriptas praneša, kad
 Raspberry Pi OS jį prideda automatiškai, kai katalogas jau yra) arba
 `source ~/.profile`.
 
+## Android (Termux)
+
+[Termux](https://termux.dev) programėlėje (arm64 telefonai ir planšetės) –
+ta pati komanda:
+
+```sh
+pkg install curl
+curl -fsSL https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh
+```
+
+Skriptas atpažįsta Termux ir diegia **Android binarį** (`aarch64-linux-android`)
+į `$PREFIX/bin` (jau PATH'e, sudo nereikia). Android binaris naudoja Android
+DNS ir laiko juostą – statinis Linux (musl) binaris Android'e serverių vardų
+nerastų (nėra `/etc/resolv.conf`).
+
+- `/open` atidaro nuorodas Android naršyklėje (`termux-open-url`).
+- Pranešimai apie paminėjimus – per `termux-notification`: reikia
+  `pkg install termux-api` ir programėlės **Termux:API**.
+- 32 bitų Android telefonams paruošto binario nėra – kompiliuokite Termux'e:
+  `pkg install rust git`, tada `cargo build --release` (žr. „Diegimas iš
+  šaltinio“).
+
 ## Diegimas rankiniu būdu iš release
 
 Jei nenorite paleisti skripto – tą patį galima padaryti ranka.
@@ -103,6 +125,7 @@ Jei nenorite paleisti skripto – tą patį galima padaryti ranka.
 | x86_64 | `x86_64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
 | ARM 64 | `aarch64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
 | FreeBSD amd64 | `x86_64-unknown-freebsd` | FreeBSD 14+ (nuo v0.5.3) |
+| Android arm64 (Termux) | `aarch64-linux-android` | Android 7+ Termux'e (nuo v0.5.4) |
 
 Architektūrą parodo `uname -m`: `x86_64`, `aarch64` (64 bitų ARM),
 `armv7l` (32 bitų ARM) arba `armv6l` (Raspberry Pi 1, Zero, Zero W);

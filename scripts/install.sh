@@ -7,6 +7,7 @@
 # Parinktys (perduodamos per `sh -s -- ...`):
 #   --version vX.Y.Z   konkreti versija (numatyta: naujausia)
 #   --system           į /usr/local/bin (per sudo), o ne ~/.local/bin
+#                      (Termux: visada $PREFIX/bin, be sudo)
 #   --dir KATALOGAS    į nurodytą katalogą
 #   --force            diegti net jei ta pati versija jau įdiegta
 #   --uninstall        pašalinti binarį (konfigūracija lieka)
@@ -24,6 +25,7 @@ BASE="${MIRCBSD_RELEASES_URL:-https://github.com/$REPO/releases}"
 
 VERSION=""
 DIR="${HOME}/.local/bin"
+DIR_SET=0
 SUDO=""
 FORCE=0
 UNINSTALL=0
@@ -34,8 +36,8 @@ die() { printf '%s\n' "mircbsd: KLAIDA: $*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --version) [ $# -ge 2 ] || die "--version reikia reikšmės"; VERSION="$2"; shift 2 ;;
-        --system) DIR="/usr/local/bin"; SUDO="sudo"; shift ;;
-        --dir) [ $# -ge 2 ] || die "--dir reikia reikšmės"; DIR="$2"; shift 2 ;;
+        --system) DIR="/usr/local/bin"; SUDO="sudo"; DIR_SET=1; shift ;;
+        --dir) [ $# -ge 2 ] || die "--dir reikia reikšmės"; DIR="$2"; DIR_SET=1; shift 2 ;;
         --force) FORCE=1; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
         -h|--help)
@@ -43,6 +45,7 @@ while [ $# -gt 0 ]; do
 mircBSD diegimas / atnaujinimas iš GitHub release.
   --version vX.Y.Z   konkreti versija (numatyta: naujausia)
   --system           į /usr/local/bin (per sudo), o ne ~/.local/bin
+                     (Termux: visada $PREFIX/bin, be sudo)
   --dir KATALOGAS    į nurodytą katalogą
   --force            diegti net jei ta pati versija jau įdiegta
   --uninstall        pašalinti binarį (konfigūracija lieka)
@@ -51,6 +54,21 @@ EOF
         *) die "nežinoma parinktis: $1 (žr. --help)" ;;
     esac
 done
+
+# Termux (Android): binarai — $PREFIX/bin (jau PATH'e), sudo nėra.
+TERMUX=0
+if [ -n "${TERMUX_VERSION:-}" ]; then
+    TERMUX=1
+else
+    case "${PREFIX:-}" in *com.termux*) TERMUX=1 ;; esac
+fi
+if [ "$TERMUX" -eq 1 ]; then
+    [ -n "${PREFIX:-}" ] || die "Termux: nenustatytas \$PREFIX"
+    if [ "$SUDO" = "sudo" ] || [ "$DIR_SET" -eq 0 ]; then
+        DIR="$PREFIX/bin"
+    fi
+    SUDO=""
+fi
 
 [ "$(id -u)" -eq 0 ] && [ -z "$SUDO" ] && [ "$DIR" = "${HOME}/.local/bin" ] &&
     say "įspėjimas: paleista kaip root – diegiama į $DIR (root namų katalogą)"
@@ -74,13 +92,22 @@ os="$(uname -s)"
 arch="$(uname -m)"
 case "$os" in
     Linux)
+        if [ "$TERMUX" -eq 1 ]; then
+            # Android: bionic binaris (Android DNS ir laiko juosta veikia;
+            # statinis musl Android'e neranda /etc/resolv.conf).
+            case "$arch" in
+                aarch64|arm64) TARGET="aarch64-linux-android" ;;
+                *) die "Termux $arch: paruošto binario nėra – kompiliuokite: pkg install rust git (README)" ;;
+            esac
+        else
         case "$arch" in
             x86_64|amd64) TARGET="x86_64-unknown-linux-musl" ;;
             aarch64|arm64) TARGET="aarch64-unknown-linux-musl" ;;
             armv7l|armv7*|armv8l) TARGET="armv7-unknown-linux-musleabihf" ;;
             armv6l|armv6*) TARGET="arm-unknown-linux-musleabihf" ;;   # Pi 1 / Zero / Zero W
             *) die "nepalaikoma architektūra: $arch – kompiliuokite iš šaltinio (README)" ;;
-        esac ;;
+        esac
+        fi ;;
     FreeBSD)
         case "$arch" in
             amd64|x86_64) TARGET="x86_64-unknown-freebsd" ;;

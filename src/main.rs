@@ -360,23 +360,49 @@ impl Drop for RawTerm {
     }
 }
 
-/// Desktop notification via `notify-send` (`notifyDesktop`). Missing binary
-/// is ignored. `--` keeps a server-controlled title from being parsed as a flag.
+/// Desktop notification via `notify-send` (`notifyDesktop`); Termux —
+/// `termux-notification` (termux-api). Missing binaries are ignored.
 fn notify_desktop(title: &str, body: &str) {
-    let (title, body) = notify_texts(title, body);
-    let mut child = match Command::new("notify-send")
-        .args(["-a", "mircBSD", "-t", "5000", "--", &title, &body])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return,
-    };
-    thread::spawn(move || {
-        let _ = child.wait();
-    });
+    for (prog, args) in notify_commands(title, body, mircbsd::client::session::is_termux()) {
+        let child = Command::new(prog)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(mut child) = child {
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+            return;
+        }
+    }
+}
+
+/// Pranešimo komandos, bandymo tvarka. `notify-send`: `--` neleidžia serverio
+/// pavadinimo palaikyti parinktimi, kūnas — markup (pabėgtas). Termux
+/// `termux-notification`: reikšmės perduodamos kaip `--title`/`--content`
+/// argumentai (ne markup), `--id` — naujas pranešimas pakeičia seną.
+fn notify_commands(title: &str, body: &str, termux: bool) -> Vec<(&'static str, Vec<String>)> {
+    let (t, b) = notify_texts(title, body);
+    let send = (
+        "notify-send",
+        ["-a", "mircBSD", "-t", "5000", "--", &t, &b]
+            .map(String::from)
+            .to_vec(),
+    );
+    if !termux {
+        return vec![send];
+    }
+    let t = clip_runes(&sanitize_text(title), 60, false);
+    let b = clip_runes(&sanitize_text(body), 120, true);
+    let termux_cmd = (
+        "termux-notification",
+        ["--id", "mircbsd", "--title", &t, "--content", &b]
+            .map(String::from)
+            .to_vec(),
+    );
+    vec![termux_cmd, send]
 }
 
 /// Title and body for `notify-send`: sanitized and clipped. The BODY is

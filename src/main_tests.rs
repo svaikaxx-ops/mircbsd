@@ -228,3 +228,29 @@ fn clip_runes_counts_chars_not_bytes() {
     assert_eq!(clip_runes("", 0, true), "");
     assert_eq!(clip_runes("a", 0, true), "…");
 }
+
+#[test]
+fn notify_commands_desktop_and_termux() {
+    let title = "-x <b>";
+    let body = "a & <img src=x>";
+    // Darbalaukis: tik notify-send, `--` prieš serverio tekstą, kūnas pabėgtas.
+    let d = notify_commands(title, body, false);
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].0, "notify-send");
+    let dash = d[0].1.iter().position(|a| a == "--").unwrap();
+    assert_eq!(d[0].1[dash + 1], "-x <b>");
+    assert_eq!(d[0].1[dash + 2], "a &amp; &lt;img src=x&gt;");
+    // Termux: pirmas termux-notification, reikšmės kaip parinkčių argumentai,
+    // be markup pabėgimo; notify-send lieka atsarginis.
+    let t = notify_commands(title, body, true);
+    assert_eq!(t[0].0, "termux-notification");
+    assert_eq!(t[1].0, "notify-send");
+    let a = &t[0].1;
+    let ti = a.iter().position(|x| x == "--title").unwrap();
+    assert_eq!(a[ti + 1], "-x <b>");
+    let ci = a.iter().position(|x| x == "--content").unwrap();
+    assert_eq!(a[ci + 1], "a & <img src=x>");
+    // Valdymo simboliai išvalyti ir Termux kelyje.
+    let t = notify_commands("x\x1b]52;c;QQ==\x07", "y\x1b[2J", true);
+    assert!(t[0].1.iter().all(|s| !s.contains('\x1b')), "{:?}", t[0].1);
+}

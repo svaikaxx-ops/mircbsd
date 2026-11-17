@@ -33,6 +33,12 @@ jobs:
             os: ubuntu-latest
             cross: true
             qemu: qemu-arm
+          # Android / Termux (arm64): bionic libc — veikia Android DNS ir
+          # laiko juosta; paleidžiama cross Android atvaizde (qemu + Android)
+          - target: aarch64-linux-android
+            os: ubuntu-latest
+            cross: true
+            android: true
           # ARMv6 (Raspberry Pi 1, Zero, Zero W)
           - target: arm-unknown-linux-musleabihf
             os: ubuntu-latest
@@ -81,8 +87,14 @@ jobs:
         run: |
           bin="target/${{ matrix.target }}/release/mircbsd"
           file "$bin"
-          ${{ matrix.qemu }} "$bin" --version
-          if [ "${{ matrix.musl }}" = "true" ] || [ "${{ matrix.cross }}" = "true" ]; then
+          if [ "${{ matrix.android }}" = "true" ]; then
+            file "$bin" | grep -q "Android" || { echo "ne Android binaris"; exit 1; }
+            cross run --release --locked --target ${{ matrix.target }} -- --version | tee ver.txt
+            grep -q "^mircbsd " ver.txt
+          else
+            ${{ matrix.qemu }} "$bin" --version
+          fi
+          if { [ "${{ matrix.musl }}" = "true" ] || [ "${{ matrix.cross }}" = "true" ]; } && [ "${{ matrix.android }}" != "true" ]; then
             file "$bin" | grep -Eq "static(ally|-pie) linked" || { echo "musl binaris ne statinis"; exit 1; }
           fi
 
