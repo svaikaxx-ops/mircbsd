@@ -1214,3 +1214,7 @@ fn monitor_nick(mask: &str) -> String {
 #[cfg(test)]
 #[path = "handlers_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "handlers_cap_tests.rs"]
+mod cap_tests;

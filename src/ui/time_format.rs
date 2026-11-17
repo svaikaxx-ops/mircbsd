@@ -381,3 +381,7 @@ fn fmt_offset(off: i32, colon: bool, secs: bool, short: bool) -> String {
         (false, false) => format!("{}{:02}{:02}", sign, h, m),
     }
 }
+
+#[cfg(test)]
+#[path = "time_format_tests.rs"]
+mod tests;
