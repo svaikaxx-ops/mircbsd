@@ -326,13 +326,15 @@ fn parse_irc_never_panics_on_hostile_lines() {
         }
         if r.below(4) != 0 {
             line.push(':');
-            line.push_str(r.pick(&["me!u@h", "x!y@z", "", "srv", "!@"]));
+            line.push_str(r.pick::<&str>(&["me!u@h", "x!y@z", "", "srv", "!@"]));
             line.push(' ');
         }
-        line.push_str(r.pick(CMDS));
+        line.push_str(r.pick::<&str>(CMDS));
         for _ in 0..n {
             line.push(' ');
-            line.push_str(r.pick(&["#a", "me", "*", "+o", "-v", "LS", "ACK", "=", "#b", ""]));
+            line.push_str(
+                r.pick::<&str>(&["#a", "me", "*", "+o", "-v", "LS", "ACK", "=", "#b", ""]),
+            );
         }
         line.push_str(" :");
         line.push_str(&r.interesting_string(30));
