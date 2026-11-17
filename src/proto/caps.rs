@@ -35,7 +35,7 @@ pub fn wanted_caps(
     IRCV3_WANTED_CAPS
         .iter()
         .copied()
-        .filter(|w| available.contains(*w) && active.map_or(true, |a| !a.contains(*w)))
+        .filter(|w| available.contains(*w) && active.is_none_or(|a| !a.contains(*w)))
         .collect()
 }
 

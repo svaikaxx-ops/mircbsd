@@ -3,15 +3,19 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::validate::is_valid_nick;
 
 const HISTORY_MAX: usize = 1000;
 const MONITOR_MAX: usize = 100;
 
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 fn tmp_path(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_os_string();
-    s.push(".tmp");
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    s.push(format!(".tmp.{}.{}", std::process::id(), sequence));
     PathBuf::from(s)
 }
 
@@ -37,37 +41,42 @@ pub fn ensure_parent_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Write bytes atomically via `path.tmp` then rename; file mode 0600 on Unix.
+/// Write bytes to a new private temporary file, then atomically rename it.
 pub fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
     ensure_parent_dir(path)?;
-    let tmp = tmp_path(path);
-    let mut file = open_new_private(&tmp)?;
-    file.write_all(data)?;
-    file.sync_all()?;
-    file.flush()?;
-    drop(file);
-    fs::rename(&tmp, path)?;
-    Ok(())
+    let (tmp, mut file) = loop {
+        let tmp = tmp_path(path);
+        match open_new_private(&tmp) {
+            Ok(file) => break (tmp, file),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    };
+    let result = (|| {
+        file.write_all(data)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(unix)]
 fn open_new_private(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     OpenOptions::new()
-        .create(true)
+        .create_new(true)
         .write(true)
-        .truncate(true)
         .mode(0o600)
         .open(path)
 }
 
 #[cfg(not(unix))]
 fn open_new_private(path: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)
+    OpenOptions::new().create_new(true).write(true).open(path)
 }
 
 /// Save lines one per row (trailing newline after each).
@@ -152,4 +161,60 @@ pub fn load_monitor(path: &Path) -> io::Result<Vec<String>> {
         }
     }
     Ok(list)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_does_not_follow_predictable_tmp_symlink() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = std::env::temp_dir().join(format!(
+            "mircbsd-persist-{}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).expect("create isolated test directory");
+        let target = dir.join("target");
+        let path = dir.join("config");
+        fs::write(&target, b"unchanged").unwrap();
+        symlink(&target, dir.join("config.tmp")).unwrap();
+
+        atomic_write(&path, b"private").unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"unchanged");
+        assert_eq!(fs::read(&path).unwrap(), b"private");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_writes_leave_one_complete_value() {
+        let dir = std::env::temp_dir().join(format!(
+            "mircbsd-persist-race-{}-{}",
+            std::process::id(),
+            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("history");
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || atomic_write(&path, &vec![b'a' + n; 4096]).unwrap())
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let contents = fs::read(path).unwrap();
+        assert_eq!(contents.len(), 4096);
+        assert!(contents.iter().all(|byte| *byte == contents[0]));
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

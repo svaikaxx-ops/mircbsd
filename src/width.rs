@@ -177,7 +177,7 @@ pub fn rune_width(r: char) -> i32 {
         return 0;
     }
     let cp = r as u32;
-    if cp < 32 || (cp >= 0x7F && cp < 0xA0) {
+    if cp < 32 || (0x7F..0xA0).contains(&cp) {
         return 0;
     }
     if cp < 0x0300 {
@@ -358,7 +358,7 @@ pub fn pad_right(s: &str, width: i32) -> String {
     let pad = (width - w) as usize;
     let mut out = String::with_capacity(s.len() + pad);
     out.push_str(s);
-    out.extend(std::iter::repeat(' ').take(pad));
+    out.extend(std::iter::repeat_n(' ', pad));
     out
 }
 

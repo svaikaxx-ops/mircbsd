@@ -16,8 +16,8 @@ Arba rankiniu būdu:
     MIRCBSD_E2E_DIR=/tmp/mircbsd-e2e MIRCBSD_BIN=/tmp/mircbsd-e2e/bin/mircbsd \
       python3 scripts/e2e/check.py
 
-Artefaktai (home/, drive.log, baigties pranešimai) einasi į
-`/tmp/mircbsd-e2e` — repo NIEKADA nešvarkanamas. Tikras `~/.config/mircbsd`
+`start.sh` kiekvienam paleidimui sukuria naują laikiną katalogą ir išveda jo
+vietą. Artefaktai (home/, drive.log) lieka jame. Tikras `~/.config/mircbsd`
 neliečiamas (HOME ir XDG_CONFIG_HOME nukreipti į testavimo home).
 
 ## Failai (skriptai šiame kataloge)

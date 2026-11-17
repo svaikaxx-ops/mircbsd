@@ -69,7 +69,7 @@ impl State {
     /// Rows available for the channel list (`visibleChannelRowsLocked`).
     pub fn visible_channel_rows(&self) -> i32 {
         let mut top = 2;
-        if self.active_chan().map_or(false, |c| !c.topic.is_empty()) {
+        if self.active_chan().is_some_and(|c| !c.topic.is_empty()) {
             top += 1;
         }
         if self.search_mode {
@@ -273,7 +273,7 @@ impl Client {
         if want_notify {
             can_notify = st
                 .last_notify
-                .map_or(true, |t| t.elapsed() > Duration::from_secs(3));
+                .is_none_or(|t| t.elapsed() > Duration::from_secs(3));
             if can_notify {
                 st.last_notify = Some(Instant::now());
             }

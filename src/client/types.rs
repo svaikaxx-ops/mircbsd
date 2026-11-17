@@ -59,21 +59,26 @@ pub struct LogEntry {
     pub msg: Message,
 }
 
+/// Callback for a command to run after registration.
+pub type PerformHook = Arc<dyn Fn(&str) + Send + Sync>;
+/// Callback receiving a pair of text arguments.
+pub type TextPairHook = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
 /// Optional callbacks the embedding application can install.
 #[derive(Clone, Default)]
 pub struct Hooks {
     /// Run a `perform` line (a `/command` or raw IRC) after registration
     /// (Go `handleInput`).
-    pub perform: Option<Arc<dyn Fn(&str) + Send + Sync>>,
+    pub perform: Option<PerformHook>,
     /// Desktop notification: (title, body).
-    pub notify: Option<Arc<dyn Fn(&str, &str) + Send + Sync>>,
+    pub notify: Option<TextPairHook>,
     /// Called once from `Client::stop` (after history is saved): the
     /// embedding application drains the log queue and closes log files here
     /// (Go `stopLogWorker` + `closeLogs`).
     pub on_stop: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Called by `/clearlogs` BEFORE files are deleted so a log writer can
     /// close its open handles: (server, channel — `""` = every channel).
-    pub close_logs: Option<Arc<dyn Fn(&str, &str) + Send + Sync>>,
+    pub close_logs: Option<TextPairHook>,
 }
 
 // ---- Client ----
@@ -418,7 +423,12 @@ impl Client {
             st.monitor_list.truncate(100);
             st.monitor_list.clone()
         };
-        let _ = crate::persist::save_monitor(&path, &list);
+        if let Err(err) = crate::persist::save_monitor(&path, &list) {
+            self.err_msg(&format!(
+                "Stebėjimo sąrašas neišsaugotas ({}): {err}",
+                path.display()
+            ));
+        }
     }
 }
 

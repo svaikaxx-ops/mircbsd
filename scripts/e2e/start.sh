@@ -1,12 +1,12 @@
 #!/bin/bash
 # E2E: sukompiliuoja mircBSD ir paleidžia 24 patikras.
-# Artefaktai (home/, drive.log) → /tmp/mircbsd-e2e, repo lieka švarus.
-set -e
+# Artefaktai rašomi į naują laikiną katalogą.
+set -eu
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-DIR=/tmp/mircbsd-e2e
+DIR="$(mktemp -d "${TMPDIR:-/tmp}/mircbsd-e2e.XXXXXXXX")"
 mkdir -p "$DIR/bin"
 echo ">> Kompiliuojam mircBSD → $DIR/bin/mircbsd"
-(cd "$REPO_ROOT" && cargo build --release --quiet)
+(cd "$REPO_ROOT" && cargo build --release --locked --quiet)
 cp "$REPO_ROOT/target/release/mircbsd" "$DIR/bin/mircbsd"
 export MIRCBSD_E2E_DIR="$DIR"
 export MIRCBSD_BIN="$DIR/bin/mircbsd"

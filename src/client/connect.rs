@@ -9,16 +9,16 @@
 //! cannot be split between threads).
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::CryptoProvider;
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{
     ClientConfig, ClientConnection, DigitallySignedStruct, RootCertStore, SignatureScheme,
     StreamOwned,
@@ -124,7 +124,7 @@ pub fn parse_pins(text: &str) -> std::collections::HashMap<String, String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        match line.find(':') {
+        match line.rfind(':') {
             Some(i) if i > 0 && i < line.len() - 1 => {
                 pins.insert(line[..i].to_lowercase(), line[i + 1..].to_lowercase());
             }
@@ -134,36 +134,43 @@ pub fn parse_pins(text: &str) -> std::collections::HashMap<String, String> {
     pins
 }
 
-pub fn load_tls_pins() -> std::collections::HashMap<String, String> {
-    let Some(path) = fingerprints_path() else {
-        return Default::default();
+fn read_tls_pins(path: &Path) -> io::Result<std::collections::HashMap<String, String>> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(err) => return Err(err),
     };
-    let Ok(f) = File::open(path) else {
-        return Default::default();
-    };
-    let mut text = String::new();
-    for line in BufReader::new(f).lines().map_while(Result::ok) {
-        text.push_str(&line);
-        text.push('\n');
+    let mut pins = std::collections::HashMap::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (host, pin) = line.rsplit_once(':').ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "netinkamas TLS atspašo įrašas")
+        })?;
+        if host.is_empty() || pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "netinkamas TLS atspašo įrašas",
+            ));
+        }
+        let host = host.to_lowercase();
+        let pin = pin.to_ascii_lowercase();
+        if let Some(previous) = pins.insert(host, pin.clone()) {
+            if previous != pin {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "prieštaringi TLS atspaudai",
+                ));
+            }
+        }
     }
-    parse_pins(&text)
+    Ok(pins)
 }
 
-/// Append "host:fp" (file 0600, directory 0700).
-pub fn save_tls_pin(host: &str, fp: &str) {
-    let Some(path) = fingerprints_path() else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        if fs::create_dir_all(dir).is_err() {
-            return;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
-        }
-    }
+/// Append "host:fp" (file 0600, new directories 0700).
+fn save_tls_pin(path: &Path, host: &str, fp: &str) -> io::Result<()> {
+    crate::persist::ensure_parent_dir(path)?;
     let mut opts = OpenOptions::new();
     opts.create(true).append(true);
     #[cfg(unix)]
@@ -171,13 +178,76 @@ pub fn save_tls_pin(host: &str, fp: &str) {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    if let Ok(mut f) = opts.open(&path) {
-        let _ = writeln!(f, "{}:{}", host.to_lowercase(), fp);
+    let mut f = opts.open(path)?;
+    writeln!(f, "{}:{}", host.to_lowercase(), fp)?;
+    f.sync_all()
+}
+
+/// Serialize TOFU read/check/write across processes; the OS releases the lock
+/// even if a process exits unexpectedly.
+#[cfg(unix)]
+fn lock_tls_pins(path: &Path) -> io::Result<File> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    crate::persist::ensure_parent_dir(path)?;
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(lock_path)?;
+    loop {
+        // SAFETY: the file descriptor remains open for the lifetime of `file`.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(file);
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err);
+        }
     }
 }
 
+fn check_or_store_pin(path: &Path, host: &str, fp: &str) -> Result<bool, String> {
+    #[cfg(unix)]
+    let _lock = lock_tls_pins(path).map_err(|e| format!("TLS atspaudai neužrakinti: {e}"))?;
+    #[cfg(not(unix))]
+    return Err("TLS TOFU atspaudų užrakinimas šioje sistemoje nepalaikomas".into());
+
+    #[cfg(unix)]
+    {
+        let host = host.to_lowercase();
+        let pins = read_tls_pins(path).map_err(|e| format!("TLS atspaudai neperskaityti: {e}"))?;
+        if let Some(old) = pins.get(&host) {
+            if old != fp {
+                return Err(format!("saugotas {old}, priešingas {fp}"));
+            }
+            return Ok(false);
+        }
+        save_tls_pin(path, &host, fp).map_err(|e| format!("TLS atspaudas neišsaugotas: {e}"))?;
+        Ok(true)
+    }
+}
+
+fn expected_tls_pin(path: &Path, host: &str) -> Result<Option<String>, String> {
+    #[cfg(unix)]
+    let _lock = lock_tls_pins(path).map_err(|e| format!("TLS atspaudai neužrakinti: {e}"))?;
+    #[cfg(not(unix))]
+    return Err("TLS TOFU atspaudų užrakinimas šioje sistemoje nepalaikomas".into());
+
+    #[cfg(unix)]
+    read_tls_pins(path)
+        .map(|pins| pins.get(&host.to_lowercase()).cloned())
+        .map_err(|e| format!("TLS atspaudai neperskaityti: {e}"))
+}
+
+type DerTlv<'a> = (u8, &'a [u8], &'a [u8], &'a [u8]);
+
 /// Read one DER TLV: returns (tag, content, rest, whole TLV).
-fn der_tlv(buf: &[u8]) -> Option<(u8, &[u8], &[u8], &[u8])> {
+fn der_tlv(buf: &[u8]) -> Option<DerTlv<'_>> {
     let tag = *buf.first()?;
     let l0 = *buf.get(1)?;
     let (len, hdr) = if l0 < 0x80 {
@@ -251,17 +321,23 @@ pub fn cert_fingerprint(cert_der: &[u8]) -> String {
 #[derive(Debug)]
 struct PinVerifier {
     provider: Arc<CryptoProvider>,
+    expected: Option<String>,
 }
 
 impl ServerCertVerifier for PinVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
+        end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
+        if let Some(expected) = &self.expected {
+            if &cert_fingerprint(end_entity.as_ref()) != expected {
+                return Err(rustls::Error::General("TLS atspaudas nesutampa".into()));
+            }
+        }
         Ok(ServerCertVerified::assertion())
     }
 
@@ -307,6 +383,15 @@ pub fn build_tls_config(
     cert_path: &str,
     key_path: &str,
 ) -> Result<Arc<ClientConfig>, String> {
+    build_tls_config_with_pin(pinning, cert_path, key_path, None)
+}
+
+fn build_tls_config_with_pin(
+    pinning: bool,
+    cert_path: &str,
+    key_path: &str,
+    expected: Option<String>,
+) -> Result<Arc<ClientConfig>, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = ClientConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
@@ -315,7 +400,7 @@ pub fn build_tls_config(
     let wants_auth = if pinning {
         builder
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(PinVerifier { provider }))
+            .with_custom_certificate_verifier(Arc::new(PinVerifier { provider, expected }))
     } else {
         let mut roots = RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -325,8 +410,8 @@ pub fn build_tls_config(
     let cfg = if cert_path.is_empty() {
         wants_auth.with_no_client_auth()
     } else {
-        let mut cr = BufReader::new(File::open(cert_path).map_err(|e| e.to_string())?);
-        let certs = rustls_pemfile::certs(&mut cr)
+        let certs = CertificateDer::pem_file_iter(cert_path)
+            .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
         if certs.is_empty() {
@@ -337,10 +422,7 @@ pub fn build_tls_config(
         } else {
             key_path
         };
-        let mut kr = BufReader::new(File::open(kp).map_err(|e| e.to_string())?);
-        let key = rustls_pemfile::private_key(&mut kr)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("{kp}: privataus rakto nerasta"))?;
+        let key = PrivateKeyDer::from_pem_file(kp).map_err(|e| format!("{kp}: {e}"))?;
         wants_auth
             .with_client_auth_cert(certs, key)
             .map_err(|e| e.to_string())?
@@ -520,18 +602,13 @@ impl Client {
             }
             return Ok(());
         }
-        let host_low = host.to_lowercase();
-        if let Some(old) = load_tls_pins().get(&host_low) {
-            if old != fp {
-                return Err(format!("saugotas {old}, priešingas {fp}"));
-            }
-            return Ok(());
+        let path = fingerprints_path().ok_or("TLS atspaudų katalogas nenustatytas")?;
+        if check_or_store_pin(&path, host, fp)? {
+            self.server_msg(&format!(
+                "TLS: serverio atspaudas pirmą kartą išsaugotas ({}…)",
+                &fp[..16.min(fp.len())]
+            ));
         }
-        save_tls_pin(&host_low, fp);
-        self.server_msg(&format!(
-            "TLS: serverio atspaudas pirmą kartą išsaugotas ({}…)",
-            &fp[..16.min(fp.len())]
-        ));
         Ok(())
     }
 
@@ -548,16 +625,39 @@ impl Client {
             };
         }
 
-        let (pinning_on, cert, key) = {
+        let (pinning_on, manual_pin, cert, key) = {
             let st = self.mu.lock();
             (
                 st.tls_pinning || !st.tls_pin.is_empty(),
+                st.tls_pin.clone(),
                 st.tls_cert_path.clone(),
                 st.tls_key_path.clone(),
             )
         };
         // A bad client certificate aborts with a clear error (no silent PLAIN fallback).
-        let cfg = match build_tls_config(pinning_on, &cert, &key) {
+        let expected = if !manual_pin.is_empty() {
+            Some(
+                manual_pin
+                    .chars()
+                    .filter(|c| *c != ':' && !c.is_whitespace())
+                    .collect::<String>()
+                    .to_lowercase(),
+            )
+        } else if pinning_on {
+            let pins = fingerprints_path()
+                .ok_or_else(|| "TLS atspaudų katalogas nenustatytas".to_string())
+                .and_then(|path| expected_tls_pin(&path, srv_name));
+            match pins {
+                Ok(pin) => pin,
+                Err(e) => {
+                    self.err_msg(&e);
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+        let cfg = match build_tls_config_with_pin(pinning_on, &cert, &key, expected) {
             Ok(c) => c,
             Err(e) => {
                 if cert.is_empty() {
@@ -608,8 +708,7 @@ impl Client {
                 .map(|c| cert_fingerprint(c.as_ref()))
                 .unwrap_or_default();
             if let Err(e) = self.check_tls_pin(&fp, srv_name) {
-                self.err_msg(&format!("TLS atspaudo nesutapimas: {e}"));
-                self.err_msg("Serverio sertifikatas pasikeitė! Galimas MITM. (tls_pinning=off išjungti tikrinti, žinodami ką darote)");
+                self.err_msg(&format!("TLS atspaudo patikra nepavyko: {e}"));
                 conn.send_close_notify();
                 let _ = conn.write_tls(&mut sock);
                 let _ = sock.shutdown(Shutdown::Both);
@@ -635,6 +734,14 @@ impl Client {
             return;
         }
         self.server_msg(&format!("Jungiamasi prie {srv} (TLS: {use_tls})..."));
+
+        let sends_password = {
+            let st = self.mu.lock();
+            !st.server_pass.is_empty() || !st.nickserv_pass.is_empty() || !st.sasl_pass.is_empty()
+        };
+        if !use_tls && sends_password {
+            self.err_msg("ĮSPĖJIMAS: be TLS slaptažodžiai gali būti siunčiami atviru tekstu");
+        }
 
         let Some(mut transport) = self.open_transport(&srv_name, &srv, use_tls) else {
             return;
@@ -778,271 +885,5 @@ impl Client {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn host_port_brackets_ipv6() {
-        assert_eq!(join_host_port("irc.x.org", "6667"), "irc.x.org:6667");
-        assert_eq!(join_host_port("::1", "6697"), "[::1]:6697");
-    }
-
-    #[test]
-    fn splitter_handles_fragmented_lines() {
-        let mut s = LineSplitter::new(4096);
-        assert!(s.push(b"PING :a").is_empty());
-        let ev = s.push(b"bc\r\nPONG x\r\nPART");
-        assert_eq!(
-            ev,
-            vec![
-                LineEvent::Line(b"PING :abc\r".to_vec()),
-                LineEvent::Line(b"PONG x\r".to_vec())
-            ]
-        );
-        let ev = s.push(b" #c\n");
-        assert_eq!(ev, vec![LineEvent::Line(b"PART #c".to_vec())]);
-    }
-
-    #[test]
-    fn splitter_discards_overlong_lines() {
-        let mut s = LineSplitter::new(16);
-        let mut ev = s.push(&[b'a'; 20]);
-        assert_eq!(ev, vec![LineEvent::TooLong]);
-        ev = s.push(&[b'b'; 10]);
-        assert!(ev.is_empty());
-        ev = s.push(b"\nOK\n");
-        assert_eq!(ev, vec![LineEvent::Line(b"OK".to_vec())]);
-        // Overlong line delivered in one chunk with its newline.
-        let ev = s.push(b"0123456789abcdefXYZ\nnext\n");
-        assert_eq!(
-            ev,
-            vec![LineEvent::TooLong, LineEvent::Line(b"next".to_vec())]
-        );
-    }
-
-    #[test]
-    fn pins_parse_and_skip_junk() {
-        let p = parse_pins("# c\n\nIrc.X.org:ABCD\nbad\n:nohost\nhost:\n");
-        assert_eq!(p.len(), 1);
-        assert_eq!(p["irc.x.org"], "abcd");
-    }
-
-    #[test]
-    fn hex_encode_works() {
-        assert_eq!(hex_encode(&[0, 0xab, 0xff]), "00abff");
-    }
-
-    #[test]
-    fn spki_rejects_garbage() {
-        assert!(spki_from_cert_der(&[]).is_none());
-        assert!(spki_from_cert_der(&[0x30, 0x03, 1, 2, 3]).is_none());
-        assert_eq!(cert_fingerprint(b"junk"), "");
-    }
-
-    #[test]
-    fn tls_config_builds_without_client_cert() {
-        assert!(build_tls_config(false, "", "").is_ok());
-        assert!(build_tls_config(true, "", "").is_ok());
-        assert!(build_tls_config(false, "/nonexistent/cert.pem", "/nonexistent/key.pem").is_err());
-    }
-
-    // ---- loopback integration tests ----
-
-    use crate::config::default_config;
-    use std::io::BufRead;
-    use std::net::TcpListener;
-
-    const TEST_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----\nMIIBljCCATugAwIBAgIUcxFYzC5od/fTtslgTlkfkAO1z/QwCgYIKoZIzj0EAwIw\nFDESMBAGA1UEAwwJbG9jYWxob3N0MCAXDTI2MTExNjIxNDkzM1oYDzIxMjYxMDIz\nMjE0OTMzWjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcqhkjOPQIBBggqhkjO\nPQMBBwNCAAQe3zO+y2zhFAwm6nEi95Peqclk53+smalTyjC95vel3GqLZDCuqrZf\n66/PQqwUOPtZE7+pb7WSIom549p4WneBo2kwZzAdBgNVHQ4EFgQUihTdy30V/1tp\nMPBx58kKRyuaPkMwHwYDVR0jBBgwFoAUihTdy30V/1tpMPBx58kKRyuaPkMwDwYD\nVR0TAQH/BAUwAwEB/zAUBgNVHREEDTALgglsb2NhbGhvc3QwCgYIKoZIzj0EAwID\nSQAwRgIhAOxlotfohXdDh0/3FZYZ65f9Ws1l3FK6K0Ituo2FLVMFAiEAqoSfHdsM\nZWbDEVc0ErWzO8xVSN+wLLw2or0xHFooMNs=\n-----END CERTIFICATE-----\n";
-    const TEST_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgRaERAzlntXvMOmYn\nd2MxQUO8oeY9rIPHnKDRoD3XnQqhRANCAAQe3zO+y2zhFAwm6nEi95Peqclk53+s\nmalTyjC95vel3GqLZDCuqrZf66/PQqwUOPtZE7+pb7WSIom549p4WneB\n-----END PRIVATE KEY-----\n";
-    /// sha256 of the test certificate's SPKI (computed with openssl).
-    const TEST_CERT_SPKI_SHA256: &str =
-        "1047a24da1a68647d8cbec2607e9fa2c4415b61a8ae5b857ea3130e182c622cf";
-
-    fn wait_until(what: &str, f: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if f() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("timed out waiting for: {what}");
-    }
-
-    fn server_texts(c: &Client) -> Vec<String> {
-        let st = c.mu.lock();
-        st.channels[0]
-            .messages
-            .iter()
-            .map(|m| m.text.clone())
-            .collect()
-    }
-
-    fn test_client(port: u16, tls: bool) -> Arc<Client> {
-        let mut cfg = default_config();
-        cfg.server = "127.0.0.1".into();
-        cfg.port = port.to_string();
-        cfg.nick = "tester".into();
-        cfg.tls = tls;
-        cfg.reconnect = false;
-        cfg.log_dir = String::new();
-        Client::new(&cfg)
-    }
-
-    /// Minimal IRC server: waits for USER, welcomes, pings, expects PONG then QUIT.
-    fn serve_irc<S: Read + Write>(stream: S, seen: std::sync::mpsc::Sender<String>) {
-        let mut rd = BufReader::new(stream);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match rd.read_line(&mut line) {
-                Ok(0) | Err(_) => return,
-                Ok(_) => {}
-            }
-            let l = line.trim_end().to_string();
-            let _ = seen.send(l.clone());
-            if l.starts_with("USER ") {
-                let w = rd.get_mut();
-                w.write_all(b":srv 001 tester :Welcome\r\nPING :tok\r\n")
-                    .unwrap();
-                w.flush().unwrap();
-            }
-            if l.starts_with("QUIT") {
-                return;
-            }
-        }
-    }
-
-    #[test]
-    fn plain_connect_register_ping_quit() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let srv = std::thread::spawn(move || {
-            let (s, _) = listener.accept().unwrap();
-            serve_irc(s, tx);
-        });
-
-        let c = test_client(port, false);
-        c.start_connect();
-        wait_until("welcome", || {
-            server_texts(&c).iter().any(|t| t == "Welcome")
-        });
-        assert!(c.is_connected());
-        c.send("QUIT :bye\r\nEVIL");
-        c.finish_writes(Duration::from_secs(3));
-        srv.join().unwrap();
-        wait_until("disconnect", || !c.is_connected());
-        wait_until("lost msg", || {
-            server_texts(&c).iter().any(|t| t == "Ryšys nutrūko")
-        });
-
-        let seen: Vec<String> = rx.try_iter().collect();
-        assert_eq!(seen[0], "CAP LS 302");
-        assert_eq!(seen[1], "NICK tester");
-        assert!(seen[2].starts_with("USER tester 0 * :"));
-        assert!(seen.contains(&"PONG :tok".to_string()), "{seen:?}");
-        assert_eq!(seen.last().unwrap(), "QUIT :byeEVIL");
-    }
-
-    fn tls_server(
-        listener: TcpListener,
-        seen: std::sync::mpsc::Sender<String>,
-    ) -> std::thread::JoinHandle<()> {
-        let certs = rustls_pemfile::certs(&mut TEST_CERT_PEM.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        let key = rustls_pemfile::private_key(&mut TEST_KEY_PEM.as_bytes())
-            .unwrap()
-            .unwrap();
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let cfg = rustls::ServerConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .unwrap();
-        let cfg = Arc::new(cfg);
-        std::thread::spawn(move || {
-            let (mut sock, _) = listener.accept().unwrap();
-            let mut conn = rustls::ServerConnection::new(cfg).unwrap();
-            // Handshake may fail when the client aborts on a pin mismatch.
-            while conn.is_handshaking() {
-                if conn.complete_io(&mut sock).is_err() {
-                    return;
-                }
-            }
-            serve_irc(StreamOwned::new(conn, sock), seen);
-        })
-    }
-
-    #[test]
-    fn spki_fingerprint_matches_openssl() {
-        let certs = rustls_pemfile::certs(&mut TEST_CERT_PEM.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(cert_fingerprint(certs[0].as_ref()), TEST_CERT_SPKI_SHA256);
-    }
-
-    #[test]
-    fn tls_connect_with_matching_manual_pin() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let srv = tls_server(listener, tx);
-
-        let c = test_client(port, true);
-        c.mu.lock().tls_pin = TEST_CERT_SPKI_SHA256.to_uppercase();
-        c.start_connect();
-        wait_until("welcome over tls", || {
-            server_texts(&c).iter().any(|t| t == "Welcome")
-        });
-        c.send("QUIT :bye");
-        c.finish_writes(Duration::from_secs(3));
-        srv.join().unwrap();
-        let seen: Vec<String> = rx.try_iter().collect();
-        assert_eq!(seen[0], "CAP LS 302");
-        assert!(seen.contains(&"PONG :tok".to_string()), "{seen:?}");
-    }
-
-    #[test]
-    fn tls_pin_mismatch_aborts_before_registration() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let srv = tls_server(listener, tx);
-
-        let c = test_client(port, true);
-        c.mu.lock().tls_pin = "00".repeat(32);
-        c.start_connect();
-        wait_until("pin error", || {
-            server_texts(&c)
-                .iter()
-                .any(|t| t.starts_with("TLS atspaudo nesutapimas"))
-        });
-        let _ = srv.join();
-        assert!(!c.is_connected());
-        assert!(
-            rx.try_iter().next().is_none(),
-            "nothing may reach the server"
-        );
-    }
-
-    #[test]
-    fn tls_without_pinning_rejects_self_signed() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let srv = tls_server(listener, tx);
-
-        let c = test_client(port, true);
-        c.start_connect();
-        wait_until("verify error", || {
-            server_texts(&c)
-                .iter()
-                .any(|t| t.starts_with("Nepavyko prisijungti"))
-        });
-        let _ = srv.join();
-        assert!(rx.try_iter().next().is_none());
-    }
-}
+#[path = "connect_tests.rs"]
+mod tests;

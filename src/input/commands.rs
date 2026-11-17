@@ -9,6 +9,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 
+#[path = "commands_settings.rs"]
+mod settings;
+
 use crate::client::session::{open_url, split_for_privmsg, term_write, MOUSE_OFF, MOUSE_ON};
 use crate::client::types::{new_msg, Client, MsgType, SERVER_WINDOW};
 use crate::config::{
@@ -26,6 +29,7 @@ use crate::validate::{
 };
 
 use super::first_field;
+use super::sensitive::is_sensitive_history;
 
 /// Go `strings.SplitN(s, " ", 2)`. An empty string yields `("", None)`.
 fn split2(s: &str) -> (&str, Option<&str>) {
@@ -92,7 +96,7 @@ pub fn escape_key_seq(seq: &str) -> String {
             b'\t' => out.push_str("\\t"),
             b'\\' => out.push_str("\\\\"),
             b' ' => out.push_str("\\x20"),
-            32..=126 => out.push(b as char),
+            33..=126 => out.push(b as char),
             _ => out.push_str(&format!("\\x{b:02x}")),
         }
     }
@@ -1043,147 +1047,6 @@ impl Client {
         self.show_key_bindings();
     }
 
-    /// `/set` with no arguments (`listSettings`).
-    fn list_settings(&self) {
-        for k in SETTABLE_KEYS {
-            self.show_setting(k);
-        }
-        self.server_msg("/set <raktas> <reikšmė> — keisti (perrašoma į config failą)");
-    }
-
-    /// `/set <key>` (`showSetting`).
-    fn show_setting(&self, key: &str) {
-        let v = match key {
-            "mouse" => bool_cfg(self.mu.lock().mouse).to_string(),
-            "notifications" => bool_cfg(self.mu.lock().notify).to_string(),
-            "ctcpversion" => bool_cfg(self.mu.lock().ctcp_version).to_string(),
-            "reconnect" => bool_cfg(self.mu.lock().reconnect).to_string(),
-            "timestamps" => bool_cfg(timestamps_enabled()).to_string(),
-            "ts_format" => ts_format(),
-            "tscolor" => ts_color_name().to_string(),
-            "highlight_color" => hl_color_name(),
-            "nick_colors" => bool_cfg(nick_coloring()).to_string(),
-            "maxmessages" => self.mu.lock().max_messages.to_string(),
-            "theme" => if theme_dark_mode() { "dark" } else { "light" }.to_string(),
-            _ => String::new(),
-        };
-        self.server_msg(&format!("{key} = {v}"));
-    }
-
-    /// `/set <key> <value>`: validate, apply live, then write the config file.
-    fn apply_setting(&self, key: &str, value: &str) {
-        let mut ok_msg = "";
-        let reject_bool = |v: &str| -> Option<bool> {
-            let (b, known) = parse_bool_value(v);
-            if !known {
-                self.err_msg(&format!(
-                    "Reikšmė turi būti true/false (on, off, yes, no, 1, 0): {}",
-                    sanitize_text(v)
-                ));
-                return None;
-            }
-            Some(b)
-        };
-        match key {
-            "mouse" => {
-                let Some(b) = reject_bool(value) else { return };
-                self.mu.lock().mouse = b;
-                term_write(if b { MOUSE_ON } else { MOUSE_OFF });
-            }
-            "notifications" => {
-                let Some(b) = reject_bool(value) else { return };
-                self.mu.lock().notify = b;
-            }
-            "ctcpversion" => {
-                let Some(b) = reject_bool(value) else { return };
-                self.mu.lock().ctcp_version = b;
-            }
-            "reconnect" => {
-                let Some(b) = reject_bool(value) else { return };
-                self.mu.lock().reconnect = b;
-            }
-            "timestamps" => {
-                let Some(b) = reject_bool(value) else { return };
-                set_timestamps(b, "");
-            }
-            "ts_format" => {
-                if !is_valid_ts_format(value) {
-                    self.err_msg(&format!(
-                        "Nevalidus laikmatis (pvz. „15:04“, „15:04:05“): {}",
-                        sanitize_text(value)
-                    ));
-                    return;
-                }
-                set_timestamps(timestamps_enabled(), value);
-            }
-            "tscolor" => {
-                if !valid_named_color(value) {
-                    self.err_msg(&format!(
-                        "Nežinoma spalva (gray, blue, green, cyan, none): {}",
-                        sanitize_text(value)
-                    ));
-                    return;
-                }
-                set_ts_color(value);
-            }
-            "highlight_color" => {
-                if !valid_highlight_color(value) {
-                    self.err_msg(&format!(
-                        "Nežinoma spalva (red, blue, green, magenta, cyan, yellow, none): {}",
-                        sanitize_text(value)
-                    ));
-                    return;
-                }
-                set_highlight_color(value);
-            }
-            "nick_colors" => {
-                let Some(b) = reject_bool(value) else { return };
-                set_nick_colors(b);
-                self.invalidate_render_caches();
-            }
-            "theme" => {
-                if !valid_theme(value) {
-                    self.err_msg(&format!(
-                        "Nežinoma tema (dark, light): {}",
-                        sanitize_text(value)
-                    ));
-                    return;
-                }
-                set_theme(value);
-                self.invalidate_render_caches();
-            }
-            "maxmessages" => {
-                let n: i32 = match value.parse() {
-                    Ok(n) if (100..=100_000).contains(&n) => n,
-                    _ => {
-                        self.err_msg(&format!(
-                            "Reikšmė turi būti sveikas skaičius 100–100000: {}",
-                            sanitize_text(value)
-                        ));
-                        return;
-                    }
-                };
-                {
-                    let mut st = self.mu.lock();
-                    st.max_messages = n;
-                    for ch in &mut st.channels {
-                        ch.max_messages = n as usize;
-                    }
-                }
-                ok_msg = " (esamiems langams)";
-            }
-            _ => return,
-        }
-        if let Err(e) = save_config_setting(key, value) {
-            self.err_msg(&format!("Pritaikyta gyvai, bet į failą NEĮRAŠYTA: {e}"));
-            return;
-        }
-        self.server_msg(&format!(
-            "nustatymas: {key} = {}{ok_msg}",
-            sanitize_text(value)
-        ));
-    }
-
     /// `/keys` listing (`showKeyBindings`).
     fn show_key_bindings(&self) {
         let binds = self.mu.lock().custom_binds.clone();
@@ -1242,10 +1105,17 @@ impl Client {
             self.err_msg("Nėra log katalogo (logdir)");
             return;
         }
-        let Some((msgs, name, srv, dir_root)) = found else {
+        let Some((mut msgs, name, srv, dir_root)) = found else {
             self.err_msg(&format!("Langas „{}“ nerastas", sanitize_text(chan_name)));
             return;
         };
+        if self.nick_equal(chan_name, "NickServ") {
+            for msg in &mut msgs {
+                if is_sensitive_history(&crate::ui::strip_irc_format(&msg.text)) {
+                    msg.text = "[slaptažodis paslėptas]".into();
+                }
+            }
+        }
         let dir = if srv.is_empty() {
             std::path::PathBuf::from(&dir_root)
         } else {
@@ -1276,22 +1146,7 @@ impl Client {
 }
 
 fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(path)?;
-    f.write_all(data)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    crate::persist::atomic_write(path, data)
 }
 
 fn help_lines() -> Vec<String> {
@@ -1362,258 +1217,5 @@ fn help_lines() -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::client::types::MsgType;
-    use crate::input::testutil::*;
-    use chrono::Utc;
-
-    fn quiet_net(c: &Client) {
-        let mut st = c.mu.lock();
-        st.reconnect = false;
-        st.server = "127.0.0.1".into();
-        st.port = "1".into();
-        st.mouse = false;
-    }
-
-    #[test]
-    fn ts_format_accepts_clocks_only() {
-        assert!(is_valid_ts_format("15:04"));
-        assert!(is_valid_ts_format("15:04:05"));
-        assert!(is_valid_ts_format("2006-01-02 15:04"));
-        assert!(!is_valid_ts_format(""));
-        assert!(!is_valid_ts_format("15:04:05 MST"));
-        assert!(!is_valid_ts_format("15:04  05"));
-        assert!(!is_valid_ts_format("15:04\x1b"));
-    }
-
-    #[test]
-    fn escape_key_seq_matches_keys_syntax() {
-        assert_eq!(escape_key_seq("\u{1b}S"), "\\eS");
-        assert_eq!(escape_key_seq(" \t"), "\\x20\\t");
-        assert_eq!(escape_key_seq("\\"), "\\\\");
-    }
-
-    #[test]
-    fn plain_text_and_commands() {
-        let (c, q) = connected();
-        open_active(&c, "#chan");
-        c.handle_input("labas");
-        assert_eq!(sent(&q), vec!["PRIVMSG #chan :labas"]);
-        assert!(texts(&c, "#chan").iter().any(|t| t == "labas"));
-
-        c.handle_input("/me moja");
-        assert!(sent(&q).iter().any(|l| l.contains("ACTION moja")));
-        c.handle_input("/nick");
-        assert!(server_texts(&c)
-            .iter()
-            .any(|l| l.contains("Dabartinis slapyvardis")));
-    }
-
-    #[test]
-    fn join_msg_query_notice_kick_mode() {
-        let (c, q) = connected();
-        open_active(&c, "#chan");
-        c.handle_cmd("join", "libera secret");
-        assert!(sent(&q).iter().any(|l| l == "JOIN #libera secret"));
-        c.handle_cmd("join", "#chan bad key");
-        assert!(server_texts(&c).iter().any(|l| l.contains("kanalo raktas")));
-
-        c.handle_cmd("msg", "bob labas tau");
-        assert!(sent(&q).iter().any(|l| l == "PRIVMSG bob :labas tau"));
-        c.handle_cmd("query", "bob");
-        assert_eq!(c.active_name(), "bob");
-        assert!(c.mu.lock().active_chan().unwrap().is_private);
-
-        c.handle_cmd("j", "#chan");
-        // switch back
-        c.handle_cmd("window", "2");
-        c.handle_cmd("notice", "bob tyliai");
-        assert!(sent(&q).iter().any(|l| l == "NOTICE bob :tyliai"));
-        c.handle_cmd("kick", "bob per daug");
-        // may not be on a channel after window switch — go back
-        {
-            let st = c.mu.lock();
-            let i = st.find_ch("#chan").unwrap();
-            drop(st);
-            c.switch_ch(i);
-        }
-        c.handle_cmd("kick", "bob per daug");
-        assert!(sent(&q).iter().any(|l| l == "KICK #chan bob :per daug"));
-        c.handle_cmd("op", "bob");
-        assert!(sent(&q).iter().any(|l| l == "MODE #chan +o bob"));
-        c.handle_cmd("mode", "+m");
-        assert!(sent(&q).iter().any(|l| l == "MODE #chan +m"));
-        c.handle_cmd("mode", "#chan +i");
-        assert!(sent(&q).iter().any(|l| l == "MODE #chan +i"));
-        c.handle_cmd("topic", "nauja");
-        assert!(sent(&q).iter().any(|l| l == "TOPIC #chan :nauja"));
-        c.handle_cmd("whois", "bob");
-        assert!(sent(&q).iter().any(|l| l == "WHOIS bob"));
-        assert_eq!(c.mu.lock().whois_chan, "#chan");
-        c.handle_cmd("invite", "bob");
-        assert!(sent(&q).iter().any(|l| l.starts_with("INVITE bob ")));
-        c.handle_cmd("cycle", "");
-        let lines = sent(&q);
-        assert!(lines.iter().any(|l| l.starts_with("PART #chan :cycle")));
-        assert!(lines.iter().any(|l| l == "JOIN #chan"));
-        c.handle_cmd("part", "iki");
-        assert!(sent(&q).iter().any(|l| l == "PART #chan :iki"));
-        c.handle_cmd("raw", "PING lag");
-        assert!(sent(&q).iter().any(|l| l == "PING lag"));
-        c.handle_cmd("list", "#libera");
-        assert!(sent(&q).iter().any(|l| l == "LIST #libera"));
-        c.handle_cmd("w", "#chan");
-        assert!(sent(&q).iter().any(|l| l == "WHO #chan"));
-        assert_eq!(c.mu.lock().who_chan, "#chan");
-        c.handle_cmd("names", "");
-        assert!(sent(&q).iter().any(|l| l == "NAMES #chan"));
-        c.handle_cmd("time", "");
-        assert!(sent(&q).iter().any(|l| l == "TIME"));
-    }
-
-    #[test]
-    fn away_clear_close_window_quit() {
-        let (c, q) = connected();
-        quiet_net(&c);
-        // quiet_net cleared the server name but left the connection flag.
-        open_active(&c, "#chan");
-        c.handle_cmd("away", "pietūs");
-        assert_eq!(c.mu.lock().away, "pietūs");
-        assert!(sent(&q).iter().any(|l| l == "AWAY :pietūs"));
-        c.handle_cmd("back", "");
-        assert!(c.mu.lock().away.is_empty());
-        assert!(sent(&q).iter().any(|l| l == "AWAY"));
-
-        c.add_msg("#chan", new_msg(Utc::now(), "a", "x", MsgType::Chat));
-        c.handle_cmd("clear", "");
-        assert!(texts(&c, "#chan").is_empty());
-
-        c.handle_cmd("window", "");
-        assert!(server_texts(&c).iter().any(|l| l.contains("#chan")));
-        c.handle_cmd("close", "#chan");
-        assert!(c.find_ch("#chan").is_none());
-        assert!(sent(&q).iter().any(|l| l == "PART #chan :Langas uždarytas"));
-
-        q.mark_done();
-        c.handle_cmd("quit", "viso");
-        assert!(c.is_stopped());
-        assert!(sent(&q).iter().any(|l| l == "QUIT :viso"));
-    }
-
-    #[test]
-    fn validation_errors_do_not_send() {
-        let (c, q) = connected();
-        c.handle_cmd("connect", "not a server 1");
-        c.handle_cmd("connect", "irc.example.org 0");
-        c.handle_cmd("connect", "irc.example.org 6667 bad nick");
-        c.handle_cmd("nick", "a b");
-        c.handle_cmd("join", "");
-        c.handle_cmd("msg", "onlynick");
-        c.handle_cmd("kick", "");
-        c.handle_cmd("mode", "");
-        c.handle_cmd("nope", "");
-        c.handle_cmd("who", "bad target!!");
-        let t = server_texts(&c);
-        assert!(t.iter().any(|l| l.contains("Nežinoma komanda: /nope")));
-        assert!(t.iter().any(|l| l.contains("porto numeris")));
-        assert!(sent(&q).is_empty());
-    }
-
-    #[test]
-    fn search_set_notify_urls_keys() {
-        let c = client();
-        quiet_net(&c);
-        c.add_msg(
-            "*server*",
-            new_msg(Utc::now(), "bob", "rasta cia", MsgType::Chat),
-        );
-        c.handle_cmd("search", "rasta");
-        assert_eq!(c.mu.lock().last_search_query, "rasta");
-        c.handle_cmd("search", "");
-        assert!(c.mu.lock().search_mode);
-        c.handle_cmd("search", "all rasta");
-        assert!(server_texts(&c).iter().any(|l| l.contains("atitikmenų")));
-
-        c.handle_cmd("set", "");
-        assert!(server_texts(&c).iter().any(|l| l.starts_with("mouse = ")));
-        c.handle_cmd("set", "theme purple");
-        assert!(server_texts(&c).iter().any(|l| l.contains("Nežinoma tema")));
-        c.handle_cmd("set", "mouse gal");
-        assert!(server_texts(&c).iter().any(|l| l.contains("true/false")));
-        c.handle_cmd("set", "nope 1");
-        assert!(server_texts(&c)
-            .iter()
-            .any(|l| l.contains("Nežinomas arba nekeičiamas")));
-
-        c.mu.lock().monitor_list = vec!["bob".into()];
-        c.mu.lock().monitor_online.insert(c.mon_key("bob"));
-        c.handle_cmd("notify", "list");
-        assert!(server_texts(&c).iter().any(|l| l.contains("bob — online")));
-        c.handle_cmd("notify", "del nobody");
-        assert!(server_texts(&c).iter().any(|l| l.contains("niekos")));
-
-        c.mu.lock().ignore_list = vec!["Bad".into()];
-        c.handle_cmd("ignores", "");
-        assert!(server_texts(&c).iter().any(|l| l.contains("Bad")));
-
-        c.mu.lock().last_urls = vec!["https://example.org/a".into()];
-        c.handle_cmd("urls", "");
-        assert!(server_texts(&c)
-            .iter()
-            .any(|l| l.contains("1: https://example.org/a")));
-        c.handle_cmd("open", "9");
-        assert!(server_texts(&c).iter().any(|l| l.contains("/open [n]")));
-
-        c.handle_cmd("keys", "debug");
-        assert!(c.mu.lock().keys_debug);
-        c.handle_cmd("help", "");
-        assert!(server_texts(&c)
-            .iter()
-            .any(|l| l.contains(&format!("mircBSD v{}", crate::client::VERSION))));
-    }
-
-    #[test]
-    fn export_and_clearlogs_use_the_log_dir() {
-        let dir = std::env::temp_dir().join(format!("mircbsd-export-{}", std::process::id()));
-        let srv = dir.join("irc.example.org");
-        std::fs::create_dir_all(&srv).unwrap();
-        std::fs::write(srv.join("#k-2026-10-21.log"), "x").unwrap();
-        let c = client();
-        {
-            let mut st = c.mu.lock();
-            st.log_dir = dir.to_string_lossy().into_owned();
-            st.server = "irc.example.org".into();
-        }
-        open_active(&c, "#k");
-        c.add_msg("#k", new_msg(Utc::now(), "bob", "eksportas", MsgType::Chat));
-        c.handle_cmd("exportjson", "#k");
-        let t = server_texts(&c);
-        assert!(
-            t.iter()
-                .any(|l| l.contains("Eksportas:") && l.contains(".json")),
-            "{t:?}"
-        );
-        c.handle_cmd("clearlogs", "#k");
-        assert!(server_texts(&c).iter().any(|l| l.contains("Išvalyta 1")));
-        assert!(!srv.join("#k-2026-10-21.log").exists());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn reconnect_announces_without_looping() {
-        let c = client();
-        quiet_net(&c);
-        c.handle_cmd("reconnect", "");
-        assert!(server_texts(&c)
-            .iter()
-            .any(|l| l.contains("Jungiamasi iš naujo")));
-    }
-
-    #[test]
-    fn server_window_refuses_chat() {
-        let c = client();
-        c.handle_input("labas");
-        assert!(server_texts(&c).iter().any(|l| l.contains("/join")));
-    }
-}
+#[path = "commands_tests.rs"]
+mod tests;

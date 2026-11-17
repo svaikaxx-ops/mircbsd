@@ -90,14 +90,20 @@ impl Client {
             // Nothing to save; never replace an existing file with an empty one.
             return;
         }
-        let _ = persist::save_history(&path, &lines);
+        if let Err(err) = persist::save_history(&path, &lines) {
+            self.err_msg(&format!("Istorija neišsaugota ({}): {err}", path.display()));
+        }
     }
 
     /// Load the history file into memory.
     pub fn load_history(&self) {
         let Some(path) = history_path() else { return };
-        if let Ok(lines) = persist::load_history(&path) {
-            self.mu.lock().history = lines;
+        match persist::load_history(&path) {
+            Ok(lines) => self.mu.lock().history = lines,
+            Err(err) => self.err_msg(&format!(
+                "Istorija neperskaityta ({}): {err}",
+                path.display()
+            )),
         }
     }
 
@@ -105,22 +111,35 @@ impl Client {
     pub fn save_ignore(&self) {
         let Some(path) = ignore_path() else { return };
         let list = self.mu.lock().ignore_list.clone();
-        let _ = persist::save_ignore(&path, &list);
+        if let Err(err) = persist::save_ignore(&path, &list) {
+            self.err_msg(&format!(
+                "Ignoravimo sąrašas neišsaugotas ({}): {err}",
+                path.display()
+            ));
+        }
     }
 
     /// Load the ignore list.
     pub fn load_ignore(&self) {
         let Some(path) = ignore_path() else { return };
-        if let Ok(list) = persist::load_ignore(&path) {
-            self.mu.lock().ignore_list = list;
+        match persist::load_ignore(&path) {
+            Ok(list) => self.mu.lock().ignore_list = list,
+            Err(err) => self.err_msg(&format!(
+                "Ignoravimo sąrašas neperskaitytas ({}): {err}",
+                path.display()
+            )),
         }
     }
 
     /// Load the MONITOR (/notify) list.
     pub fn load_monitor(&self) {
         let Some(path) = monitor_path() else { return };
-        if let Ok(list) = persist::load_monitor(&path) {
-            self.mu.lock().monitor_list = list;
+        match persist::load_monitor(&path) {
+            Ok(list) => self.mu.lock().monitor_list = list,
+            Err(err) => self.err_msg(&format!(
+                "Stebėjimo sąrašas neperskaitytas ({}): {err}",
+                path.display()
+            )),
         }
     }
 
@@ -173,12 +192,17 @@ impl Client {
         let file_prefix = sanitize_path(chan_name); // empty = every file of this server
         let mut removed = 0;
         for e in entries.flatten() {
-            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-            if is_dir {
+            if !e.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
             }
             let name = e.file_name().to_string_lossy().into_owned();
-            if !file_prefix.is_empty() && !is_channel_log_file(&name, &file_prefix) {
+            let matches = if file_prefix.is_empty() {
+                name.strip_suffix(".log")
+                    .is_some_and(|stem| !stem.is_empty())
+            } else {
+                is_channel_log_file(&name, &file_prefix)
+            };
+            if !matches {
                 continue;
             }
             if std::fs::remove_file(e.path()).is_ok() {
@@ -373,9 +397,14 @@ mod tests {
             "#k-2026-10-21.log",
             "#k-2-2026-10-21.log",
             "#z-2026-10-21.log",
+            "#k-2026-10-21.json",
+            "notes.txt",
+            ".log",
         ] {
             std::fs::write(srv.join(f), "x").unwrap();
         }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(srv.join("notes.txt"), srv.join("linked.log")).unwrap();
         let mut cfg = default_config();
         cfg.server = "irc.example.org".into();
         cfg.log_dir = dir.to_string_lossy().into_owned();
@@ -384,6 +413,11 @@ mod tests {
         assert!(srv.join("#k-2-2026-10-21.log").exists());
         assert_eq!(c.clear_logs(""), 2);
         assert_eq!(c.clear_logs(""), 0);
+        for f in ["#k-2026-10-21.json", "notes.txt", ".log"] {
+            assert!(srv.join(f).exists(), "{f} must be preserved");
+        }
+        #[cfg(unix)]
+        assert!(srv.join("linked.log").is_symlink());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

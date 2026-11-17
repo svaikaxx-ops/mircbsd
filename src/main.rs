@@ -64,8 +64,7 @@ fn main() {
     warns.extend(client.load_keys());
 
     client.install_input_hooks();
-    let notify: Arc<dyn Fn(&str, &str) + Send + Sync> = Arc::new(notify_desktop);
-    client.hooks.write().notify = Some(notify);
+    client.hooks.write().notify = Some(Arc::new(notify_desktop));
     start_log_worker(&client);
     if let Some(set) = sigset {
         let c = Arc::clone(&client);
@@ -269,16 +268,17 @@ fn clip_runes(s: &str, max: usize, ellipsis: bool) -> String {
 
 // ---- Log worker (irc.go logMessage) ----
 
-fn start_log_worker(client: &Client) {
+fn start_log_worker(client: &Arc<Client>) {
     let rx = take_log_rx(client);
     let files = Arc::new(Mutex::new(HashMap::<String, File>::new()));
     let stop = Arc::new(AtomicBool::new(false));
 
     let files_w = Arc::clone(&files);
     let stop_w = Arc::clone(&stop);
+    let client_w = Arc::downgrade(client);
     let handle = thread::Builder::new()
         .name("mircbsd-log".into())
-        .spawn(move || log_loop(rx, files_w, stop_w))
+        .spawn(move || log_loop(rx, files_w, stop_w, client_w))
         .ok();
     let handle = Arc::new(StdMutex::new(handle));
 
@@ -310,12 +310,14 @@ fn log_loop(
     rx: Receiver<LogEntry>,
     files: Arc<Mutex<HashMap<String, File>>>,
     stop: Arc<AtomicBool>,
+    client: std::sync::Weak<Client>,
 ) {
+    let mut reported_error = false;
     loop {
         if stop.load(Ordering::SeqCst) {
             let mut open = files.lock();
             while let Ok(e) = rx.try_recv() {
-                write_log_entry(&mut open, &e);
+                let _ = write_log_entry(&mut open, &e);
             }
             open.clear();
             return;
@@ -323,9 +325,18 @@ fn log_loop(
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(e) => {
                 let mut open = files.lock();
-                write_log_entry(&mut open, &e);
+                let mut error = write_log_entry(&mut open, &e).err();
                 while let Ok(more) = rx.try_recv() {
-                    write_log_entry(&mut open, &more);
+                    if let Err(err) = write_log_entry(&mut open, &more) {
+                        error.get_or_insert(err);
+                    }
+                }
+                drop(open);
+                if !reported_error {
+                    if let (Some(err), Some(client)) = (error, client.upgrade()) {
+                        reported_error = true;
+                        client.err_msg(&format!("Žurnalo įrašyti nepavyko: {err}"));
+                    }
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -351,9 +362,9 @@ fn close_log_files(files: &mut HashMap<String, File>, server: &str, chan: &str) 
     files.retain(|k, _| !k.starts_with(&prefix));
 }
 
-fn write_log_entry(files: &mut HashMap<String, File>, e: &LogEntry) {
+fn write_log_entry(files: &mut HashMap<String, File>, e: &LogEntry) -> io::Result<()> {
     if e.log_dir.is_empty() {
-        return;
+        return Ok(());
     }
     let local = e.msg.ts.with_timezone(&Local);
     let day = format_go_time(&local, "2006-01-02");
@@ -369,21 +380,21 @@ fn write_log_entry(files: &mut HashMap<String, File>, e: &LogEntry) {
         for k in stale {
             files.remove(&k);
         }
-        let Some(f) = open_log_file(&e.log_dir, &e.server, &chan, &day) else {
-            return;
-        };
+        let f = open_log_file(&e.log_dir, &e.server, &chan, &day)?;
         files.insert(key.clone(), f);
     }
     if let Some(f) = files.get_mut(&key) {
         let line = format_log_line(e);
-        let _ = f.write_all(line.as_bytes());
+        f.write_all(line.as_bytes())?;
     }
+    Ok(())
 }
 
 /// `<log_dir>/<server>/<channel>-YYYY-MM-DD.log`, mode 0600, directory 0700.
-fn open_log_file(log_dir: &str, server: &str, chan: &str, day: &str) -> Option<File> {
+fn open_log_file(log_dir: &str, server: &str, chan: &str, day: &str) -> io::Result<File> {
     let dir = Path::new(log_dir).join(sanitize_path(server));
-    fs::create_dir_all(&dir).ok()?;
+    fs::create_dir_all(&dir)
+        .map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", dir.display())))?;
     restrict_dir(Path::new(log_dir));
     restrict_dir(&dir);
     let path = dir.join(format!("{chan}-{day}.log"));
@@ -394,7 +405,8 @@ fn open_log_file(log_dir: &str, server: &str, chan: &str, day: &str) -> Option<F
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    opts.open(path).ok()
+    opts.open(&path)
+        .map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", path.display())))
 }
 
 fn restrict_dir(path: &Path) {
@@ -418,7 +430,7 @@ fn format_log_line(e: &LogEntry) -> String {
     let mut sensitive = is_sensitive_log_line(&plain)
         || is_sensitive_log_line(&nick)
         || is_sensitive_log_line(&format!("{plain} {nick}"));
-    if nick.eq_ignore_ascii_case("NickServ") {
+    if nick.eq_ignore_ascii_case("NickServ") || e.chan_name.eq_ignore_ascii_case("NickServ") {
         sensitive = sensitive || is_sensitive_history(&plain);
     }
     if sensitive {
@@ -535,3 +547,41 @@ fn signal_loop(client: Arc<Client>, set: Sigset) {
 
 #[cfg(not(unix))]
 fn signal_loop(_client: Arc<Client>, _set: ()) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_open_error_identifies_directory() {
+        let dir = std::env::temp_dir().join(format!("mircbsd-log-error-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let blocked = dir.join("not-a-directory");
+        fs::write(&blocked, b"file").unwrap();
+        let err = open_log_file(blocked.to_str().unwrap(), "server", "channel", "2026-01-01")
+            .unwrap_err();
+        assert!(err.to_string().contains("not-a-directory"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn nickserv_outgoing_secrets_are_redacted_in_logs() {
+        use mircbsd::ui::{Message, MsgType};
+
+        for secret in [
+            "REGISTER secret email@example.org",
+            "SET PASSWORD secret",
+            "IDENTIFY secret",
+        ] {
+            let entry = LogEntry {
+                log_dir: String::new(),
+                server: "irc.example.org".into(),
+                chan_name: "NickServ".into(),
+                msg: Message::new(chrono::Utc::now(), "my-nick", secret, MsgType::Chat, false),
+            };
+            let line = format_log_line(&entry);
+            assert!(!line.contains("secret"));
+            assert!(line.contains("slaptažodis paslėptas"));
+        }
+    }
+}

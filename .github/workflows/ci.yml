@@ -5,8 +5,20 @@ on:
     branches: ["*"]
     tags: ["v*"]
   pull_request:
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
 
 jobs:
+  minimum-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: cargo test --locked
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -14,11 +26,43 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: cargo test
-        run: cargo test --lib
+      - name: Format
+        run: cargo fmt --all -- --check
 
-      - name: cargo build
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Build
         run: cargo build --locked
+
+      - name: Terminal end-to-end tests
+        run: bash scripts/e2e/start.sh
+
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: '14'
+          prepare: pkg install -y rust python3 bash
+          run: |
+            cargo test --locked
+            cargo build --locked --release
+            bash scripts/e2e/start.sh
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Check dependency advisories
+        run: cargo audit -D warnings
 
   build:
     runs-on: ubuntu-latest

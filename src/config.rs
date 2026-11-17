@@ -95,7 +95,14 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
     };
 
     let reader = BufReader::new(file);
-    for line in reader.lines().flatten() {
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(err) => {
+                warnings.push(format!("Nepavyko perskaityti konfigūracijos: {err}"));
+                break;
+            }
+        };
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -259,7 +266,7 @@ pub fn key_actions() -> &'static HashMap<&'static str, &'static [u8]> {
             ("search", &[0x12][..]),
             ("hist-up", &[0x1b, b'[', b'A'][..]),
             ("hist-down", &[0x1b, b'[', b'B'][..]),
-            ("complete", &[b'\t'][..]),
+            ("complete", &b"\t"[..]),
             ("word-del", &[23][..]),
         ])
     })
@@ -454,5 +461,40 @@ pub fn parse_bool_value(v: &str) -> (bool, bool) {
         "true" | "1" | "yes" | "on" => (true, true),
         "false" | "0" | "no" | "off" => (false, true),
         _ => (false, false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_config;
+    use std::io::Write;
+
+    #[test]
+    fn config_read_error_reports_warning_and_stops() {
+        let path = std::env::temp_dir().join(format!(
+            "mircbsd-config-{}-{:?}-{}",
+            std::process::id(),
+            std::thread::current().id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("create test config");
+        file.write_all(b"nick=first\n\xff\nnick=second\n")
+            .expect("write test config");
+        drop(file);
+
+        let (config, warnings) = load_config(&path);
+        std::fs::remove_file(&path).expect("remove test config");
+
+        assert_eq!(config.nick, "first");
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("perskaityti")));
     }
 }

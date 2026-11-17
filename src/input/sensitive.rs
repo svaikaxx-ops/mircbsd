@@ -20,6 +20,13 @@ pub fn is_sensitive_history(line: &str) -> bool {
     if is_raw_secret_command(&low) {
         return true;
     }
+    let fields: Vec<&str> = low.split_whitespace().collect();
+    if matches!(
+        fields.as_slice(),
+        ["/join" | "/j", _, _, ..] | ["/raw", "join", _, _, ..]
+    ) {
+        return true;
+    }
     // /msg nickserv identify <pass> / register <pass> <email> / confirm <code> / set password <pass>
     const NS_PREFIX: &str = "msg nickserv";
     let nick_cmd = low.starts_with("/ns ")
@@ -96,7 +103,7 @@ pub fn is_sensitive_log_raw_secret(low: &str) -> bool {
     if norm.is_empty() {
         return false;
     }
-    for cmd in ["pass", "oper"] {
+    for cmd in ["pass", "oper", "authenticate"] {
         if norm.starts_with(&format!("/{cmd} ")) || norm.starts_with(&format!("/raw {cmd} ")) {
             return true;
         }
@@ -146,7 +153,7 @@ pub fn is_raw_secret_command(low: &str) -> bool {
     if norm.is_empty() {
         return false;
     }
-    for cmd in ["pass", "oper"] {
+    for cmd in ["pass", "oper", "authenticate"] {
         for prefix in [
             format!("{cmd} "),
             format!("/{cmd} "),
@@ -165,6 +172,9 @@ pub fn is_raw_secret_command(low: &str) -> bool {
 
 /// Is `word` present as a separate field (not inside another word)?
 pub fn contains_word(low: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
     let lb = low.as_bytes();
     let mut idx = 0;
     loop {
@@ -281,10 +291,16 @@ mod tests {
             "/oper secret",
             "PASS secret",
             "OPER secret",
+            "/raw AUTHENTICATE AG5pY2sAc2VjcmV0",
+            "/raw\tAUTHENTICATE\tAG5pY2sAc2VjcmV0",
+            "/join #private channelkey",
+            "/j #private channelkey",
+            "/raw JOIN #private channelkey",
         ] {
             assert!(is_sensitive_history(s), "{s:?} history");
             assert!(is_sensitive_log_line(s), "{s:?} log");
         }
+        assert!(!is_sensitive_history("/join #public"));
     }
 
     #[test]
@@ -333,5 +349,6 @@ mod tests {
         assert!(!contains_word("identification", "identify"));
         assert!(contains_word("x identifyy identify", "identify"));
         assert!(!contains_word("abc", "identify"));
+        assert!(!contains_word("abc", ""));
     }
 }

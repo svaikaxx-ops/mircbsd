@@ -34,7 +34,7 @@ pub fn lower_irc(r: char) -> char {
 
 /// ASCII-only case fold (bytes `A`–`Z` only; non-ASCII unchanged).
 pub fn ascii_fold(s: &str) -> String {
-    if !s.bytes().any(|b| (b'A'..=b'Z').contains(&b)) {
+    if !s.bytes().any(|b| b.is_ascii_uppercase()) {
         return s.to_string();
     }
     let mut b: Vec<u8> = s.bytes().collect();
@@ -55,10 +55,10 @@ pub fn fold_equal_irc(a: &str, b: &str, ascii: bool) -> bool {
         for (ca, cb) in a.bytes().zip(b.bytes()) {
             let mut ca = ca;
             let mut cb = cb;
-            if (b'A'..=b'Z').contains(&ca) {
+            if ca.is_ascii_uppercase() {
                 ca += b'a' - b'A';
             }
-            if (b'A'..=b'Z').contains(&cb) {
+            if cb.is_ascii_uppercase() {
                 cb += b'a' - b'A';
             }
             if ca != cb {
@@ -228,7 +228,7 @@ pub fn is_valid_channel_key(key: &str) -> bool {
             return false;
         }
         let u = r as u32;
-        if u < 0x20 || u == 0x7f || (u >= 0x80 && u <= 0x9f) {
+        if u < 0x20 || u == 0x7f || (0x80..=0x9f).contains(&u) {
             return false;
         }
     }
@@ -295,8 +295,8 @@ pub fn is_valid_who_target(t: &str) -> bool {
     if t == "*" {
         return true;
     }
-    if t.starts_with('*') {
-        return is_valid_mask_name(&t[1..]);
+    if let Some(mask) = t.strip_prefix('*') {
+        return is_valid_mask_name(mask);
     }
     is_valid_mode_target(t)
 }
@@ -414,10 +414,7 @@ pub fn is_valid_port(port: &str) -> bool {
             return false;
         }
     }
-    match port.parse::<u32>() {
-        Ok(n) if (1..=65535).contains(&n) => true,
-        _ => false,
-    }
+    matches!(port.parse::<u32>(), Ok(n) if (1..=65535).contains(&n))
 }
 
 #[cfg(test)]

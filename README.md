@@ -5,7 +5,7 @@ Terminalo IRC klientas, parašytas Rust. Veikia **Debian** (Linux) ir FreeBSD.
 ## Reikalavimai
 
 - Debian 12/13 (trixie) arba FreeBSD 14+
-- Rust (stable): `rustc` ir `cargo` (Debian: paketai `rustc` ir `cargo`, arba `rustup`)
+- Rust 1.85 arba naujesnis: `rustc` ir `cargo` (jei sistemos paketai senesni, naudokite `rustup`)
 - Tikrasis terminalas (TTY) – paleidžiant be TTY klientas nepasileidžia
 
 ## Diegimas – Debian
@@ -145,7 +145,11 @@ mircbsd irc.data.lt 6667 manick
   `0700` katalogams ir `0600` failams, bet konfigūracijos failo, kurį kuriate
   patys redaktoriumi, teises keisti nėra ko.
 - **Slaptažodžiai nekeliauja į istoriją** – eilutės su `IDENTIFY` (pvz.
-  `/msg nickserv IDENTIFY pass`) nėra saugomos `history` faile.
+  `/msg nickserv IDENTIFY pass`), SASL `AUTHENTICATE` bei `/join` su kanalo
+  raktu nėra saugomos `history` faile. Atpažintos „NickServ“ slaptažodžių
+  komandos paslepiamos žurnale ir JSON eksporte. Slaptų duomenų atpažinimas
+  remiasi komandų forma, todėl kitų servisų ar neįprastų komandų atveju jo
+  nereikėtų laikyti garantuotu.
 - **Terminalo valdymo simbolių apsauga** – visos tinklo žinutės išvalomos prieš
   rodymą: ESC/C1/C0 kontrolės kodai (ANSI ekrano trynimas, OSC antraščių ir
   iškarpinės injekcija) negali nukeliauti į terminalą.
@@ -161,6 +165,11 @@ mircbsd irc.data.lt 6667 manick
   sha256 atspaudas (TOFU): pirmo jungimo atspaudas išsaugomas
   `fingerprints` faile; radus kita atspaudą, ryšys nutraukiamas dar prieš
   NICK/USER (galimas MITM). `tls_pin=` – rankinis atspaudas.
+  Įjungus pinning, pasitikėjimas grindžiamas atspaudu, o įprasta sertifikatų
+  grandinės ir serverio vardo patikra neatliekama. TOFU pirmojo jungimosi metu
+  neapsaugo nuo MITM: saugesniam pirmam prisijungimui nustatykite iš patikimo
+  šaltinio gautą `tls_pin`. Nepavykus perskaityti ar išsaugoti atspaudų,
+  ryšys nutraukiamas.
 - **`/set`** perrašo tik nešlamčius raktus (`timestamps`, `theme` ir kt.) –
   nesaugios reikšmės (`sasl`, `password`, `server`, `tls`) per /set
   nekeičiamos.
@@ -191,10 +200,22 @@ iš karto pratąkoma ir įrašoma atgal į config failą.
 ## Kūrimas (FreeBSD/Linux)
 
 ```sh
-cargo fmt              # formatavimas
-cargo test --lib       # testai
-cargo build --release  # dvejetainis: target/release/mircbsd
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets
+cargo test --locked
+bash scripts/e2e/start.sh  # terminalo ir bandomojo IRC serverio scenarijai
+cargo build --locked --release
+cargo audit               # reikia atskirai įdiegto cargo-audit
 ```
+
+CI atlieka Linux ir FreeBSD patikras, tikrina minimalią Rust versiją ir kas
+savaitę paleidžia priklausomybių saugumo auditą. E2E patikrai reikia Python 3,
+PTY ir leidimo naudoti vietinį tinklą.
+
+Pagrindiniai kodo moduliai: `client` valdo ryšį ir būseną, `proto` apdoroja
+IRC protokolą, `input` – komandas ir klavišus, `ui` – atvaizdavimą, o
+`persist` – failų įrašymą. Prie didesnių modulių testai laikomi atskiruose
+`*_tests.rs` failuose.
 
 Pavyzdinė konfigūracija: `config.example`.
 

@@ -5,7 +5,7 @@ const MAX_LINE_BYTES: usize = 512;
 /// Terminal control codes that must not appear on screen (from `ui.go` `isControlRune`).
 pub fn is_control_rune(r: char) -> bool {
     let u = r as u32;
-    (u < 0x20 && r != '\t') || u == 0x7f || (u >= 0x80 && u <= 0x9f)
+    (u < 0x20 && r != '\t') || u == 0x7f || (0x80..=0x9f).contains(&u)
 }
 
 /// Drops C0 (except tab), DEL, and C1 (0x80–0x9f) from network/UI text (`sanitizeText`).
@@ -21,13 +21,7 @@ pub fn sanitize_path(s: &str) -> String {
     if s.is_empty() {
         return String::new();
     }
-    let mut out = s
-        .replace('/', "_")
-        .replace('\\', "_")
-        .replace(':', "_")
-        .replace('*', "_")
-        .replace('?', "_")
-        .replace('"', "_");
+    let mut out = s.replace(['/', '\\', ':', '*', '?', '"'], "_");
     while out.contains("..") {
         out = out.replace("..", "_");
     }
