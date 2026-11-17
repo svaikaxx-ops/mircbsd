@@ -19,8 +19,8 @@ use crate::config::{
 use crate::sanitize::{sanitize_chan_name, sanitize_path, sanitize_text};
 use crate::ui::{
     format_go_time, hl_color_name, messages_to_json_indent, msg_width, nick_coloring,
-    set_highlight_color, set_nick_colors, set_theme, set_timestamps, set_ts_color, theme_dark_mode,
-    timestamps_enabled, ts_color_name, ts_format,
+    set_highlight_color, set_nick_colors, set_show_joins, set_theme, set_timestamps, set_ts_color,
+    show_joins, theme_dark_mode, timestamps_enabled, ts_color_name, ts_format, JoinFilter,
 };
 use crate::validate::{
     is_valid_channel_for, is_valid_channel_key, is_valid_list_filter, is_valid_mode_spec,

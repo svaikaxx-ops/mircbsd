@@ -274,8 +274,13 @@ pub fn update_render_cache(ch: &mut Channel, msg_w: i32, my_nick: &str) {
         0
     };
     // Timestamp of the last already-rendered message (day separator).
-    let mut prev_ts = if incremental && ch.rendered_msg_count > 0 {
-        Some(ch.messages[ch.rendered_msg_count - 1].ts)
+    // (Paskutinės MATOMOS — paslėptos join/part eilutės skirtiklio nepiešia.)
+    let mut prev_ts = if incremental {
+        ch.messages[..start]
+            .iter()
+            .rev()
+            .find(|m| !m.is_hidden())
+            .map(|m| m.ts)
     } else {
         None
     };
@@ -286,6 +291,11 @@ pub fn update_render_cache(ch: &mut Channel, msg_w: i32, my_nick: &str) {
         Vec::new()
     };
     for m in &ch.messages[start..] {
+        // `show_joins` paslėptos eilutės nepiešiamos (ir neperkelia paros
+        // skirtiklio). Nustatymo keitimas išvalo cache'ą — viskas perpiešiama.
+        if m.is_hidden() {
+            continue;
+        }
         if let Some(prev) = prev_ts {
             if changed_day(&prev, &m.ts) {
                 lines.push(day_sep_line(&m.ts));

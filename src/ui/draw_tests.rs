@@ -125,6 +125,51 @@ fn cache_is_incremental_and_inserts_day_separators() {
 }
 
 #[test]
+fn show_joins_filters_rendered_lines_and_rerenders_on_change() {
+    let _g = crate::ui::theme::TEST_LOCK.lock();
+    let t = crate::timeutil::now();
+    let mut ch = Channel::new("#t", 0);
+    ch.add_msg(Message::new(t, "bob", "labas", MsgType::Chat, false));
+    ch.add_msg(Message::new(t, "bob", "", MsgType::Part, false).quiet());
+    ch.add_msg(Message::new(t, "tylus", "", MsgType::Join, false).quiet());
+    ch.add_msg(Message::new(t, "op", "išmetė x (y)", MsgType::Server, false).quiet());
+    let plain = |ch: &Channel| -> Vec<String> {
+        ch.rendered
+            .iter()
+            .map(|l| crate::ui::theme::strip_colors(l))
+            .collect()
+    };
+
+    crate::ui::theme::set_show_joins("all");
+    update_render_cache(&mut ch, 60, "me");
+    assert_eq!(ch.rendered.len(), 4);
+
+    // smart: bob kalbėjo — jo part lieka; tylus join slepiamas; kick lieka.
+    crate::ui::theme::set_show_joins("smart");
+    crate::ui::theme::invalidate_render_caches([&mut ch]);
+    update_render_cache(&mut ch, 60, "me");
+    let lines = plain(&ch);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("bob išėjo")));
+    assert!(!lines.iter().any(|l| l.contains("tylus")));
+    assert!(lines.iter().any(|l| l.contains("išmetė x")));
+
+    // none: lieka pokalbis ir išmetimas; nauja join eilutė — inkrementaliai.
+    crate::ui::theme::set_show_joins("none");
+    crate::ui::theme::invalidate_render_caches([&mut ch]);
+    update_render_cache(&mut ch, 60, "me");
+    assert_eq!(ch.rendered.len(), 2);
+    ch.add_msg(Message::new(t, "bob", "", MsgType::Join, false).quiet());
+    update_render_cache(&mut ch, 60, "me");
+    assert_eq!(ch.rendered.len(), 2);
+
+    crate::ui::theme::set_show_joins("all");
+    crate::ui::theme::invalidate_render_caches([&mut ch]);
+    update_render_cache(&mut ch, 60, "me");
+    assert_eq!(ch.rendered.len(), 5);
+}
+
+#[test]
 fn history_freeze() {
     let mut ch = Channel::new("#t", 0);
     // First draw: nothing to compensate.

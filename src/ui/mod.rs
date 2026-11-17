@@ -25,7 +25,8 @@ pub use message::{
     plain_to_original_bounds, render_irc_format, strip_irc_format, wrap_text, Message, MsgType,
 };
 pub use theme::{
-    hl_bg_code, hl_color_name, invalidate_render_caches, mirc_colors, move_to, nick_color,
-    nick_coloring, set_highlight_color, set_nick_colors, set_theme, set_timestamps, set_ts_color,
-    theme_dark_mode, timestamps_enabled, ts_color_code, ts_color_name, ts_format,
+    event_color, hl_bg_code, hl_color_name, invalidate_render_caches, mirc_colors, move_to,
+    nick_color, nick_coloring, set_highlight_color, set_nick_colors, set_show_joins, set_theme,
+    set_timestamps, set_ts_color, show_joins, theme_dark_mode, timestamps_enabled, ts_color_code,
+    ts_color_name, ts_format, JoinFilter,
 };

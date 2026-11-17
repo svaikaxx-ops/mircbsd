@@ -526,6 +526,74 @@ def main():
 
     record('28 serverio kritimas → reconnect + 433 → nick_', chk_reconnect_433)
 
+    # ---------- 18. Tylesni join/part/quit ----------
+    def goto_testas():
+        d.keys('\x15')
+        cmds('/win 2\r')
+        driver.wait_until(lambda: '| #testas ' in d.screen.line(0), timeout=5)
+        d.keys('\x1b[6;2~')
+        time.sleep(0.3)
+
+    def chk_join_dim():
+        goto_testas()
+        d.mark_raw('join')
+        srv.send_line(':svecias!s@fake JOIN #testas')
+        if not driver.wait_until(lambda: 'svecias prisijungė' in S(), timeout=8):
+            return False, 'join eilutė neatvyko: ' + S()[-200:]
+        raw = d.raw_since('join').decode('utf-8', 'replace')
+        # Tamsi tema: kito join — blankia pilka (90), ne ryškiai žalia (32).
+        ok = '\x1b[90m--> svecias' in raw and '\x1b[32m--> svecias' not in raw
+        return ok, 'kito join pilkas' if ok else repr(raw[raw.find('svecias') - 40:][:80])
+
+    record('29 kito join — blanki temos spalva', chk_join_dim)
+
+    def antras_row():
+        for r in range(1, d.screen.rows - 1):
+            cells = ''.join(d.screen.cells(r)[:18])
+            if '#antras' in cells:
+                return cells
+        return None
+
+    def chk_show_joins_smart():
+        goto_testas()
+        cmds('/set show_joins smart\r')
+        # Esama istorija perpiešiama: tylus svecias join dingsta.
+        gone = driver.wait_until(lambda: 'svecias prisijungė' not in S(), timeout=5)
+        # botas kalbėjo — jo part rodomas; tylus naujokas — ne.
+        srv.send_line(':' + BOT + ' PART #testas :iki')
+        srv.send_line(':tylusis!t@fake JOIN #testas')
+        botmsg('#testas', ['po-filtro-zyme'])
+        shown = driver.wait_until(lambda: 'po-filtro-zyme' in S(), timeout=8)
+        t = S()
+        part_ok = 'botas išėjo (iki)' in t
+        # (Nick sąraše tylusis yra — tikrinam tik join eilutę.)
+        silent_hidden = 'tylusis prisijungė' not in t
+        # Fone esančio lango neperskaitytų skaitiklis nepasikeičia.
+        before = antras_row()
+        srv.send_line(':tylusis!t@fake JOIN #antras')
+        time.sleep(0.8)
+        after = antras_row()
+        badge_ok = before is not None and before == after
+        cfg = open(os.path.join(CFG, 'config')).read()
+        # Paslėpta eilutė vis tiek žurnale (<logdir>/<serveris>/#antras-*.log).
+        logged = False
+        for droot, _fs, names in os.walk(LOGDIR):
+            for n in names:
+                if n.startswith('#antras') and n.endswith('.log'):
+                    with open(os.path.join(droot, n)) as f:
+                        logged = logged or 'tylusis prisijungė' in f.read()
+        # Atgal į all — paslėptos eilutės vėl matomos.
+        cmds('/set show_joins all\r')
+        back = driver.wait_until(lambda: 'tylusis prisijungė' in S(), timeout=5)
+        ok = (gone and shown and part_ok and silent_hidden and badge_ok and logged
+              and back and 'show_joins=smart' in cfg)
+        return ok, 'smart: tylūs paslėpti, kalbėjęs rodomas, unread ir žurnalas OK' if ok else \
+            'dingo=%s part=%s tylus_paslėptas=%s badge=%r→%r žurnale=%s grįžo=%s cfg=%s' % (
+                gone, part_ok, silent_hidden, before, after, logged, back,
+                'show_joins=smart' in cfg)
+
+    record('30 show_joins smart — filtras, unread, žurnalas', chk_show_joins_smart)
+
     # ---------- Rezultatai ----------
     good = sum(1 for ok, _n, _ in results if ok)
     print('\n==== E2E: %d/%d patikrų praėjo ====' % (good, len(results)))

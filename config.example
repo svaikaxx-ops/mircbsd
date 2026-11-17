@@ -58,6 +58,14 @@ reconnect=true
 # Nick'ų spalvinimas (kada kiekvienas nick turi savo spalvą)
 # nick_colors=true
 
+# Kitų join/part/quit/nick eilutės (judriuose kanaluose jos užgožia
+# pokalbį; jos ir taip piešiamos blankia spalva):
+#   all   — visos (numatyta)
+#   smart — tik nick'ų, kalbėjusių kanale per pastarąsias 10 min.
+#   none  — jokių
+# Paslėptos eilutės lieka žurnaluose. Keičiama ir gyvai: /set show_joins smart
+# show_joins=all
+
 # Laiko žymos prie žinučių (15:04 formatu, numatytai įjungta)
 # timestamps=true
 # ts_format=15:04

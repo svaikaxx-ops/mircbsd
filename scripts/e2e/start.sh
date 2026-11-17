@@ -1,5 +1,5 @@
 #!/bin/bash
-# E2E: sukompiliuoja mircBSD ir paleidžia emuliatoriaus savitikrą ir 28 patikras.
+# E2E: sukompiliuoja mircBSD ir paleidžia emuliatoriaus savitikrą ir visas patikras (check.py).
 # Artefaktai rašomi į naują laikiną katalogą.
 set -eu
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

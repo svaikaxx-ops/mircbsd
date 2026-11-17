@@ -32,7 +32,7 @@ neliečiamas (HOME ir XDG_CONFIG_HOME nukreipti į testavimo home).
   MONITOR +/−/CLEAR įrašymas.
 - `driver.py` — pty fork, ekrano tiektuvas + žaliavos buferis
   (raw_since žymėse), `wait_until`.
-- `check.py` — 28 patikros: prisijungimas (001+MOTD), keys įspėjimas,
+- `check.py` — 30 patikrų: prisijungimas (001+MOTD), keys įspėjimas,
   PRIVMSG, IRC spalvų sanavimas, terminalo injekcija, apvyniojimas,
   PgUp/Shift+PgDn slinktis, n/p tuščiam inputui, switchCh paieškos būsenos
   išvalymas, /search all (rezultatai *server*), /logsearch (kūno atitiktis +
@@ -45,7 +45,11 @@ neliečiamas (HOME ir XDG_CONFIG_HOME nukreipti į testavimo home).
   ar už nick skirtuko), **26** KICK savęs, **27** SIGWINCH (100×30 →
   nick skirtukas pasislenka 20 stulpelių), **28** serverio kritimas →
   automatinis prisijungimas, registracijoje 433 → `testas_`, autojoin ir
-  žinutė nauja jungtimi. Nepavykus — kadras `fail-<nr>.txt`.
+  žinutė nauja jungtimi, **29** kito join — blanki pilka (90, ne 32),
+  **30** `/set show_joins smart`: tylaus nick'o join paslepiamas (ir
+  istorijoje), kalbėjusio part rodomas, fono lango neperskaitytų skaičius
+  nepasikeičia, eilutė vis tiek žurnale, `all` grąžina.
+  Nepavykus — kadras `fail-<nr>.txt`.
 - `ansi_selftest.py` — emuliatoriaus savitikra (paleidžiama pirma):
   escape seka, perskelta per dvi pty read() dalis bet kurioje vietoje, duoda
   tą patį kadrą; CJK/emoji = 2 ląstelės, derinamieji = 0.

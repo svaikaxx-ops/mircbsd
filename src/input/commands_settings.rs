@@ -26,6 +26,7 @@ impl Client {
             "maxmessages" => self.mu.lock().max_messages.to_string(),
             "maxmemory" => (self.mu.lock().max_buffer_bytes / (1024 * 1024)).to_string(),
             "theme" => if theme_dark_mode() { "dark" } else { "light" }.to_string(),
+            "show_joins" => show_joins().as_str().to_string(),
             _ => String::new(),
         };
         self.server_msg(&format!("{key} = {v}"));
@@ -127,6 +128,18 @@ impl Client {
                     return None;
                 }
                 set_theme(value);
+                self.invalidate_render_caches();
+            }
+            "show_joins" => {
+                if JoinFilter::parse(value).is_none() {
+                    self.err_msg(&format!(
+                        "Reikšmė turi būti all, smart arba none: {}",
+                        sanitize_text(value)
+                    ));
+                    return None;
+                }
+                set_show_joins(value);
+                // Esama istorija perpiešiama pagal naują filtrą.
                 self.invalidate_render_caches();
             }
             "maxmessages" => {

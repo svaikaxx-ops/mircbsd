@@ -242,6 +242,7 @@ Formatas: `raktas=reikšmė`, `#` – komentaras. Visi raktai su paaiškinimais 
 |--------|-----------|-----------|
 | `theme` | `dark` | `light` – šviesiems fonams (tamsesnės nick'ų, mIRC ir akcentų spalvos) |
 | `nick_colors` | `true` | Kiekvienas nick – sava spalva |
+| `show_joins` | `all` | Kitų join/part/quit/nick eilutės: `all` – visos, `smart` – tik nick'ų, kalbėjusių kanale per pastarąsias 10 min., `none` – jokių. Paslėptos eilutės lieka žurnaluose ir nedidina neperskaitytų skaitiklio; išmetimai (KICK) rodomi visada |
 | `timestamps` / `ts_format` | `true` / `15:04` | Laiko žymos ir jų formatas (pvz. `15:04:05`) |
 | `tscolor` | `gray` | Laiko žymos spalva: `gray`, `blue`, `green`, `cyan`, `none` |
 | `highlight_color` | `red` | Paminėjimo fonas: `red`, `blue`, `green`, `magenta`, `cyan`, `yellow`, `none` (inversija) |
@@ -253,9 +254,9 @@ Formatas: `raktas=reikšmė`, `#` – komentaras. Visi raktai su paaiškinimais 
 | `logdir` | `~/irclogs` | Žurnalų katalogas |
 
 `/set` be argumentų parodo dabartines reikšmes. Keičiami gyvai (ir įrašomi
-atgal į config failą) šie raktai: `theme`, `nick_colors`, `timestamps`,
-`ts_format`, `tscolor`, `highlight_color`, `notifications`, `mouse`,
-`maxmessages`, `maxmemory`, `reconnect`, `ctcpversion`. Ryšio ir slaptažodžių raktai per
+atgal į config failą) šie raktai: `theme`, `nick_colors`, `show_joins`,
+`timestamps`, `ts_format`, `tscolor`, `highlight_color`, `notifications`,
+`mouse`, `maxmessages`, `maxmemory`, `reconnect`, `ctcpversion`. Ryšio ir slaptažodžių raktai per
 `/set` nekeičiami. Bool reikšmės (ir config faile): `true`/`false`,
 `on`/`off`, `yes`/`no`, `1`/`0`.
 

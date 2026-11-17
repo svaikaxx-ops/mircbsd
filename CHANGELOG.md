@@ -8,6 +8,16 @@ pagal [SemVer](https://semver.org/).
 
 ### Nauja
 
+- **Tylesni join/part/quit** — kitų naudotojų prisijungimai, išėjimai,
+  atsijungimai, nick keitimai ir kitų išmetimai (KICK) piešiami blankia
+  temos spalva (tamsi tema — tamsiai pilka, šviesi — šviesiai pilka;
+  `NO_COLOR` spalvą pašalina), kad judriuose kanaluose neužgožtų pokalbio.
+- **`show_joins=all|smart|none`** (config + `/set`, įrašoma atgal į failą):
+  `smart` slepia join/part/quit/nick tų nick'ų, kurie kanale nekalbėjo
+  pastarąsias 10 min. (kaip kitų klientų „smart filter“), `none` — visus.
+  Išmetimai rodomi visada. Pakeitus nustatymą esama istorija perpiešiama;
+  paslėptos eilutės lieka žurnaluose, nedidina neperskaitytų skaitiklio ir
+  paieška (`/search`, n/p) į jas nešoka.
 - **Release: `x86_64-unknown-freebsd`** — FreeBSD amd64 binaris,
   kompiliuojamas natūraliai FreeBSD 14 VM (vmactions), supakuotas taip pat
   kaip Linux binarai (`.tar.gz` + `.sha256` `sha256sum` formatu), su smoke

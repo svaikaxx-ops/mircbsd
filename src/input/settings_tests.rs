@@ -166,6 +166,42 @@ fn set_unknown_or_forbidden_key() {
 }
 
 #[test]
+fn set_show_joins_validates_applies_and_persists() {
+    let _g = config_dir_lock();
+    let _t = crate::ui::theme::TEST_LOCK.lock();
+    fresh_config();
+    let c = client();
+    c.handle_input("/set show_joins kartais");
+    assert_eq!(config_text(), "");
+    assert!(server_texts(&c)
+        .iter()
+        .any(|t| t.contains("all, smart arba none")));
+    open_active(&c, "#chan");
+    {
+        let mut st = c.mu.lock();
+        let ch = st.active_chan_mut().unwrap();
+        ch.rendered_gen = 5;
+        ch.rendered = vec!["senas".into()];
+    }
+    c.handle_input("/set show_joins smart");
+    assert_eq!(crate::ui::show_joins(), crate::ui::JoinFilter::Smart);
+    assert!(
+        config_text().contains("show_joins=smart"),
+        "{}",
+        config_text()
+    );
+    {
+        // Istorija perpiešiama pagal naują filtrą.
+        let st = c.mu.lock();
+        assert_eq!(st.active_chan().unwrap().rendered_gen, -1);
+    }
+    c.handle_input("/set show_joins");
+    assert!(server_texts(&c).iter().any(|t| t == "show_joins = smart"));
+    crate::ui::set_show_joins("all");
+    fresh_config();
+}
+
+#[test]
 fn set_without_value_shows_and_without_args_lists() {
     let c = client();
     c.mu.lock().reconnect = false;

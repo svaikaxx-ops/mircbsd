@@ -354,7 +354,14 @@ impl Client {
         let is_active = st.active_idx == ci;
         let chan_name = st.channels[ci].name.clone();
         st.channels[ci].add_msg(m.clone());
-        if !is_active {
+        // `show_joins` paslėpta eilutė neskaičiuojama neperskaityta (kitaip
+        // judrus kanalas „mirksėtų“ dėl nematomų join/part). Žurnalui —
+        // vis tiek.
+        let hidden = st.channels[ci]
+            .messages
+            .last()
+            .is_some_and(|x| x.is_hidden());
+        if !is_active && !hidden {
             let ch = &mut st.channels[ci];
             if ch.unread == 0 {
                 ch.unread_from = ch.messages.len() as isize - 1;
