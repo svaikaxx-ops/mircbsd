@@ -4,7 +4,7 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
-## [Neišleista]
+## [0.5.3] – 2026-11-17 – lag, show_joins, kanalų raktai, FreeBSD, jiff
 
 ### Nauja
 
@@ -42,6 +42,11 @@ pagal [SemVer](https://semver.org/).
   `install.sh` (tik bazinės sistemos įrankiai, vietinis release veidrodis;
   tikroji release tikrinama nuo pirmos versijos su FreeBSD binariu).
 
+- **`chrono` → `jiff`** — `chrono` nebeprižiūrimas (RUSTSEC-2026-0543). Visas
+  laiko kodas eina per naują modulį `src/timeutil.rs`; laiko juosta – `TZ`
+  arba `/etc/localtime`. Testai patikrinti 6 laiko juostose (įskaitant
+  +05:45, +12:45 ir pusvalandžio DST).
+
 ### Pataisyta
 
 - **Kanalų raktai nebedingsta** — `/join #kanalas raktas` be ryšio ar prieš
@@ -72,13 +77,6 @@ pagal [SemVer](https://semver.org/).
   pat kaukės), MONITOR, AWAY ribojimas, paminėjimai, Tab kandidatų
   dublikatai. Pasikeitus casemapping'ui (005 ar naujas ryšys) jau atidarytų
   langų nick'ų rinkiniai perstatomi.
-
-### Pakeista
-
-- **`chrono` → `jiff`** — `chrono` nebeprižiūrimas (RUSTSEC-2026-0543). Visas
-  laiko kodas eina per naują modulį `src/timeutil.rs`; laiko juosta – `TZ`
-  arba `/etc/localtime`. Testai patikrinti 6 laiko juostose (įskaitant
-  +05:45, +12:45 ir pusvalandžio DST).
 
 ### Saugumas
 

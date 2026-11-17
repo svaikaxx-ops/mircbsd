@@ -102,7 +102,7 @@ Jei nenorite paleisti skripto – tą patį galima padaryti ranka.
 | ARMv6 (Raspberry Pi 1, Zero, Zero W) | `arm-unknown-linux-musleabihf` | statinis, bet kuris Linux (nuo v0.5.2) |
 | x86_64 | `x86_64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
 | ARM 64 | `aarch64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
-| FreeBSD amd64 | `x86_64-unknown-freebsd` | FreeBSD 14+ (nuo pirmos release po v0.5.2) |
+| FreeBSD amd64 | `x86_64-unknown-freebsd` | FreeBSD 14+ (nuo v0.5.3) |
 
 Architektūrą parodo `uname -m`: `x86_64`, `aarch64` (64 bitų ARM),
 `armv7l` (32 bitų ARM) arba `armv6l` (Raspberry Pi 1, Zero, Zero W);
@@ -111,7 +111,7 @@ FreeBSD rodo `amd64`. FreeBSD vietoj `curl -LO` – `fetch`, vietoj
 diegimui – `install -m755` (be `-D`).
 
 ```sh
-VER=v0.5.2                          # naujausia versija – žr. Releases
+VER=v0.5.3                          # naujausia versija – žr. Releases
 T=x86_64-unknown-linux-musl         # arba aarch64-unknown-linux-musl / armv7-… / arm-unknown-linux-musleabihf
 URL=https://github.com/svaikaxx-ops/mircbsd/releases/download/$VER
 cd /tmp
