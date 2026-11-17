@@ -63,7 +63,7 @@ Paprasčiausias būdas – atsisiųsti sukompiliuotą binarį iš
 Architektūrą parodo `uname -m` (`x86_64` arba `aarch64`).
 
 ```sh
-VER=v0.5.0                          # naujausia versija – žr. Releases
+VER=v0.5.1                          # naujausia versija – žr. Releases
 T=x86_64-unknown-linux-musl         # arba aarch64-unknown-linux-musl
 URL=https://github.com/svaikaxx-ops/mircbsd/releases/download/$VER
 cd /tmp
