@@ -423,6 +423,13 @@ pub fn wrap_text(text: &str, width: i32) -> Vec<String> {
                     lines.push(cur.concat());
                     cur = rest;
                     cur_w = cur.iter().map(|c| cluster_width(c)).sum();
+                    // Likutis po tarpo + platus klasteris vis dar gali netilpti
+                    // (pvz. „b界“ pločiui 2) — tada likutis tampa atskira eilute.
+                    if !cur.is_empty() && cur_w + cw > width {
+                        lines.push(cur.concat());
+                        cur.clear();
+                        cur_w = 0;
+                    }
                     cur.push(cl);
                     cur_w += cw;
                     continue;

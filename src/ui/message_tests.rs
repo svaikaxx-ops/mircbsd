@@ -215,3 +215,33 @@ fn render_lines_min_body_width_and_join() {
     assert_eq!(plain.concat().replace(' ', ""), "-->xprisijungė");
     super::super::theme::set_timestamps(true, "15:04");
 }
+
+#[test]
+fn wrap_text_never_exceeds_width_mixed_scripts() {
+    // Deterministinis „atsitiktinis“ tekstas: tarpai, lietuviškos raidės,
+    // platūs CJK, emoji, jungiamieji ženklai.
+    let alphabet = [" ", "a", "ž", "界", "😀", "e\u{301}", " ", "b"];
+    let mut seed: u32 = 12345;
+    for _ in 0..400 {
+        let mut s = String::new();
+        let len = (seed % 40) as usize + 1;
+        for _ in 0..len {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            s.push_str(alphabet[(seed >> 16) as usize % alphabet.len()]);
+        }
+        for width in 1..12 {
+            let lines = wrap_text(&s, width);
+            for l in &lines {
+                let w = crate::width::string_width(l);
+                let single = crate::width::rune_clusters(l).len() == 1;
+                assert!(w <= width || single, "{s:?} w={width}: {l:?} ({w})");
+            }
+            // Nieko neprarandama (išskyrus tarpus lūžio vietose).
+            assert_eq!(
+                lines.concat().replace(' ', ""),
+                s.replace(' ', ""),
+                "{s:?} w={width}"
+            );
+        }
+    }
+}
