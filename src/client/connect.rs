@@ -566,6 +566,13 @@ impl Client {
             if let Some(conn) = st.conn.take() {
                 let _ = conn.shutdown(Shutdown::Both);
             }
+            // Senos jungties teardown čia jau „stale“ ir būsenos neliečia —
+            // kanalus grįžimui (/reconnect) įsimename patys.
+            if st.connected {
+                st.connected = false;
+                st.write = None;
+                st.note_disconnect();
+            }
         }
         let c = Arc::clone(self);
         std::thread::spawn(move || c.connect_loop());

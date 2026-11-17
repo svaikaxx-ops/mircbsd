@@ -262,6 +262,11 @@ impl Client {
         }
         {
             let mut st = self.mu.lock();
+            if !st.server.eq_ignore_ascii_case(parts[0]) {
+                // Kitas tinklas: seno serverio kanalų ten nejungiame.
+                st.note_disconnect();
+                st.rejoin.clear();
+            }
             st.server = parts[0].to_string();
             st.port = parts[1].to_string();
             if parts.len() >= 3 {

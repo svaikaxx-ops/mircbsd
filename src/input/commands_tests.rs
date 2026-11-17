@@ -432,3 +432,21 @@ fn join_command_focuses_window_even_when_it_exists() {
     c.handle_cmd("join", "#naujas");
     assert_eq!(c.active_name(), "#naujas");
 }
+
+#[test]
+fn reconnect_remembers_channels_but_connect_elsewhere_does_not() {
+    let (c, _q) = connected();
+    quiet_net(&c);
+    let me = c.my_nick();
+    c.parse_irc(&format!(":srv 001 {me} :Welcome"));
+    c.parse_irc(&format!(":{me}!u@h JOIN #a"));
+    c.handle_cmd("reconnect", "");
+    assert_eq!(c.mu.lock().rejoin, vec!["#a".to_string()]);
+    {
+        let st = c.mu.lock();
+        let i = st.find_ch("#a").unwrap();
+        assert!(st.channels[i].nicks.is_empty());
+    }
+    c.handle_cmd("connect", "127.0.0.2 1");
+    assert!(c.mu.lock().rejoin.is_empty(), "kito tinklo kanalai");
+}
