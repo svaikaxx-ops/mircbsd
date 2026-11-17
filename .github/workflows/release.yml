@@ -102,9 +102,59 @@ jobs:
             dist/*.tar.gz
             dist/*.sha256
 
+  # FreeBSD x86_64: kompiliuojama natūraliai FreeBSD 14 VM; supakuojama
+  # taip pat kaip Linux binarai (.sha256 – „<hash>  <failas>“, kaip sha256sum).
+  freebsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: '14.4'
+          usesh: true
+          envs: 'GITHUB_REF_NAME'
+          prepare: pkg install -y rust
+          run: |
+            set -eu
+            freebsd-version
+            rustc --version
+            cargo test --locked
+            cargo build --release --locked
+
+            # Smoke test
+            bin=target/release/mircbsd
+            file "$bin"
+            file "$bin" | grep -q "FreeBSD" || { echo "ne FreeBSD binaris"; exit 1; }
+            "$bin" --version
+
+            # Package
+            name="mircbsd-${GITHUB_REF_NAME}-x86_64-unknown-freebsd"
+            mkdir -p "dist/$name"
+            cp "$bin" README.md LICENSE CHANGELOG.md config.example "dist/$name/"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            (cd dist && printf '%s  %s\n' "$(sha256 -q "$name.tar.gz")" "$name.tar.gz" > "$name.tar.gz.sha256")
+            cat "dist/$name.tar.gz.sha256"
+            # atgal į runnerį kopijuojama tik tai, ko reikia (be target/)
+            rm -rf target
+
+      - name: Check package
+        run: |
+          cd dist
+          sha256sum -c ./*.sha256
+          ls -l
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: x86_64-unknown-freebsd
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build]
+    needs: [build, freebsd]
     runs-on: ubuntu-latest
     permissions:
       contents: write

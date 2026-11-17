@@ -51,10 +51,16 @@ Terminalo IRC klientas, parašytas Rust. Veikia **Debian** (Linux) ir FreeBSD.
 ## Diegimas ir atnaujinimas (rekomenduojama)
 
 Viena komanda – Debian, Ubuntu, Raspberry Pi OS ir bet kuris kitas Linux
-(x86_64, ARM 64, ARM 32, ARMv6 – Pi Zero). Rust nereikia:
+(x86_64, ARM 64, ARM 32, ARMv6 – Pi Zero) bei FreeBSD (amd64). Rust nereikia:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh
+```
+
+FreeBSD – su bazinės sistemos `fetch` (curl nebūtinas):
+
+```sh
+fetch -o - https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/install.sh | sh
 ```
 
 Skriptas pats atpažįsta architektūrą, atsisiunčia naujausią
@@ -74,7 +80,9 @@ curl -fsSL https://raw.githubusercontent.com/svaikaxx-ops/mircbsd/main/scripts/i
 ```
 
 Taip pat `--dir KATALOGAS`, `--force` (perdiegti tą pačią versiją), `--help`.
-Vietoj `curl` tinka ir `wget -qO- … | sh`. Jei skriptas praneša, kad
+Vietoj `curl` tinka ir `wget -qO- … | sh` (FreeBSD – `fetch -o - … | sh`;
+skriptas naudoja `curl`, `wget` arba `fetch` ir `sha256sum`, `shasum` arba
+FreeBSD `sha256`). Jei skriptas praneša, kad
 `~/.local/bin` nėra PATH'e – atsijunkite ir vėl prisijunkite (Debian ir
 Raspberry Pi OS jį prideda automatiškai, kai katalogas jau yra) arba
 `source ~/.profile`.
@@ -91,9 +99,13 @@ Jei nenorite paleisti skripto – tą patį galima padaryti ranka.
 | ARMv6 (Raspberry Pi 1, Zero, Zero W) | `arm-unknown-linux-musleabihf` | statinis, bet kuris Linux (nuo v0.5.2) |
 | x86_64 | `x86_64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
 | ARM 64 | `aarch64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
+| FreeBSD amd64 | `x86_64-unknown-freebsd` | FreeBSD 14+ (nuo pirmos release po v0.5.2) |
 
 Architektūrą parodo `uname -m`: `x86_64`, `aarch64` (64 bitų ARM),
-`armv7l` (32 bitų ARM) arba `armv6l` (Raspberry Pi 1, Zero, Zero W).
+`armv7l` (32 bitų ARM) arba `armv6l` (Raspberry Pi 1, Zero, Zero W);
+FreeBSD rodo `amd64`. FreeBSD vietoj `curl -LO` – `fetch`, vietoj
+`sha256sum -c` – `sha256 -c "$(cut -d' ' -f1 mircbsd-$VER-$T.tar.gz.sha256)" mircbsd-$VER-$T.tar.gz`,
+diegimui – `install -m755` (be `-D`).
 
 ```sh
 VER=v0.5.2                          # naujausia versija – žr. Releases
@@ -156,9 +168,12 @@ Pastabos:
 ## Diegimas iš šaltinio – FreeBSD
 
 ```sh
-cargo build --release
-cp target/release/mircbsd /usr/local/bin/
+pkg install rust          # reikia Rust ≥ 1.85
+cargo build --release --locked
+install -m755 target/release/mircbsd /usr/local/bin/mircbsd
 ```
+
+Paruoštas binaris (be Rust) – žr. [Diegimas ir atnaujinimas](#diegimas-ir-atnaujinimas-rekomenduojama).
 
 ## Greita pradžia
 
@@ -449,7 +464,7 @@ cargo build --locked --release
 cargo audit               # reikia atskirai įdiegto cargo-audit
 ```
 
-CI atlieka Linux patikras (FreeBSD tikrinamas rankiniu būdu), tikrina minimalią Rust versiją ir kas
+CI atlieka Linux ir FreeBSD (14, VM) patikras – unit, E2E ir `install.sh` –, tikrina minimalią Rust versiją ir kas
 savaitę paleidžia priklausomybių saugumo auditą. E2E patikrai reikia Python 3,
 PTY ir leidimo naudoti vietinį tinklą. Daugiau – [CONTRIBUTING.md](CONTRIBUTING.md).
 
