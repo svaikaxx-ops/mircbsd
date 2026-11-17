@@ -53,7 +53,7 @@ fn set_maxmessages_range_and_live_apply() {
     let _g = config_dir_lock();
     fresh_config();
     let c = client();
-    open_active(&c, "#a");
+    c.ensure_ch(&mut c.mu.lock(), "#a").expect("ensure_ch");
     for bad in ["99", "100001", "abc", "-5", "1e3"] {
         c.handle_input(&format!("/set maxmessages {bad}"));
     }

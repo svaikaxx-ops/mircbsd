@@ -464,12 +464,13 @@ def main():
         sep = nick_sep_col(2)
         nicks = ' '.join(''.join(d.screen.cells(r)[sep + 1:]) for r in range(1, 10)) \
             if sep else ''
-        ok3 = 'botas' in nicks and 'testas' not in nicks
+        # Išmestas iš kanalo — savo nick sąraše nebėra (sąrašas išvalomas).
+        ok3 = sep is not None and 'Nick' in nicks and 'testas' not in nicks
         ok = ok1 and ok2 and ok3
         return ok, 'pranešimas + langas + nick sąrašas' if ok else \
             'pranešimas=%s langas=%s nicks=%r' % (ok1, ok2, nicks.strip()[:80])
 
-    record('26 KICK savęs — pranešimas, langas lieka', chk_kick_self)
+    record('26 KICK savęs — pranešimas, langas lieka, nick dingsta', chk_kick_self)
 
     # ---------- 16. Lango dydžio keitimas (SIGWINCH) ----------
     def chk_resize():

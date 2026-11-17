@@ -223,8 +223,12 @@ fn kick_of_self_keeps_window_and_drops_own_nick() {
     {
         let st = c.mu.lock();
         let i = st.find_ch("#k").expect("langas lieka");
-        assert!(!st.channels[i].nicks.iter().any(|n| n == "me"));
-        assert!(st.channels[i].nicks.iter().any(|n| n == "bob"));
+        // Išmestas — nebe kanale: nick sąrašas išvalomas (nebeatnaujinamas).
+        assert!(
+            st.channels[i].nicks.is_empty(),
+            "{:?}",
+            st.channels[i].nicks
+        );
     }
     assert!(server_texts(&c)
         .iter()

@@ -8,6 +8,12 @@ fn load_str(body: &str) -> (Config, Vec<String>) {
     let d = TempDir::new("cfg");
     let p = d.join("config");
     std::fs::write(&p, body).unwrap();
+    // 0600: kitaip config su slaptažodžiais duoda „chmod 600“ įspėjimą.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     load_config(&p)
 }
 
@@ -57,10 +63,10 @@ fn comments_blank_and_garbage_lines_are_skipped() {
 
 #[test]
 fn quotes_are_stripped_only_when_matching() {
-    let (c, _) = load_str("realname=\"Vardas Pavardė\"\nnickserv='slaptas'\nserver=\"x\n");
+    let (c, _) = load_str("realname=\"Vardas Pavardė\"\nnickserv='slaptas'\nperform=\"x\n");
     assert_eq!(c.real_name, "Vardas Pavardė");
     assert_eq!(c.nick_serv, "slaptas");
-    assert_eq!(c.server, "\"x");
+    assert_eq!(c.perform, vec!["\"x"]);
     let (c, _) = load_str("realname=\"\nnickserv=\"'\n");
     assert_eq!(c.real_name, "\"");
     assert_eq!(c.nick_serv, "\"'");
@@ -156,7 +162,6 @@ fn config_bools_accept_every_set_token() {
         ("0", false),
         ("no", false),
         ("off", false),
-        ("bet kas", false),
     ] {
         let (c, _) = load_str(&format!(
             "tls={v}\nmouse={v}\nreconnect={v}\nnotifications={v}\nctcpversion={v}\n\
@@ -175,6 +180,14 @@ fn config_bools_accept_every_set_token() {
         ];
         assert!(got.iter().all(|b| *b == want), "{v}: {got:?}");
     }
+}
+
+#[test]
+fn unrecognized_bool_keeps_default_and_warns() {
+    let (c, w) = load_str("mouse=bet kas\ntls=taip\n");
+    assert!(c.mouse, "numatytas mouse=true lieka");
+    assert!(!c.tls, "numatytas tls=false lieka");
+    assert_eq!(w.len(), 2, "{w:?}");
 }
 
 #[test]
