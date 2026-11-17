@@ -16,7 +16,9 @@ pagal [SemVer](https://semver.org/).
 ### Nauja
 
 - **Release: `aarch64-unknown-linux-musl`** — statinis ARM 64 binaris (veikia ir
-  Debian 12); kiekvienas release binaris paleidžiamas (`--version`) prieš
+  Debian 12); **`armv7-unknown-linux-musleabihf`** — statinis 32 bitų ARM
+  binaris (Raspberry Pi 2/3/4 su 32 bitų OS), kompiliuojamas per `cross`,
+  tikrinamas per `qemu-arm`; kiekvienas release binaris paleidžiamas (`--version`) prieš
   publikavimą, musl binariams tikrinama, ar jie statiniai. Release workflow
   galima paleisti rankiniu būdu (tik kompiliuoja, release nekuria).
 - **README** — diegimas iš release binarų (Debian); pašalinta klaidinga

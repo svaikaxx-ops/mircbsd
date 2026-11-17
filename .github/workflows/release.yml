@@ -27,6 +27,12 @@ jobs:
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
             musl: true
+          # 32 bitų ARM (Raspberry Pi 2/3/4 su 32 bitų OS): kryžminis
+          # kompiliavimas per cross (Docker), patikra per qemu-arm
+          - target: armv7-unknown-linux-musleabihf
+            os: ubuntu-latest
+            cross: true
+            qemu: qemu-arm
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -34,6 +40,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: qemu-user
+        if: matrix.qemu
+        run: sudo apt-get update && sudo apt-get install -y qemu-user
 
       - name: musl-tools
         if: matrix.musl
@@ -49,15 +65,19 @@ jobs:
           if [ "${{ matrix.musl }}" = "true" ]; then
             t="${{ matrix.target }}"; export "CC_${t//-/_}=musl-gcc"
           fi
-          cargo build --release --locked --target ${{ matrix.target }}
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target ${{ matrix.target }}
+          else
+            cargo build --release --locked --target ${{ matrix.target }}
+          fi
 
       - name: Smoke test
         shell: bash
         run: |
           bin="target/${{ matrix.target }}/release/mircbsd"
           file "$bin"
-          "$bin" --version
-          if [ "${{ matrix.musl }}" = "true" ]; then
+          ${{ matrix.qemu }} "$bin" --version
+          if [ "${{ matrix.musl }}" = "true" ] || [ "${{ matrix.cross }}" = "true" ]; then
             file "$bin" | grep -Eq "static(ally|-pie) linked" || { echo "musl binaris ne statinis"; exit 1; }
           fi
 

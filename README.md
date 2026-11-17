@@ -57,14 +57,17 @@ Paprasčiausias būdas – atsisiųsti sukompiliuotą binarį iš
 | --- | --- | --- |
 | x86_64 (Intel/AMD) | `x86_64-unknown-linux-musl` | **rekomenduojama** – statinis, bet kuris Linux (Debian 12, 13, …) |
 | ARM 64 (Raspberry Pi 4/5, ARM serveriai) | `aarch64-unknown-linux-musl` | **rekomenduojama** – statinis, bet kuris Linux (nuo v0.5.1) |
+| ARM 32 (Raspberry Pi 2/3/4 su 32 bitų OS) | `armv7-unknown-linux-musleabihf` | statinis, bet kuris Linux (nuo v0.5.1) |
 | x86_64 | `x86_64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
 | ARM 64 | `aarch64-unknown-linux-gnu` | tik su glibc ≥ 2.39 (Debian 13+) |
 
-Architektūrą parodo `uname -m` (`x86_64` arba `aarch64`).
+Architektūrą parodo `uname -m`: `x86_64`, `aarch64` (64 bitų ARM) arba
+`armv7l` (32 bitų ARM). Raspberry Pi 1 ir Zero/Zero W (`armv6l`) paruošto
+binario neturi – kompiliuokite iš šaltinio.
 
 ```sh
 VER=v0.5.1                          # naujausia versija – žr. Releases
-T=x86_64-unknown-linux-musl         # arba aarch64-unknown-linux-musl
+T=x86_64-unknown-linux-musl         # arba aarch64-unknown-linux-musl / armv7-unknown-linux-musleabihf
 URL=https://github.com/svaikaxx-ops/mircbsd/releases/download/$VER
 cd /tmp
 curl -LO $URL/mircbsd-$VER-$T.tar.gz
