@@ -284,3 +284,77 @@ fn server_window_refuses_chat() {
     c.handle_input("labas");
     assert!(server_texts(&c).iter().any(|l| l.contains("/join")));
 }
+
+#[test]
+fn help_lists_every_command() {
+    let help = super::help_lines().join("\n");
+    for cmd in [
+        "connect",
+        "server",
+        "reconnect",
+        "nick",
+        "join",
+        "part",
+        "query",
+        "msg",
+        "notice",
+        "invite",
+        "cycle",
+        "op",
+        "deop",
+        "voice",
+        "devoice",
+        "me",
+        "topic",
+        "kick",
+        "mode",
+        "whois",
+        "away",
+        "time",
+        "clear",
+        "clearlogs",
+        "names",
+        "back",
+        "ignore",
+        "unignore",
+        "ignores",
+        "list",
+        "search",
+        "set",
+        "notify",
+        "exportjson",
+        "logsearch",
+        "open",
+        "urls",
+        "raw",
+        "w",
+        "window",
+        "close",
+        "quit",
+        "keys",
+        "help",
+    ] {
+        assert!(help.contains(&format!("/{cmd}")), "/help neturi /{cmd}");
+    }
+}
+
+#[test]
+fn help_and_command_errors_show_in_the_active_window() {
+    let (c, _q) = connected();
+    open_active(&c, "#chan");
+    c.handle_input("/nesamakomanda");
+    assert!(texts(&c, "#chan")
+        .iter()
+        .any(|t| t.contains("Nežinoma komanda: /nesamakomanda")));
+    assert!(!server_texts(&c)
+        .iter()
+        .any(|t| t.contains("Nežinoma komanda")));
+    c.handle_input("/help");
+    assert!(texts(&c, "#chan")
+        .iter()
+        .any(|t| t.contains(&format!("mircBSD v{}", crate::client::VERSION))));
+    // Outside a typed command (e.g. the network thread) errors still go to
+    // *server*.
+    c.err_msg("tinklo klaida");
+    assert!(server_texts(&c).iter().any(|t| t == "tinklo klaida"));
+}
