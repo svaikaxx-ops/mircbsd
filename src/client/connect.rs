@@ -13,6 +13,7 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -318,25 +319,37 @@ pub fn cert_fingerprint(cert_der: &[u8]) -> String {
 /// Verifier used when pinning is on: chain validation is skipped (a
 /// self-signed certificate would never pass) but handshake signatures are
 /// still checked; trust comes from the pinned SPKI instead.
+///
+/// FIRST USE (no pin yet) accepts any certificate — that is TOFU — but the
+/// chain is still checked against the webpki roots and the result recorded
+/// in `ca_trusted`, so the caller can warn loudly when the first, unpinned
+/// certificate is not CA-signed either (nothing at all vouches for it).
 #[derive(Debug)]
 struct PinVerifier {
     provider: Arc<CryptoProvider>,
     expected: Option<String>,
+    ca: Option<Arc<rustls::client::WebPkiServerVerifier>>,
+    ca_trusted: Arc<AtomicBool>,
 }
 
 impl ServerCertVerifier for PinVerifier {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         if let Some(expected) = &self.expected {
             if &cert_fingerprint(end_entity.as_ref()) != expected {
                 return Err(rustls::Error::General("TLS atspaudas nesutampa".into()));
             }
+        } else if let Some(ca) = &self.ca {
+            let ok = ca
+                .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+                .is_ok();
+            self.ca_trusted.store(ok, Ordering::SeqCst);
         }
         Ok(ServerCertVerified::assertion())
     }
@@ -383,28 +396,57 @@ pub fn build_tls_config(
     cert_path: &str,
     key_path: &str,
 ) -> Result<Arc<ClientConfig>, String> {
-    build_tls_config_with_pin(pinning, cert_path, key_path, None)
+    build_tls_config_with_pin(pinning, cert_path, key_path, None).map(|(cfg, _)| cfg)
 }
 
+fn webpki_roots_store() -> RootCertStore {
+    let mut roots = RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    roots
+}
+
+/// Pin verifier; `ca` is only built for first use (no expected pin).
+fn pin_verifier(provider: Arc<CryptoProvider>, expected: Option<String>) -> PinVerifier {
+    let ca = if expected.is_none() {
+        rustls::client::WebPkiServerVerifier::builder_with_provider(
+            Arc::new(webpki_roots_store()),
+            provider.clone(),
+        )
+        .build()
+        .ok()
+    } else {
+        None
+    };
+    PinVerifier {
+        provider,
+        expected,
+        ca,
+        ca_trusted: Arc::new(AtomicBool::new(false)),
+    }
+}
+
+/// Returns the config and the "first certificate was CA-signed" flag (only
+/// meaningful with pinning and no stored pin).
 fn build_tls_config_with_pin(
     pinning: bool,
     cert_path: &str,
     key_path: &str,
     expected: Option<String>,
-) -> Result<Arc<ClientConfig>, String> {
+) -> Result<(Arc<ClientConfig>, Arc<AtomicBool>), String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = ClientConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
         .map_err(|e| e.to_string())?;
 
+    let mut ca_trusted = Arc::new(AtomicBool::new(false));
     let wants_auth = if pinning {
+        let verifier = pin_verifier(provider, expected);
+        ca_trusted = Arc::clone(&verifier.ca_trusted);
         builder
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(PinVerifier { provider, expected }))
+            .with_custom_certificate_verifier(Arc::new(verifier))
     } else {
-        let mut roots = RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        builder.with_root_certificates(roots)
+        builder.with_root_certificates(webpki_roots_store())
     };
 
     let cfg = if cert_path.is_empty() {
@@ -427,7 +469,7 @@ fn build_tls_config_with_pin(
             .with_client_auth_cert(certs, key)
             .map_err(|e| e.to_string())?
     };
-    Ok(Arc::new(cfg))
+    Ok((Arc::new(cfg), ca_trusted))
 }
 
 // ---- Transport ----
@@ -580,7 +622,10 @@ impl Client {
 
     /// TLS pin policy (`checkTLSPin`): manual `tls_pin` wins; else TOFU
     /// against the fingerprints file. `Ok` when pinning is off.
-    pub fn check_tls_pin(&self, fp: &str, host: &str) -> Result<(), String> {
+    ///
+    /// `ca_trusted`: the certificate also passed webpki chain validation
+    /// (only used for the first-use message).
+    pub fn check_tls_pin(&self, fp: &str, host: &str, ca_trusted: bool) -> Result<(), String> {
         let (pinning, manual) = {
             let st = self.mu.lock();
             (st.tls_pinning, st.tls_pin.clone())
@@ -604,10 +649,15 @@ impl Client {
         }
         let path = fingerprints_path().ok_or("TLS atspaudų katalogas nenustatytas")?;
         if check_or_store_pin(&path, host, fp)? {
+            // The FULL fingerprint, so it can be compared out of band.
             self.server_msg(&format!(
-                "TLS: serverio atspaudas pirmą kartą išsaugotas ({}…)",
-                &fp[..16.min(fp.len())]
+                "TLS: serverio atspaudas pirmą kartą išsaugotas (SHA-256 SPKI {fp})"
             ));
+            if !ca_trusted {
+                self.err_msg(&format!(
+                    "ĮSPĖJIMAS: {host} sertifikato nepatvirtina jokia CA, o atspaudas dar nebuvo žinomas — jei jo nepatikrinai kitu kanalu, ryšys gali būti perimtas (MITM)"
+                ));
+            }
         }
         Ok(())
     }
@@ -657,7 +707,7 @@ impl Client {
         } else {
             None
         };
-        let cfg = match build_tls_config_with_pin(pinning_on, &cert, &key, expected) {
+        let (cfg, ca_trusted) = match build_tls_config_with_pin(pinning_on, &cert, &key, expected) {
             Ok(c) => c,
             Err(e) => {
                 if cert.is_empty() {
@@ -707,7 +757,7 @@ impl Client {
                 .and_then(|c| c.first())
                 .map(|c| cert_fingerprint(c.as_ref()))
                 .unwrap_or_default();
-            if let Err(e) = self.check_tls_pin(&fp, srv_name) {
+            if let Err(e) = self.check_tls_pin(&fp, srv_name, ca_trusted.load(Ordering::SeqCst)) {
                 self.err_msg(&format!("TLS atspaudo patikra nepavyko: {e}"));
                 conn.send_close_notify();
                 let _ = conn.write_tls(&mut sock);

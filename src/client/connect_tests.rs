@@ -328,6 +328,34 @@ fn tls_server(
 }
 
 #[test]
+fn first_use_pin_records_that_the_certificate_is_not_ca_signed() {
+    let certs = CertificateDer::pem_slice_iter(TEST_CERT_PEM.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let name = ServerName::try_from("localhost").unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+
+    // First use (no pin): accepted (TOFU), but flagged as not CA-signed.
+    let v = pin_verifier(provider.clone(), None);
+    v.ca_trusted.store(true, Ordering::SeqCst);
+    assert!(v
+        .verify_server_cert(&certs[0], &[], &name, &[], UnixTime::now())
+        .is_ok());
+    assert!(!v.ca_trusted.load(Ordering::SeqCst));
+
+    // Known pin: compared, the CA check is not needed.
+    let v = pin_verifier(provider.clone(), Some(TEST_CERT_SPKI_SHA256.into()));
+    assert!(v.ca.is_none());
+    assert!(v
+        .verify_server_cert(&certs[0], &[], &name, &[], UnixTime::now())
+        .is_ok());
+    let v = pin_verifier(provider, Some("00".repeat(32)));
+    assert!(v
+        .verify_server_cert(&certs[0], &[], &name, &[], UnixTime::now())
+        .is_err());
+}
+
+#[test]
 fn spki_fingerprint_matches_openssl() {
     let certs = CertificateDer::pem_slice_iter(TEST_CERT_PEM.as_bytes())
         .collect::<Result<Vec<_>, _>>()
