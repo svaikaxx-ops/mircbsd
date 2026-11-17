@@ -15,7 +15,7 @@ use crate::client::session::{split_for_privmsg, term_write};
 use crate::client::types::{new_msg, Client, MsgType, State, SERVER_WINDOW};
 use crate::config::key_actions;
 use crate::sanitize::is_control_rune;
-use crate::ui::CHAN_LIST_WIDTH;
+use crate::ui::draw::chan_list_width;
 
 use super::decode_rune;
 use super::sensitive::is_sensitive_history;
@@ -762,7 +762,7 @@ impl Client {
             }
             _ if end == 'm' => {
                 // released click
-                let (top, n_chan, chan_scroll) = {
+                let (top, n_chan, chan_scroll, chan_w) = {
                     let mut st = self.mu.lock();
                     // Clamp the STORED offset first (a terminal resize may have
                     // reduced the visible rows since it last changed).
@@ -771,10 +771,12 @@ impl Client {
                         st.msg_area_top as i64,
                         st.channels.len() as i64,
                         st.chan_scroll_off as i64,
+                        // The list narrows on small terminals (responsive layout).
+                        chan_list_width(st.width) as i64,
                     )
                 };
                 let idx = y - top + chan_scroll;
-                if x <= CHAN_LIST_WIDTH as i64 && idx >= 0 && idx < n_chan {
+                if x <= chan_w && idx >= 0 && idx < n_chan {
                     self.switch_ch(idx as usize);
                 }
             }

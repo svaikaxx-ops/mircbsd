@@ -22,6 +22,7 @@ use mircbsd::client::{os_label, Client, MsgType, VERSION};
 use mircbsd::config::{config_path, default_config, load_config, Config};
 use mircbsd::input::{is_sensitive_history, is_sensitive_log_line};
 use mircbsd::sanitize::{sanitize_path, sanitize_text};
+use mircbsd::ui::theme::{no_color_from_env, set_no_color};
 use mircbsd::ui::{
     format_go_time, set_highlight_color, set_nick_colors, set_theme, set_timestamps, set_ts_color,
     strip_irc_format,
@@ -52,6 +53,7 @@ fn main() {
     set_highlight_color(&cfg.highlight_color);
     set_nick_colors(cfg.nick_colors);
     set_theme(&cfg.theme);
+    set_no_color(no_color_from_env(std::env::var_os("NO_COLOR").as_deref()));
     apply_cli(&mut cfg, &mut warns);
 
     let client = Client::new(&cfg);
@@ -138,11 +140,25 @@ fn draw_guarded(client: &Client) -> bool {
 
 fn welcome(client: &Client, cfg: &Config, warns: &[String]) {
     client.server_msg(&format!(
-        "Sveiki! mircBSD {VERSION} - IRC klientas ({})",
+        "Sveiki! mircBSD {VERSION} — IRC klientas ({})",
         os_label()
     ));
+    let mut first_run = false;
     match config_path() {
-        Some(path) => client.server_msg(&format!("Config: {}", path.display())),
+        Some(path) if path.exists() => {
+            client.server_msg(&format!("Konfigūracija: {}", path.display()))
+        }
+        Some(path) => {
+            first_run = true;
+            client.server_msg(&format!(
+                "Konfigūracijos failo nėra — numatytieji nustatymai (nick: {}).",
+                cfg.nick
+            ));
+            client.server_msg(&format!(
+                "Sukurti: nukopijuokite config.example į {}",
+                path.display()
+            ));
+        }
         None => {
             client.err_msg("Nepavyko nustatyti konfigūracijos kelio (naudotojo katalogas nerastas)")
         }
@@ -152,14 +168,29 @@ fn welcome(client: &Client, cfg: &Config, warns: &[String]) {
     }
     if !cfg.server.is_empty() {
         client.server_msg(&format!(
-            "Serveris: {}:{} (TLS:{}, reconnect:{})",
-            cfg.server, cfg.port, cfg.tls, cfg.reconnect
+            "Serveris: {}:{} (TLS: {}, automatinis jungimasis iš naujo: {})",
+            cfg.server,
+            cfg.port,
+            yes_no(cfg.tls),
+            yes_no(cfg.reconnect)
         ));
     } else {
-        client.server_msg("Naudojimas: /connect <serveris> <portas> [nick] [tls]");
-        client.server_msg("Pavyzdys:   /connect irc.libera.chat 6697 manick tls");
+        if !first_run {
+            client.server_msg("Serveris nenurodytas (config rakte server=).");
+        }
+        client.server_msg("Prisijungti: /connect <serveris> <portas> [nick] [tls]");
+        client.server_msg("  pvz.:      /connect irc.libera.chat 6697 manick tls");
+        client.server_msg("Tada:        /join #kanalas");
     }
-    client.server_msg("/help - komandų sąrašas  |  Ctrl+R - paieška");
+    client.server_msg("Pagalba: /help · paieška: Ctrl+R · išeiti: /quit");
+}
+
+fn yes_no(b: bool) -> &'static str {
+    if b {
+        "taip"
+    } else {
+        "ne"
+    }
 }
 
 /// `mircbsd [server port [nick] [tls]]`. Invalid values become warnings and

@@ -10,6 +10,7 @@
 //! (coloring flag + palette), exactly like the Go `themeMu`.
 
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::RwLock;
 
@@ -134,9 +135,40 @@ pub const MIRC_COLORS: [&str; 16] = [
     "\x1b[37m", // 15 light gray
 ];
 
-/// The mIRC colour table (`mircColors`).
+/// mIRC table for a light background: white (0), yellow (8), light cyan
+/// (11) and light grey (15) are invisible on white and map to darker tones.
+pub const MIRC_COLORS_LIGHT: [&str; 16] = [
+    "\x1b[90m", // 0  white → dark grey
+    "\x1b[30m", // 1  black
+    "\x1b[34m", // 2  blue
+    "\x1b[32m", // 3  green
+    "\x1b[91m", // 4  light red
+    "\x1b[31m", // 5  brown/dark red
+    "\x1b[35m", // 6  purple
+    "\x1b[33m", // 7  orange
+    "\x1b[33m", // 8  yellow → dark yellow
+    "\x1b[32m", // 9  light green → green
+    "\x1b[36m", // 10 teal
+    "\x1b[36m", // 11 light cyan → teal
+    "\x1b[94m", // 12 light blue
+    "\x1b[95m", // 13 pink
+    "\x1b[90m", // 14 dark gray
+    "\x1b[90m", // 15 light gray → dark grey
+];
+
+/// The mIRC colour table (`mircColors`) for the active theme. On the dark
+/// theme black (1) would be invisible, so it is shown dark grey.
 pub fn mirc_colors() -> &'static [&'static str; 16] {
-    &MIRC_COLORS
+    static DARK: [&str; 16] = {
+        let mut t = MIRC_COLORS;
+        t[1] = "\x1b[90m";
+        t
+    };
+    if theme_dark_mode() {
+        &DARK
+    } else {
+        &MIRC_COLORS_LIGHT
+    }
 }
 
 /// Nick colouring state — one lock (Go `themeMu`) so `nick_color` always
@@ -290,6 +322,98 @@ pub fn fnv1a_32(data: &[u8]) -> u32 {
     h
 }
 
+// ---- Accent colours / NO_COLOR ----
+
+/// Accent for "needs attention" UI elements (unread windows, ops in the nick
+/// list, the scroll banner). Plain yellow (33) is unreadable on many light
+/// backgrounds, so the light theme uses a dark goldenrod instead.
+pub fn accent_color() -> &'static str {
+    if theme_dark_mode() {
+        ANSI_YELLOW
+    } else {
+        "\x1b[38;5;136m"
+    }
+}
+
+/// `NO_COLOR` (<https://no-color.org>): when set, every colour SGR is
+/// removed from the frame; bold/underline/reverse stay so the layout is
+/// still readable, and coloured BACKGROUNDS (status bar, active window,
+/// highlights) become reverse video.
+static NO_COLOR: AtomicBool = AtomicBool::new(false);
+
+pub fn set_no_color(on: bool) {
+    NO_COLOR.store(on, Ordering::Relaxed);
+}
+
+pub fn no_color() -> bool {
+    NO_COLOR.load(Ordering::Relaxed)
+}
+
+/// `NO_COLOR` is honoured when present and non-empty (per no-color.org).
+pub fn no_color_from_env(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
+}
+
+/// Rewrites every SGR (`ESC [ … m`) in `s` without colours: foreground
+/// colours (30–37, 90–97, 38;5;n, 38;2;r;g;b) are dropped, background
+/// colours (40–47, 100–107, 48;…) become reverse video (7). Attributes and
+/// resets are kept; other escape sequences are copied unchanged.
+pub fn strip_colors(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("\x1b[") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 2..];
+        // Parameter bytes are digits and ';' — anything else ends the CSI.
+        let plen = after
+            .bytes()
+            .take_while(|b| b.is_ascii_digit() || *b == b';')
+            .count();
+        if after.as_bytes().get(plen) != Some(&b'm') {
+            out.push_str("\x1b[");
+            rest = after;
+            continue;
+        }
+        let params: Vec<&str> = after[..plen].split(';').collect();
+        let mut keep: Vec<&str> = Vec::new();
+        let mut k = 0;
+        while k < params.len() {
+            let p = params[k];
+            let n = p.parse::<u32>().ok();
+            match n {
+                Some(38) | Some(48) => {
+                    if n == Some(48) && !keep.contains(&"7") {
+                        keep.push("7");
+                    }
+                    // 38;5;n or 38;2;r;g;b
+                    k += match params.get(k + 1).copied() {
+                        Some("5") => 3,
+                        Some("2") => 5,
+                        _ => 1,
+                    };
+                    continue;
+                }
+                Some(30..=37) | Some(39) | Some(90..=97) | Some(49) => {}
+                Some(40..=47) | Some(100..=107) => {
+                    if !keep.contains(&"7") {
+                        keep.push("7");
+                    }
+                }
+                _ => keep.push(p),
+            }
+            k += 1;
+        }
+        if !keep.is_empty() {
+            out.push_str("\x1b[");
+            out.push_str(&keep.join(";"));
+            out.push('m');
+        }
+        rest = &after[plen + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 // ---- Cache invalidation ----
 
 /// After a theme / nick-colour change (v0.4.8): already-rendered lines carry
@@ -370,6 +494,48 @@ mod tests {
         set_nick_colors(true);
         set_theme("dark");
         assert!(theme_dark_mode());
+    }
+
+    #[test]
+    fn strip_colors_keeps_attributes_and_turns_backgrounds_into_reverse() {
+        assert_eq!(strip_colors("\x1b[31mred\x1b[0m"), "red\x1b[0m");
+        assert_eq!(strip_colors("\x1b[44m\x1b[1mbar"), "\x1b[7m\x1b[1mbar");
+        assert_eq!(strip_colors("\x1b[38;5;208mx"), "x");
+        assert_eq!(strip_colors("\x1b[1;38;2;1;2;3;4my"), "\x1b[1;4my");
+        assert_eq!(strip_colors("\x1b[41;97mhl"), "\x1b[7mhl");
+        assert_eq!(strip_colors("\x1b[48;5;12mbg"), "\x1b[7mbg");
+        // Non-SGR sequences (cursor moves, erase) pass through untouched.
+        assert_eq!(strip_colors("\x1b[3;20H\x1b[5X"), "\x1b[3;20H\x1b[5X");
+        assert_eq!(strip_colors("\x1b[?25l"), "\x1b[?25l");
+        assert_eq!(strip_colors("plain ž"), "plain ž");
+    }
+
+    #[test]
+    fn no_color_env_rules() {
+        assert!(!no_color_from_env(None));
+        assert!(!no_color_from_env(Some(std::ffi::OsStr::new(""))));
+        assert!(no_color_from_env(Some(std::ffi::OsStr::new("1"))));
+    }
+
+    #[test]
+    fn mirc_colors_stay_visible_on_both_backgrounds() {
+        let _g = TEST_LOCK.lock();
+        set_theme("dark");
+        assert_ne!(mirc_colors()[1], "\x1b[30m", "black on dark");
+        assert_eq!(mirc_colors()[0], "\x1b[97m");
+        set_theme("light");
+        assert_ne!(mirc_colors()[0], "\x1b[97m", "white on light");
+        assert_eq!(mirc_colors()[1], "\x1b[30m");
+        set_theme("dark");
+    }
+
+    #[test]
+    fn accent_follows_theme() {
+        let _g = TEST_LOCK.lock();
+        set_theme("light");
+        assert_ne!(accent_color(), ANSI_YELLOW);
+        set_theme("dark");
+        assert_eq!(accent_color(), ANSI_YELLOW);
     }
 
     #[test]

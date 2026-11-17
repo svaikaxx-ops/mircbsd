@@ -7,8 +7,8 @@ use std::io::{self, Write};
 use std::time::Instant;
 
 use crate::ui::draw::{
-    apply_history_freeze, draw_frame, msg_width, update_render_cache, ChanState, FrameParams,
-    MIN_HEIGHT, MIN_WIDTH,
+    apply_history_freeze, draw_frame, msg_width, too_small_frame, update_render_cache, ChanState,
+    FrameParams, MIN_HEIGHT, MIN_WIDTH,
 };
 
 use super::types::Client;
@@ -32,6 +32,7 @@ struct DrawSnap {
     nick_scroll_off: i32,
     chan_scroll_off: i32,
     connected: bool,
+    connecting: bool,
     my_nick: String,
     server: String,
     away: String,
@@ -44,6 +45,19 @@ impl Client {
     /// Paint one frame (`draw`). A terminal smaller than 40×8 is skipped.
     pub fn draw(&self) {
         let Some(snap) = self.snapshot_frame() else {
+            // Too small to lay out: say so instead of leaving a stale,
+            // half-overwritten frame on screen.
+            let (w, h) = {
+                let st = self.mu.lock();
+                (st.width, st.height)
+            };
+            if w < MIN_WIDTH || h < MIN_HEIGHT {
+                if let Some(msg) = too_small_frame(w, h) {
+                    let mut out = io::stdout().lock();
+                    let _ = out.write_all(msg.as_bytes());
+                    let _ = out.flush();
+                }
+            }
             return;
         };
         let params = FrameParams {
@@ -63,6 +77,7 @@ impl Client {
             nick_scroll_off: snap.nick_scroll_off,
             chan_scroll_off: snap.chan_scroll_off,
             connected: snap.connected,
+            connecting: snap.connecting,
             my_nick: &snap.my_nick,
             server: &snap.server,
             away: &snap.away,
@@ -134,6 +149,7 @@ impl Client {
             nick_scroll_off: st.nick_scroll_off,
             chan_scroll_off: st.chan_scroll_off,
             connected: st.connected,
+            connecting: st.connecting_gen != -1,
             my_nick,
             server: st.server.clone(),
             away: st.away.clone(),

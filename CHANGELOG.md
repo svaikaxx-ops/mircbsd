@@ -4,6 +4,31 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [Neišleista]
+
+### Pakeista – sąsaja
+
+- **Prisitaikantis išdėstymas** – siaurame terminale (< 60 stulpelių)
+  kanalų sąrašas siaurėja, nick sąrašas slepiamas, jei žinutėms liktų < 40
+  ląstelių; per mažame (< 40×8) – pranešimas vietoj sugadinto kadro.
+- **Statuso juosta** – aktyvaus lango vardas visada matomas (užuominos
+  trumpėja pirmos); būsenos lietuviškai: `[JUNGIAMASI…]`, `[ATSIJUNGTA]`.
+- **Kanalų / nick sąrašai** – lygiuoti numeriai ir neperskaitytų žymos,
+  „Nick (N)“ antraštė, ┴ jungtys apatinėje linijoje; neaktyvūs langai ir
+  paprasti nick'ai – numatyta terminalo spalva (pilka / balta nematoma kai
+  kuriuose fonuose).
+- **Įvesties eilutė** – plotis skaičiuojamas ląstelėmis (CJK / emoji),
+  vaizdas slenka paskui kursorių.
+- **Komandų klaidos ir `/help`** rodomi lange, kuriame rašote (ne
+  `*server*`); `/help` sugrupuotas, prisitaiko prie lango pločio.
+- **Pirmas paleidimas** be konfigūracijos – aiškūs žingsniai.
+
+### Nauja
+
+- **`NO_COLOR`** – spalvos išjungiamos, fonai rodomi inversija.
+- **Šviesi tema** – akcentų ir mIRC spalvos (balta, geltona, šviesiai
+  pilka) pritaikytos šviesiam fonui; tamsioje temoje mIRC juoda – pilka.
+
 ## [0.4.8] – 2026-11-16 – perrašymas į Rust
 
 Tas pats funkcijų rinkinys (v0.4.8), bet visas klientas dabar Rust.

@@ -12,6 +12,7 @@ use chrono::Utc;
 #[path = "commands_settings.rs"]
 mod settings;
 
+use crate::client::channels::with_cmd_feedback;
 use crate::client::session::{open_url, split_for_privmsg, term_write, MOUSE_OFF, MOUSE_ON};
 use crate::client::types::{new_msg, Client, MsgType, SERVER_WINDOW};
 use crate::config::{
@@ -19,14 +20,15 @@ use crate::config::{
 };
 use crate::sanitize::{sanitize_chan_name, sanitize_path, sanitize_text};
 use crate::ui::{
-    hl_color_name, messages_to_json_indent, nick_coloring, set_highlight_color, set_nick_colors,
-    set_theme, set_timestamps, set_ts_color, theme_dark_mode, timestamps_enabled, ts_color_name,
-    ts_format,
+    format_go_time, hl_color_name, messages_to_json_indent, msg_width, nick_coloring,
+    set_highlight_color, set_nick_colors, set_theme, set_timestamps, set_ts_color, theme_dark_mode,
+    timestamps_enabled, ts_color_name, ts_format,
 };
 use crate::validate::{
     is_valid_channel_for, is_valid_channel_key, is_valid_list_filter, is_valid_mode_spec,
     is_valid_mode_target, is_valid_nick, is_valid_server, is_valid_target, is_valid_who_target,
 };
+use crate::width::string_width;
 
 use super::first_field;
 use super::sensitive::is_sensitive_history;
@@ -113,7 +115,14 @@ fn or_default(s: &str, def: &str) -> String {
 
 impl Client {
     /// A submitted input line: `/command` or a chat message (`handleInput`).
+    ///
+    /// Errors it reports are shown in the window the user is typing in
+    /// (see [`with_cmd_feedback`]).
     pub fn handle_input(self: &Arc<Self>, text: &str) {
+        with_cmd_feedback(|| self.handle_input_inner(text));
+    }
+
+    fn handle_input_inner(self: &Arc<Self>, text: &str) {
         if let Some(rest) = text.strip_prefix('/') {
             let (cmd, args) = match rest.split_once(' ') {
                 Some((c, a)) => (c.to_lowercase(), a.to_string()),
@@ -124,11 +133,16 @@ impl Client {
         }
         let active_name = self.active_name();
         if active_name.is_empty() || active_name == SERVER_WINDOW {
-            self.server_msg("Rašyk /join #kanalas kad prisijungtum");
+            self.server_msg(
+                "Tai serverio langas — čia žinutės nesiunčiamos. Įeikite į kanalą \
+                 (/join #kanalas) arba atidarykite pokalbį (/query <nick>).",
+            );
             return;
         }
         if !self.is_connected() {
-            self.err_msg("Neprisijungta");
+            self.err_msg(
+                "Neprisijungta prie serverio — žinutė neišsiųsta (/reconnect arba /connect)",
+            );
             return;
         }
         let nick = self.my_nick();
@@ -207,11 +221,14 @@ impl Client {
             "quit" | "exit" | "q" => self.cmd_quit(args),
             "keys" => self.cmd_keys(args),
             "help" => {
-                for line in help_lines() {
-                    self.server_msg(&line);
+                for line in help_lines(self.active_text_width()) {
+                    self.active_info_msg(&line);
                 }
             }
-            _ => self.err_msg(&format!("Nežinoma komanda: /{cmd}  (naudok /help)")),
+            _ => self.err_msg(&format!(
+                "Nežinoma komanda: /{}  (komandų sąrašas: /help)",
+                sanitize_text(cmd)
+            )),
         }
     }
 
@@ -973,6 +990,22 @@ impl Client {
         self.send(&format!("WHO {target}"));
     }
 
+    /// Text cells a server line has in the active window: the message
+    /// column minus the timestamp prefix.
+    fn active_text_width(&self) -> i32 {
+        let (w, name) = {
+            let st = self.mu.lock();
+            let name = st.active_chan().map(|c| c.name.clone()).unwrap_or_default();
+            (st.width, name)
+        };
+        let ts = if timestamps_enabled() {
+            string_width(&format_go_time(&chrono::Local::now(), &ts_format())) + 1
+        } else {
+            0
+        };
+        msg_width(w, self.is_channel(&name)) - ts
+    }
+
     fn cmd_window(&self, args: &str) {
         if args.is_empty() {
             let (rows, active) = {
@@ -1149,70 +1182,135 @@ fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     crate::persist::atomic_write(path, data)
 }
 
-fn help_lines() -> Vec<String> {
+/// `/help` text: grouped by topic; two aligned columns when `avail` text
+/// cells fit them, else one stacked column. Keep in sync with
+/// [`Client::handle_cmd`] and README.md (tests check that every dispatched
+/// command is listed).
+fn help_lines(avail: i32) -> Vec<String> {
+    const SECTIONS: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Ryšys",
+            &[
+                (
+                    "/connect <srv> <port> [nick] [tls]",
+                    "prisijungti (dar: /server)",
+                ),
+                ("/reconnect", "jungtis iš naujo"),
+                ("/nick <vardas>", "keisti slapyvardį"),
+                ("/away [priežastis]  /back", "pasitraukęs / grįžau"),
+                ("/quit [žinutė]", "išeiti (dar: /exit, /q)"),
+            ],
+        ),
+        (
+            "Kanalai ir langai",
+            &[
+                ("/join #kanalas [raktas]", "įeiti į kanalą (/j)"),
+                ("/part [priežastis]", "išeiti iš kanalo (/leave)"),
+                ("/cycle [priežastis]", "išeiti ir vėl įeiti"),
+                ("/close [langas]", "uždaryti langą (+ PART; /wc)"),
+                ("/window [n]", "langų sąrašas / perjungti (/win)"),
+                ("/topic [tema]", "rodyti / keisti temą"),
+                ("/names", "atnaujinti nick sąrašą"),
+                ("/list [filtras]", "serverio kanalų sąrašas"),
+                ("/invite <nick> [#kanalas]", "pakviesti į kanalą"),
+            ],
+        ),
+        (
+            "Žinutės",
+            &[
+                ("/msg <nick|#kanalas> <tekstas>", "žinutė (/m)"),
+                ("/query <nick>", "atidaryti privatų langą"),
+                ("/me <veiksmas>", "veiksmas (* nick ...)"),
+                ("/notice <nick> <tekstas>", "NOTICE žinutė"),
+                ("/clear", "išvalyti lango istoriją ekrane"),
+            ],
+        ),
+        (
+            "Vartotojai ir moderavimas",
+            &[
+                ("/whois <nick>", "informacija apie vartotoją (/wi)"),
+                ("/w [nick|#kanalas]", "WHO užklausa"),
+                (
+                    "/ignore <nick|maskė>",
+                    "ignoruoti (nick!user@host, *!*@host)",
+                ),
+                ("/unignore <nick|maskė>  /ignores", "atšaukti / sąrašas"),
+                (
+                    "/notify add|del|list [nick]",
+                    "stebėti prisijungimą (MONITOR)",
+                ),
+                ("/kick <nick> [priežastis]", "išmesti iš kanalo (/k)"),
+                (
+                    "/op /deop /voice /devoice <nick>",
+                    "suteikti / atimti teises",
+                ),
+                ("/mode [taikinys] <+/-režimai> [arg]", "nustatyti režimus"),
+            ],
+        ),
+        (
+            "Paieška, URL ir žurnalai",
+            &[
+                ("/search [žodis]", "paieška lange (Ctrl+R); n / p — kitas"),
+                ("/search all <žodis>", "paieška visuose languose"),
+                ("/logsearch [kanalas] <žodis>", "paieška žurnalų failuose"),
+                ("/urls  /open [n]", "URL istorija / atidaryti naršyklėje"),
+                ("/exportjson [kanalas]", "eksportuoti langą į JSON"),
+                ("/clearlogs [kanalas]", "ištrinti šio serverio žurnalus"),
+            ],
+        ),
+        (
+            "Nustatymai ir kita",
+            &[
+                ("/set [raktas] [reikšmė]", "nustatymai (įrašomi į config)"),
+                ("/keys [debug]", "klavišų perrašymai (keys failas)"),
+                ("/time", "serverio laikas"),
+                ("/raw <IRC eilutė>", "siųsti tiesiai serveriui"),
+                ("/help", "šis sąrašas"),
+            ],
+        ),
+        (
+            "Klavišai",
+            &[
+                ("PgUp / PgDn, pelės ratukas", "slinkti istoriją"),
+                ("Shift+PgDn", "grįžti į apačią"),
+                ("↑ / ↓", "komandų istorija (tuščia eilutė: slinkti)"),
+                ("Ctrl+N / Ctrl+P", "kitas / ankstesnis langas"),
+                ("Alt+1…9, F1…F12", "langas pagal numerį"),
+                ("Tab", "užbaigti nick, komandą, kanalą"),
+                ("Ctrl+R", "paieška"),
+                ("Ctrl+←/→, Ctrl+W", "per žodį / ištrinti žodį"),
+                ("Ctrl+A / Ctrl+E, Home / End", "eilutės pradžia / pabaiga"),
+                ("Ctrl+U / Ctrl+K", "ištrinti eilutę / iki galo"),
+                ("Ctrl+↑ / Ctrl+↓", "slinkti nick sąrašą"),
+                ("Ctrl+L", "perpiešti ekraną"),
+            ],
+        ),
+    ];
+    let chars = |s: &str| s.chars().count();
+    let all = SECTIONS.iter().flat_map(|(_, rows)| rows.iter());
+    let col = all.clone().map(|(c, _)| chars(c)).max().unwrap_or(0) + 2;
+    let widest = 2 + col + all.map(|(_, w)| chars(w)).max().unwrap_or(0);
+    // Two aligned columns when they fit the window; otherwise the
+    // description goes on its own indented line (wrapping a two-column row
+    // would put the description under the command).
+    let aligned = widest <= avail.max(0) as usize;
     let mut lines = vec![format!(
-        "══ mircBSD v{} komandos ════════════════════════",
+        "══ mircBSD v{} — pagalba ══",
         crate::client::VERSION
     )];
-    lines.extend(
-        [
-            "/connect <srv> <port> [nick] [tls]  prisijungti",
-            "/reconnect                           jungti iš naujo",
-            "/join #kanalas [slaptažodis]         įeiti į kanalą",
-            "/part [priežastis]                   išeiti",
-            "/cycle [priežastis]                  išeiti ir vėl įeiti",
-            "/close [kanalas]                    uždaryti langą (+ PART)",
-            "/msg <nick> <žinutė>                 privati žinutė",
-            "/query <nick>                        atidaryti privatų langą",
-            "/notice <nick> <žinutė>              notice žinutė",
-            "/invite <nick> [#kanalas]            pakviesti į kanalą",
-            "/me <veiksmas>                       veiksmas",
-            "/nick <vardas>                       keisti nick",
-            "/topic [tema]                        rodyti/keisti temą",
-            "/kick <nick> [priežastis]            išmesti iš kanalo",
-            "/op <nick>                           suteikti op",
-            "/deop <nick>                         atimti op",
-            "/voice <nick>                        suteikti voice",
-            "/devoice <nick>                      atimti voice",
-            "/mode [target] <+/-mode> [param]     nustatyti mode",
-            "/away [priežastis]                   away / grįžti",
-            "/back                                grįžti iš away",
-            "/ignore <nick>                       ignoruoti",
-            "/unignore <nick>                     atšaukti",
-            "/ignores                             ignoruojamų sąrašas",
-            "/list [filtras]                      kanalų sąrašas",
-            "/names                               atnaujinti nick sąrašą",
-            "/search [žodis]                      paieška (Ctrl+R)",
-            "/search all <žodis>                  paieška visose langoje",
-            "/logsearch [kanalas] <žodis>         paieška žurnaluose (failuose)",
-            "/set <raktas> [reikšmė]              nustatymas (+ į config)",
-            "/exportjson [kanalas]                eksportas JSON",
-            "/notify add|del|list <nick>          MONITOR žiūrimi nick'ai",
-            "/keys                                klavišų perrašymas (keys failas)",
-            "/time                                serverio laikas",
-            "/whois <nick>                        informacija",
-            "/raw <IRC komanda>                   tiesioginė",
-            "/urls                                URL istorija",
-            "/open [n]                            atidaryti URL naršyklėje",
-            "/clear                               išvalyti kanalo istoriją",
-            "/clearlogs [kanalas]                 ištrinti log failus (numatytai: visi šiame serveryje)",
-            "/w [mask]                            WHO (serverio vartotojai)",
-            "/window [n]                          langų sąrašas / perjungti",
-            "/quit                                išeiti",
-            "───────────────────────────────────────────────────",
-            "PgUp/PgDn       scroll      ↑↓   scroll / istorija",
-            "Shift+PgDn      grįžti apačion (šuolis iš istorijos)",
-            "Ctrl+N/P        kanalai     Ctrl+R   paieška",
-            "Ctrl+L          ekrano atnaujinimas  Ctrl+W  ištrinti žodį",
-            "Ctrl+←/→        žodžio navigacija",
-            "F1-F12 / Alt+1-9  kanalas pagal numerį",
-            "Tab             autocomplete   Ctrl+↑↓  nick scroll",
-            "───────────────────────────────────────────────────",
-            "/ignore dabar palaiko maskes: nick!user@host, *!user@*, *",
-        ]
-        .into_iter()
-        .map(str::to_string),
-    );
+    for (title, rows) in SECTIONS {
+        lines.push(format!("── {title} ──"));
+        for (cmd, what) in rows.iter() {
+            if aligned {
+                let pad = col - chars(cmd);
+                lines.push(format!("  {cmd}{}{what}", " ".repeat(pad)));
+            } else {
+                lines.push(format!("  {cmd}"));
+                lines.push(format!("      {what}"));
+            }
+        }
+    }
+    lines.push("Daugiau: README.md · nustatymų sąrašas: /set · langų sąrašas: /window".to_string());
     lines
 }
 

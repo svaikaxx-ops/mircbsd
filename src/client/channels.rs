@@ -18,6 +18,26 @@ use crate::ui::strip_irc_format;
 use super::types::{new_msg, Channel, Client, LogEntry, Message, MsgType, State, SERVER_WINDOW};
 use super::{MAX_CHANNELS, MAX_PRIVATE_CHANNELS};
 
+thread_local! {
+    /// Set while a line typed by the user is being handled (see
+    /// [`with_cmd_feedback`]). Thread-local: network threads and threads a
+    /// command spawns (e.g. `/connect`) keep reporting to `*server*`.
+    static CMD_FEEDBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` with command feedback on: [`Client::err_msg`] calls made by it
+/// on this thread go to the active window instead of `*server*`.
+pub fn with_cmd_feedback<R>(f: impl FnOnce() -> R) -> R {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CMD_FEEDBACK.with(|c| c.set(self.0));
+        }
+    }
+    let _reset = Reset(CMD_FEEDBACK.with(|c| c.replace(true)));
+    f()
+}
+
 impl State {
     /// Index of the channel named `name` (compared with the sanitized name,
     /// case-insensitively) — `findCh`.
@@ -317,9 +337,46 @@ impl Client {
         );
     }
 
-    /// Error line in the `*server*` window.
+    /// Error line in the `*server*` window — or, while a command typed by
+    /// the user is running ([`with_cmd_feedback`]), in the window the user is
+    /// looking at: otherwise a typo in a channel ("Nežinoma komanda") only
+    /// bumps the `*server*` unread counter and seems to do nothing.
     pub fn err_msg(&self, text: &str) {
-        self.add_msg(SERVER_WINDOW, new_msg(Utc::now(), "", text, MsgType::Error));
+        let m = new_msg(Utc::now(), "", text, MsgType::Error);
+        if CMD_FEEDBACK.with(|f| f.get()) {
+            if let Some(m) = self.show_in_active(m) {
+                self.add_msg(SERVER_WINDOW, m);
+            }
+            return;
+        }
+        self.add_msg(SERVER_WINDOW, m);
+    }
+
+    /// Informational line for the user in the ACTIVE window (`/help`); in
+    /// the `*server*` window it is an ordinary server line.
+    pub fn active_info_msg(&self, text: &str) {
+        let m = new_msg(Utc::now(), "", text, MsgType::Server);
+        if let Some(m) = self.show_in_active(m) {
+            self.add_msg(SERVER_WINDOW, m);
+        }
+    }
+
+    /// Show a local (client-generated) line in the active window WITHOUT
+    /// logging it — channel logs keep only the conversation. Returns the
+    /// message back when the active window is `*server*` (or missing), so
+    /// the caller can deliver it the normal way.
+    fn show_in_active(&self, m: Message) -> Option<Message> {
+        let mut st = self.mu.lock();
+        let Some(ch) = st.active_chan_mut() else {
+            return Some(m);
+        };
+        if ch.name == SERVER_WINDOW {
+            return Some(m);
+        }
+        ch.add_msg(m);
+        drop(st);
+        self.queue_redraw();
+        None
     }
 
     /// WHO reply: shown in the channel where it was requested (else `*server*`).

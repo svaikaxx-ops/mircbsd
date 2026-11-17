@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::client::types::{Client, State};
 use crate::sanitize::{sanitize_path, sanitize_text};
-use crate::ui::{strip_irc_format, CHAN_LIST_WIDTH, NICK_LIST_WIDTH};
+use crate::ui::{msg_width, strip_irc_format};
 
 /// Most hits `/search all` prints into `*server*`.
 const MAX_SEARCH_ALL: usize = 50;
@@ -320,13 +320,9 @@ fn log_files(dir: &Path, chan_filter: &str) -> Result<Vec<PathBuf>, ()> {
 /// Caller holds `Client::mu`.
 fn scroll_to_message(c: &Client, st: &mut State, ch_idx: usize, i: usize) {
     let name = st.channels[ch_idx].name.clone();
-    let mut msg_w = st.width - CHAN_LIST_WIDTH - 2;
-    if c.is_channel(&name) {
-        msg_w -= NICK_LIST_WIDTH + 1;
-    }
-    if msg_w < 10 {
-        msg_w = 10;
-    }
+    // Same geometry as the frame (responsive layout: the nick list may be
+    // hidden on a narrow terminal).
+    let msg_w = msg_width(st.width, c.is_channel(&name));
     let my_nick = st.nick.clone();
     let ch = &st.channels[ch_idx];
     let found_count = ch.messages[i].render_lines(msg_w, &my_nick).len() as i32;
