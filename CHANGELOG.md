@@ -24,6 +24,11 @@ pagal [SemVer](https://semver.org/).
   `install.sh` (tik bazinės sistemos įrankiai, vietinis release veidrodis;
   tikroji release tikrinama nuo pirmos versijos su FreeBSD binariu).
 
+### Žinoma
+
+- `cargo audit` ignoruoja RUSTSEC-2026-0543 („chrono is unmaintained“) —
+  tai ne pažeidžiamumas, pataisytos versijos nėra; žr. `.cargo/audit.toml`.
+
 ## [0.5.2] – 2026-11-17 – install.sh, ARMv6 (Pi Zero) binaris
 
 ### Nauja
