@@ -46,6 +46,7 @@ jobs:
           sudo apt-get install -y dash shellcheck
           shellcheck -s sh scripts/install.sh
           export HOME="$(mktemp -d)"
+          unset XDG_CONFIG_HOME   # runneris jį nustato į /home/runner/.config
           dash scripts/install.sh --version v0.5.0
           dash scripts/install.sh | tee out.txt
           grep -q "atnaujinta: v0.5.0" out.txt
