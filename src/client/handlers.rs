@@ -20,6 +20,7 @@ use crate::width::{fit_width, pad_right};
 
 use crate::ui::strip_irc_format;
 
+use super::chan_keys::HIDDEN_KEY;
 use super::types::{new_msg, new_msg_hl, Client, MsgType, State, SERVER_WINDOW};
 use super::{
     os_label, CTCP_REPLY_WINDOW, MAX_AWAY_NOTIFIED, MAX_CTCP_BYTES, MAX_CTCP_REPLIES, VERSION,
@@ -296,6 +297,7 @@ impl Client {
                 );
                 self.queue_redraw();
             }
+            "324" => self.on_channel_mode_is(params, now),
             "353" => {
                 // NAMES reply must never create windows (flood protection).
                 let (ch, users) = (p(2), p(3));
@@ -529,25 +531,29 @@ impl Client {
         if params.len() > 1 {
             self.server_msg(&params[1..].join(" "));
         }
-        let (pass, auto_join, perform, monitor, rejoin) = {
+        let chantypes = self.isup_snapshot().0;
+        let (pass, joins, join_warnings, perform, monitor) = {
             let mut st = self.mu.lock();
             // NickServ password and `perform` (often "IDENTIFY …") belong to
             // the configured server only.
             let creds = st.creds_allowed();
+            // Po pakartotinio prisijungimo grįžtame į kanalus, kuriuose buvome
+            // (ir į /join be ryšio atidarytus) — su įsimintais raktais.
+            let (joins, warnings) = st.take_pending_joins(&chantypes);
             (
                 if creds {
                     st.nickserv_pass.clone()
                 } else {
                     String::new()
                 },
-                st.auto_join.clone(),
+                joins,
+                warnings,
                 if creds {
                     st.perform.clone()
                 } else {
                     Vec::new()
                 },
                 st.monitor_list.clone(),
-                std::mem::take(&mut st.rejoin),
             )
         };
         // IDENTIFY only with an explicit NickServ password: sasl_pass belongs to
@@ -556,23 +562,13 @@ impl Client {
             self.send(&format!("PRIVMSG NickServ :IDENTIFY {pass}"));
             self.server_msg("NickServ: siunčiamas IDENTIFY...");
         }
-        for ch in &auto_join {
-            self.send(&format!("JOIN {ch}"));
+        for w in &join_warnings {
+            self.err_msg(w);
         }
-        // Po pakartotinio prisijungimo grįžtame į kanalus, kuriuose buvome
-        // (ir į /join be ryšio atidarytus) — anksčiau jų langai likdavo
-        // „mirę“ (be JOIN, žinutės → 442/404).
-        let mut joined: Vec<String> = Vec::new();
-        for ch in rejoin {
-            let dup = auto_join.iter().chain(joined.iter()).any(|a| {
-                a.split_whitespace()
-                    .next()
-                    .is_some_and(|a| self.nick_equal(a, &ch))
-            });
-            if !dup && self.is_channel(&ch) {
-                self.send(&format!("JOIN {ch}"));
-                joined.push(ch);
-            }
+        // Vienas JOIN keliems kanalams (raktai — pirmiesiems), ne po eilutę
+        // kanalui: 5 eilučių/s riba kitaip vėlintų perform ir MONITOR.
+        for line in crate::client::chan_keys::join_lines(&joins) {
+            self.send(&line);
         }
         for cmd in &perform {
             self.run_perform(cmd);
@@ -727,6 +723,8 @@ impl Client {
                 if let Some(i) = idx {
                     st.remove_ch(i);
                 }
+                // Išėjome iš kanalo — jo raktas nebereikalingas.
+                st.forget_chan_key(ch);
             }
             (idx.is_some(), is_me)
         };
@@ -851,43 +849,70 @@ impl Client {
             return;
         }
         let (_, signs, modes, _, chan_modes) = self.isup_snapshot();
+        let args: &[String] = params.get(2..).unwrap_or(&[]);
+        // Count EVERY mode that takes an argument, per the server's
+        // CHANMODES, or the argument index drifts and the status prefix lands
+        // on the wrong nick.
+        let groups = parse_chan_modes(&chan_modes);
+        let changes = walk_chan_modes(mode_str, args.len(), &groups, &modes);
         {
             let mut st = self.mu.lock();
             // MODE for a channel we are not in must not create a window.
             let Some(ci) = st.find_ch(target) else { return };
-            if params.len() > 2 {
-                // Count EVERY mode that takes an argument, per the server's
-                // CHANMODES, or the argument index drifts and the status
-                // prefix lands on the wrong nick.
-                let groups = parse_chan_modes(&chan_modes);
-                let mut adding = true;
-                let mut mode_idx = 2;
-                for mr in mode_str.chars() {
-                    match mr {
-                        '+' => adding = true,
-                        '-' => adding = false,
-                        _ if groups.takes_param(mr, adding, &modes) && mode_idx < params.len() => {
-                            if modes.contains(mr) {
-                                let sign = if adding { '+' } else { '-' };
-                                let spec = format!("{sign}{mr}");
-                                let nick = params[mode_idx].clone();
-                                st.channels[ci].set_mode(&nick, &spec, Some(&signs), Some(&modes));
-                            }
-                            mode_idx += 1;
-                        }
-                        _ => {}
+            for &(adding, mr, arg) in &changes {
+                if modes.contains(mr) {
+                    if let Some(i) = arg {
+                        let spec = format!("{}{mr}", if adding { '+' } else { '-' });
+                        st.channels[ci].set_mode(&args[i], &spec, Some(&signs), Some(&modes));
                     }
                 }
             }
+            let name = st.channels[ci].name.clone();
+            track_chan_key(&mut st, &name, &changes, args);
         }
         let desc = if params.len() > 1 {
-            params[1..].join(" ")
+            masked_mode_desc(mode_str, args, &changes)
         } else {
             String::new()
         };
         self.add_msg(
             target,
             new_msg(now, "", &format!("Mode {target}: {desc}"), MsgType::Server),
+        );
+        self.queue_redraw();
+    }
+
+    /// 324 RPL_CHANNELMODEIS: `<me> <kanalas> <režimai> [argumentai…]`.
+    /// Raktas (+k) įsimenamas ir rodomas paslėptas (anksčiau visa eilutė su
+    /// raktu keliaudavo į *server* langą ir žurnalą).
+    fn on_channel_mode_is(&self, params: &[String], now: DateTime<Utc>) {
+        let (Some(chan), Some(mode_str)) = (params.get(1), params.get(2)) else {
+            return;
+        };
+        let args: &[String] = params.get(3..).unwrap_or(&[]);
+        let (_, _, modes, _, chan_modes) = self.isup_snapshot();
+        let groups = parse_chan_modes(&chan_modes);
+        let changes = walk_chan_modes(mode_str, args.len(), &groups, &modes);
+        let dest = {
+            let mut st = self.mu.lock();
+            match st.find_ch(chan) {
+                Some(ci) => {
+                    let name = st.channels[ci].name.clone();
+                    track_chan_key(&mut st, &name, &changes, args);
+                    name
+                }
+                None => SERVER_WINDOW.to_string(),
+            }
+        };
+        let desc = masked_mode_desc(mode_str, args, &changes);
+        self.add_msg(
+            &dest,
+            new_msg(
+                now,
+                "",
+                &format!("Kanalo {} režimai: {desc}", sanitize_text(chan)),
+                MsgType::Server,
+            ),
         );
         self.queue_redraw();
     }
@@ -1240,6 +1265,79 @@ impl Client {
             self.send(&format!("AUTHENTICATE {chunk}"));
         }
     }
+}
+
+/// Kanalo režimų eilutė → (pridedama?, raidė, argumento indeksas `args`
+/// sąraše). Argumentą ima PREFIX režimai ir CHANMODES A/B grupės, C — tik
+/// pridedant; trūkstamas argumentas — `None` (indeksas nepasislenka).
+pub(crate) fn walk_chan_modes(
+    mode_str: &str,
+    nargs: usize,
+    groups: &crate::proto::isupport::ChanModeGroups,
+    prefix_modes: &str,
+) -> Vec<(bool, char, Option<usize>)> {
+    let mut out = Vec::new();
+    let mut adding = true;
+    let mut idx = 0;
+    for mr in mode_str.chars() {
+        match mr {
+            '+' => adding = true,
+            '-' => adding = false,
+            _ => {
+                let arg = if groups.takes_param(mr, adding, prefix_modes) && idx < nargs {
+                    idx += 1;
+                    Some(idx - 1)
+                } else {
+                    None
+                };
+                out.push((adding, mr, arg));
+            }
+        }
+    }
+    out
+}
+
+/// +k / -k → įsiminti arba pamiršti kanalo raktą. „*“ (kai kurie serveriai
+/// taip slepia raktą ne operatoriams) nieko nekeičia.
+fn track_chan_key(
+    st: &mut State,
+    chan: &str,
+    changes: &[(bool, char, Option<usize>)],
+    args: &[String],
+) {
+    for &(adding, mr, arg) in changes {
+        if mr != 'k' {
+            continue;
+        }
+        if !adding {
+            st.forget_chan_key(chan);
+        } else if let Some(key) = arg.map(|i| args[i].as_str()) {
+            if key != "*" {
+                st.set_chan_key(chan, key);
+            }
+        }
+    }
+}
+
+/// Režimų eilutė rodymui (ir žurnalui): +k / -k argumentas pakeičiamas
+/// [`HIDDEN_KEY`] — raktas nerodomas ir nerašomas į žurnalą / eksportą.
+fn masked_mode_desc(
+    mode_str: &str,
+    args: &[String],
+    changes: &[(bool, char, Option<usize>)],
+) -> String {
+    let mut shown: Vec<&str> = args.iter().map(String::as_str).collect();
+    for &(_, mr, arg) in changes {
+        if let (true, Some(i)) = (mr == 'k', arg) {
+            shown[i] = HIDDEN_KEY;
+        }
+    }
+    let mut desc = mode_str.to_string();
+    for a in shown {
+        desc.push(' ');
+        desc.push_str(a);
+    }
+    desc
 }
 
 /// `nick!user@host` → sanitized nick (MONITOR numerics).

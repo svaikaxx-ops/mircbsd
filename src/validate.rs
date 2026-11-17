@@ -319,6 +319,11 @@ pub fn is_valid_channel_key(key: &str) -> bool {
     if key.len() > 64 {
         return false;
     }
+    // Kablelis — JOIN sąrašų skirtukas (raktai kitiems kanalams), „:“ pradžioje
+    // paverstų raktą paskutiniu (trailing) parametru.
+    if key.contains(',') || key.starts_with(':') {
+        return false;
+    }
     for r in key.chars() {
         if matches!(r, ' ' | '\t' | '\r' | '\n' | '\x0b' | '\x0c') {
             return false;

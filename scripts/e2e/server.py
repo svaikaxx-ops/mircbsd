@@ -101,11 +101,14 @@ class FakeServer:
             self.maybe_register()
             return
         if cmd == 'JOIN' and len(parts) > 1 and parts[1].startswith('#'):
-            ch = parts[1]
+            # Klientas jungia kelis kanalus viena eilute: JOIN #a,#b [raktai].
             n = self.mynick.decode('utf-8', 'replace')
-            self.send_line(':' + n + '!e2e@fake JOIN :' + ch)
-            self.send_line(':fakas 353 ' + n + ' = ' + ch + ' :' + n + ' +botas @viesas')
-            self.send_line(':fakas 366 ' + n + ' ' + ch + ' :End of NAMES list')
+            for ch in parts[1].split(','):
+                if not ch.startswith('#'):
+                    continue
+                self.send_line(':' + n + '!e2e@fake JOIN :' + ch)
+                self.send_line(':fakas 353 ' + n + ' = ' + ch + ' :' + n + ' +botas @viesas')
+                self.send_line(':fakas 366 ' + n + ' ' + ch + ' :End of NAMES list')
             return
         if cmd == 'PRIVMSG':
             return
