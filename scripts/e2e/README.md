@@ -64,5 +64,5 @@ neliečiamas (HOME ir XDG_CONFIG_HOME nukreipti į testavimo home).
   /set theme|nick_colors neinvalidavo renderio cache'o (senos žinutės
   nešiojo senos paletės SGR — commit 166f296).
 
-Paleidimo kodas: 0 (visi pralaužę) / 1 (kazkur NEPRALAUŽĘ — spauds išsamų
+Paleidimo kodas: 0 (visos praėjo) / 1 (bent viena NEPRAĖJO — spausdina išsamų
 note + `theme_raw.bin` dump). Žaliava palaikant: `/tmp/mircbsd-e2e/drive.log`.

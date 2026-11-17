@@ -528,7 +528,7 @@ def main():
 
     # ---------- Rezultatai ----------
     good = sum(1 for ok, _n, _ in results if ok)
-    print('\n==== E2E: %d/%d patikrų pralaužę ====' % (good, len(results)))
+    print('\n==== E2E: %d/%d patikrų praėjo ====' % (good, len(results)))
     for ok, name, note in results:
         if not ok:
             print('  NEPRALAUŽĘ: %s — %s' % (name, note[:200]))
