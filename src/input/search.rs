@@ -70,6 +70,10 @@ impl Client {
             let mut hit = None;
             for i in (0..=start_from).rev() {
                 let m = &msgs[i];
+                // Paslėptos (show_joins) eilutės ekrane nėra — į jas nešokama.
+                if m.is_hidden() {
+                    continue;
+                }
                 let hay = format!("{} {}", strip_irc_format(&m.text), m.nick).to_lowercase();
                 if hay.contains(&query_low) {
                     hit = Some(i);
@@ -109,6 +113,9 @@ impl Client {
             let msgs = &st.channels[idx].messages;
             let mut hit = None;
             for (i, m) in msgs.iter().enumerate().skip(start) {
+                if m.is_hidden() {
+                    continue;
+                }
                 let hay = format!("{} {}", strip_irc_format(&m.text), m.nick).to_lowercase();
                 if hay.contains(&q) {
                     hit = Some(i);
@@ -327,12 +334,13 @@ fn scroll_to_message(c: &Client, st: &mut State, ch_idx: usize, i: usize) {
     let ch = &st.channels[ch_idx];
     let found_count = ch.messages[i].render_lines(msg_w, &my_nick).len() as i32;
     let mut first_line = 0i32;
-    for m in &ch.messages[..i] {
+    for m in ch.messages[..i].iter().filter(|m| !m.is_hidden()) {
         first_line += m.render_lines(msg_w, &my_nick).len() as i32;
     }
     let mut total = first_line + found_count;
     let mut prev_ts = ch.messages[i].ts;
-    for m in &ch.messages[i + 1..] {
+    // Paslėptos (show_joins) eilutės nepiešiamos — jų neskaičiuojam.
+    for m in ch.messages[i + 1..].iter().filter(|m| !m.is_hidden()) {
         total += m.render_lines(msg_w, &my_nick).len() as i32;
         // Paros skirtiklis piešiamas kaip atskira eilutė (update_render_cache)
         // — be jo rastoji žinutė atsidurdavo tiek eilučių per žemai/už ekrano.

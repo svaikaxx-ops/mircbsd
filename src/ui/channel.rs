@@ -1,10 +1,12 @@
 //! `Channel` and nick-list management ported from `ui.go`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::validate::{nick_equal, norm_nick};
+use crate::timeutil::Ts;
 
-use super::message::Message;
+use crate::validate::{fold_name, nick_equal, norm_nick};
+
+use super::message::{Message, MsgType};
 
 /// Default ring size of a channel's message buffer (`defaultMaxMessages`).
 pub const DEFAULT_MAX_MESSAGES: usize = 5000;
@@ -27,6 +29,10 @@ pub const MAX_NICKS_PER_CHANNEL: usize = 5000;
 pub fn msg_cost(m: &Message) -> usize {
     std::mem::size_of::<Message>() + m.nick.len() + m.text.len()
 }
+
+/// `show_joins=smart`: join/part/quit/nick rodomi tik nick'ams, kalbėjusiems
+/// kanale per pastarąsias tiek sekundžių.
+pub const SMART_FILTER_SECS: i64 = 10 * 60;
 
 #[derive(Debug, Clone)]
 pub struct Channel {
@@ -89,6 +95,10 @@ pub struct Channel {
     pub rendered_nick: String,
     pub rendered: Vec<String>,
     pub rendered_msg_count: usize,
+
+    /// Kada nick'as (normalizuotas) paskutinį kartą kalbėjo šiame kanale —
+    /// `show_joins=smart` sprendimui. Ribotas (žr. `note_speaker`).
+    pub last_spoke: HashMap<String, Ts>,
 }
 
 impl Channel {
@@ -122,11 +132,61 @@ impl Channel {
             rendered_nick: String::new(),
             rendered: Vec::new(),
             rendered_msg_count: 0,
+            last_spoke: HashMap::new(),
+        }
+    }
+
+    fn speaker_key(&self, nick: &str) -> String {
+        fold_name(nick, &self.casemapping)
+    }
+
+    /// Įsimena kalbėtoją; žemėlapis ribojamas (priešiškas serveris gali
+    /// siųsti tūkstančius skirtingų nick'ų): pirmiausia išmetami seni
+    /// įrašai, o jei to neužtenka — viskas.
+    fn note_speaker(&mut self, nick: &str, ts: Ts) {
+        let key = self.speaker_key(nick);
+        self.last_spoke.insert(key, ts);
+        if self.last_spoke.len() > MAX_NICKS_PER_CHANNEL {
+            self.last_spoke
+                .retain(|_, t| ts.duration_since(*t).as_secs() <= SMART_FILTER_SECS);
+            if self.last_spoke.len() > MAX_NICKS_PER_CHANNEL {
+                self.last_spoke.clear();
+            }
+        }
+    }
+
+    /// Ar nick'as kalbėjo per pastarąsias [`SMART_FILTER_SECS`] iki `ts`.
+    pub fn spoke_recently(&self, nick: &str, ts: Ts) -> bool {
+        self.last_spoke
+            .get(&self.speaker_key(nick))
+            .is_some_and(|t| ts.duration_since(*t).as_secs() <= SMART_FILTER_SECS)
+    }
+
+    /// `show_joins=smart` būsena: kalbėtojų laikai ir `smart_hidden` žyma
+    /// foniniams įvykiams. Nick keitimas perkelia kalbėtojo laiką naujam
+    /// nick'ui (kitaip jo tolesnis part/quit būtų paslėptas).
+    fn track_smart(&mut self, m: &mut Message) {
+        if m.nick.is_empty() {
+            return;
+        }
+        match m.msg_type {
+            MsgType::Chat | MsgType::Action => self.note_speaker(&m.nick, m.ts),
+            _ if m.is_filterable() => {
+                m.smart_hidden = !self.spoke_recently(&m.nick, m.ts);
+                if m.msg_type == MsgType::Nick && !m.smart_hidden {
+                    if let Some(t) = self.last_spoke.remove(&self.speaker_key(&m.nick)) {
+                        let key = self.speaker_key(&m.text);
+                        self.last_spoke.insert(key, t);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
     /// Appends a message and trims the buffer (`addMsg`).
-    pub fn add_msg(&mut self, m: Message) {
+    pub fn add_msg(&mut self, mut m: Message) {
+        self.track_smart(&mut m);
         self.msg_bytes += msg_cost(&m);
         self.messages.push(m);
         self.render_gen += 1;

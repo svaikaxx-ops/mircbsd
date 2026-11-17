@@ -207,6 +207,43 @@ fn render_lines_min_body_width_and_join() {
 }
 
 #[test]
+fn quiet_events_are_dim_on_every_line() {
+    let _g = super::super::theme::TEST_LOCK.lock();
+    super::super::theme::set_timestamps(false, "");
+    let ts = crate::timeutil::utc(2026, 10, 21, 12, 0, 0);
+    for theme in ["dark", "light"] {
+        super::super::theme::set_theme(theme);
+        let dim = super::super::theme::event_color();
+        // Kito part su URL ir ilga priežastimi: blanku visose eilutėse ir
+        // po URL paryškinimo reset'o.
+        let m = Message::new(
+            ts,
+            "bob",
+            "žr. https://example.org/x ir dar labai ilga priežastis",
+            MsgType::Part,
+            false,
+        )
+        .quiet();
+        let lines = m.render_lines(30, "me");
+        assert!(lines.len() > 1);
+        assert!(lines[0].starts_with(dim), "{theme}: {:?}", lines[0]);
+        assert!(!lines[0].contains(ANSI_GREEN));
+        for l in &lines[1..] {
+            assert!(l.contains(dim), "{theme} tęsinys: {l:?}");
+        }
+        assert!(lines.concat().contains(&format!("{ANSI_RESET}{dim} ir")));
+        // Kito išmetimas (Server tipo) — irgi blankus, ne žydras.
+        let k = Message::new(ts, "op", "išmetė x (y)", MsgType::Server, false).quiet();
+        assert!(k.render_lines(60, "me")[0].starts_with(dim));
+    }
+    super::super::theme::set_theme("dark");
+    // Savas join (ne quiet) lieka žalias.
+    let own = Message::new(ts, "me", "", MsgType::Join, false);
+    assert!(own.render_lines(60, "me")[0].starts_with(ANSI_GREEN));
+    super::super::theme::set_timestamps(true, "15:04");
+}
+
+#[test]
 fn wrap_text_never_exceeds_width_mixed_scripts() {
     // Deterministinis „atsitiktinis“ tekstas: tarpai, lietuviškos raidės,
     // platūs CJK, emoji, jungiamieji ženklai.

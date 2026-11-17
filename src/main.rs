@@ -23,8 +23,8 @@ use mircbsd::input::{is_sensitive_history, is_sensitive_log_line};
 use mircbsd::sanitize::{sanitize_path, sanitize_text};
 use mircbsd::ui::theme::{no_color_from_env, set_no_color};
 use mircbsd::ui::{
-    format_go_time, set_highlight_color, set_nick_colors, set_theme, set_timestamps, set_ts_color,
-    strip_irc_format,
+    format_go_time, set_highlight_color, set_nick_colors, set_show_joins, set_theme,
+    set_timestamps, set_ts_color, strip_irc_format,
 };
 use mircbsd::validate::{is_valid_nick, is_valid_port, is_valid_server};
 
@@ -116,6 +116,7 @@ fn main() {
     set_highlight_color(&cfg.highlight_color);
     set_nick_colors(cfg.nick_colors);
     set_theme(&cfg.theme);
+    set_show_joins(&cfg.show_joins);
     set_no_color(no_color_from_env(std::env::var_os("NO_COLOR").as_deref()));
     apply_cli(&mut cfg, &mut warns);
 

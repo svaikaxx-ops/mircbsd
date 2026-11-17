@@ -42,6 +42,8 @@ pub struct Config {
     pub tls_pinning: bool,
     pub tls_pin: String,
     pub theme: String,
+    /// Kitų join/part/quit/nick eilutės: `all`, `smart` arba `none`.
+    pub show_joins: String,
 }
 
 /// `$HOME` (netuščias). Testuose — izoliuotas laikinas katalogas, kad
@@ -98,6 +100,7 @@ pub fn default_config() -> Config {
         timestamps: true,
         ts_format: "15:04".into(),
         nick_colors: true,
+        show_joins: "all".into(),
         ..Config::default()
     }
 }
@@ -288,6 +291,13 @@ pub fn load_config(path: &Path) -> (Config, Vec<String>) {
             }
             "tls_pin" => cfg.tls_pin = v.trim().to_ascii_lowercase(),
             "theme" => cfg.theme = v.to_ascii_lowercase(),
+            "show_joins" => match crate::ui::JoinFilter::parse(v) {
+                Some(f) => cfg.show_joins = f.as_str().to_string(),
+                None => warnings.push(format!(
+                    "Neteisinga show_joins reikšmė: {v} (laukta all/smart/none; paliekama {})",
+                    cfg.show_joins
+                )),
+            },
             _ => {}
         }
     }
@@ -518,6 +528,7 @@ pub const SETTABLE_KEYS: &[&str] = &[
     "maxmessages",
     "maxmemory",
     "theme",
+    "show_joins",
 ];
 
 pub fn is_settable(key: &str) -> bool {

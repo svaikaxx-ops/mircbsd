@@ -246,3 +246,80 @@ fn trim_oldest_bytes_keeps_newest_and_drops_cache() {
     assert_eq!(c.messages[0].text, "9");
     assert_eq!(c.trim_oldest_bytes(usize::MAX), 0);
 }
+
+// ---- show_joins=smart ----
+
+fn at(min: i64) -> crate::timeutil::Ts {
+    crate::timeutil::utc(2026, 11, 17, 12, 0, 0) + crate::timeutil::minutes(min)
+}
+
+fn ev(min: i64, nick: &str, text: &str, t: MsgType) -> Message {
+    Message::new(at(min), nick, text, t, false).quiet()
+}
+
+fn last_smart(c: &Channel) -> bool {
+    c.messages.last().unwrap().smart_hidden
+}
+
+#[test]
+fn smart_filter_hides_events_of_silent_nicks_only() {
+    let mut c = ch();
+    // Nekalbėjęs nick'as: join ir part slepiami.
+    c.add_msg(ev(0, "tylus", "", MsgType::Join));
+    assert!(last_smart(&c));
+    c.add_msg(ev(1, "tylus", "bye", MsgType::Part));
+    assert!(last_smart(&c));
+
+    // Kalbėjęs prieš 9 min — rodomas; prieš 11 min — vėl slepiamas.
+    c.add_msg(Message::new(at(2), "Bob", "labas", MsgType::Chat, false));
+    c.add_msg(ev(11, "bob", "", MsgType::Quit));
+    assert!(!last_smart(&c), "casemapping: Bob == bob");
+    c.add_msg(ev(13, "BOB", "", MsgType::Join));
+    assert!(last_smart(&c));
+
+    // /me taip pat skaitosi kalbėjimu.
+    c.add_msg(Message::new(at(20), "ana", "šoka", MsgType::Action, false));
+    c.add_msg(ev(21, "ana", "", MsgType::Part));
+    assert!(!last_smart(&c));
+}
+
+#[test]
+fn smart_filter_follows_nick_changes() {
+    let mut c = ch();
+    c.add_msg(Message::new(at(0), "bob", "labas", MsgType::Chat, false));
+    c.add_msg(ev(1, "bob", "bobas", MsgType::Nick));
+    assert!(!last_smart(&c));
+    // Naujas nick'as paveldi kalbėjimo laiką.
+    c.add_msg(ev(2, "bobas", "", MsgType::Quit));
+    assert!(!last_smart(&c));
+    // Nekalbėjusio nick keitimas slepiamas.
+    c.add_msg(ev(3, "tylus", "tylesnis", MsgType::Nick));
+    assert!(last_smart(&c));
+}
+
+#[test]
+fn smart_filter_ignores_non_quiet_messages() {
+    let mut c = ch();
+    // Sava join eilutė (ne quiet) niekada nežymima.
+    c.add_msg(Message::new(at(0), "me", "", MsgType::Join, false));
+    assert!(!last_smart(&c));
+    assert!(!c.messages[0].is_filterable());
+    // Kito išmetimas — quiet, bet nefiltruojamas.
+    c.add_msg(ev(1, "op", "išmetė bob", MsgType::Server));
+    assert!(!c.messages[1].is_filterable());
+}
+
+#[test]
+fn speaker_map_is_bounded() {
+    let mut c = ch();
+    for i in 0..(MAX_NICKS_PER_CHANNEL + 10) {
+        c.add_msg(Message::new(
+            at(0),
+            format!("n{i}"),
+            "x",
+            MsgType::Chat,
+            false,
+        ));
+    }
+    assert!(c.last_spoke.len() <= MAX_NICKS_PER_CHANNEL);
+}

@@ -13,9 +13,9 @@ use crate::sanitize::{is_control_rune, sanitize_text};
 use crate::width::{cluster_width, rune_clusters, string_width};
 
 use super::theme::{
-    hl_bg_code, mirc_colors, nick_color, timestamps_enabled, ts_color_code, ts_format, ANSI_BOLD,
-    ANSI_CYAN, ANSI_DARK_GRAY, ANSI_GREEN, ANSI_ITALIC, ANSI_RED, ANSI_RESET, ANSI_REVERSE,
-    ANSI_UNDER,
+    event_color, hl_bg_code, mirc_colors, nick_color, show_joins, timestamps_enabled,
+    ts_color_code, ts_format, JoinFilter, ANSI_BOLD, ANSI_CYAN, ANSI_DARK_GRAY, ANSI_GREEN,
+    ANSI_ITALIC, ANSI_RED, ANSI_RESET, ANSI_REVERSE, ANSI_UNDER,
 };
 
 // ---- mIRC colour / formatting codes ----
@@ -181,6 +181,14 @@ pub struct Message {
     pub text: String,
     pub msg_type: MsgType,
     pub highlight: bool,
+    /// „Foninis“ įvykis apie KITĄ naudotoją (join/part/quit/nick, kito
+    /// išmetimas): piešiamas blankia [`event_color`] spalva, o
+    /// join/part/quit/nick — slepiami pagal `show_joins`.
+    pub quiet: bool,
+    /// `show_joins=smart` šią eilutę slepia: nick'as kanale nekalbėjo
+    /// pastarąsias [`super::channel::SMART_FILTER_SECS`] sekundžių.
+    /// Nustato `Channel::add_msg` (žinutės pridėjimo metu).
+    pub smart_hidden: bool,
 }
 
 /// Wire shape of a message in `/exportjson` (field order = Go's).
@@ -215,6 +223,37 @@ impl Message {
             text: text.into(),
             msg_type,
             highlight,
+            quiet: false,
+            smart_hidden: false,
+        }
+    }
+
+    /// Pažymi žinutę kaip foninį įvykį (žr. [`Message::quiet`]).
+    pub fn quiet(mut self) -> Self {
+        self.quiet = true;
+        self
+    }
+
+    /// Ar `show_joins` gali šią eilutę paslėpti: kitų join/part/quit/nick.
+    /// Išmetimai (KICK) visada rodomi — jie reikšmingi moderavimui.
+    pub fn is_filterable(&self) -> bool {
+        self.quiet
+            && matches!(
+                self.msg_type,
+                MsgType::Join | MsgType::Part | MsgType::Quit | MsgType::Nick
+            )
+    }
+
+    /// Ar eilutė dabar paslėpta ekrane (`show_joins`). Žurnaluose ir
+    /// `/exportjson` ji lieka.
+    pub fn is_hidden(&self) -> bool {
+        if !self.is_filterable() {
+            return false;
+        }
+        match show_joins() {
+            JoinFilter::All => false,
+            JoinFilter::Smart => self.smart_hidden,
+            JoinFilter::None => true,
         }
     }
 
@@ -275,6 +314,8 @@ impl Message {
             }
         }
 
+        // Foninių įvykių spalva (tik `quiet` žinutėms).
+        let dim = if self.quiet { event_color() } else { "" };
         let (prefix, prefix_len): (String, i32) = match self.msg_type {
             MsgType::Chat => {
                 let nc = nick_color(&nick);
@@ -296,13 +337,17 @@ impl Message {
                 (format!("{ts}{nc}{pfx}"), ts_len + string_width(&pfx))
             }
             MsgType::Join | MsgType::Part | MsgType::Quit | MsgType::Nick => {
-                (format!("{ts}{ANSI_GREEN}"), ts_len)
+                let c = if self.quiet { dim } else { ANSI_GREEN };
+                (format!("{ts}{c}"), ts_len)
             }
             MsgType::Notice => {
                 let pfx = format!("-{}- ", nick);
                 (format!("{ts}{ANSI_CYAN}{pfx}"), ts_len + string_width(&pfx))
             }
-            MsgType::Server => (format!("{ts}{ANSI_CYAN}"), ts_len),
+            MsgType::Server => {
+                let c = if self.quiet { dim } else { ANSI_CYAN };
+                (format!("{ts}{c}"), ts_len)
+            }
             MsgType::Error => (format!("{ts}{ANSI_RED}"), ts_len),
         };
 
@@ -334,13 +379,18 @@ impl Message {
                 MsgType::Chat | MsgType::Action | MsgType::Notice => {
                     highlight_urls(&render_irc_format(&find_chunk(&text, chunk)))
                 }
+                // Blanki eilutė lieka blanki ir po URL paryškinimo (jis
+                // baigiasi reset'u).
+                _ if !dim.is_empty() => {
+                    highlight_urls(chunk).replace(ANSI_RESET, &format!("{ANSI_RESET}{dim}"))
+                }
                 _ => highlight_urls(chunk),
             };
             let suffix = if self.highlight { ANSI_RESET } else { "" };
             if i == 0 {
                 lines.push(format!("{prefix}{rendered}{suffix}{ANSI_RESET}"));
             } else {
-                lines.push(format!("{indent}{rendered}{ANSI_RESET}"));
+                lines.push(format!("{indent}{dim}{rendered}{ANSI_RESET}"));
             }
         }
         lines

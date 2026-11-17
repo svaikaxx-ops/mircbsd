@@ -4,6 +4,7 @@
 # tikrina GALUTINĄ ekrano kadrą (ne žaliavą), kur tai reikšminga.
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -525,6 +526,147 @@ def main():
                 srv.connections, ok_nick, ok_reg, ok_join, ok_msg)
 
     record('28 serverio kritimas → reconnect + 433 → nick_', chk_reconnect_433)
+
+    # ---------- 18. Tylesni join/part/quit ----------
+    def goto_testas():
+        d.keys('\x15')
+        cmds('/win 2\r')
+        driver.wait_until(lambda: '| #testas ' in d.screen.line(0), timeout=5)
+        d.keys('\x1b[6;2~')
+        time.sleep(0.3)
+
+    def chk_join_dim():
+        goto_testas()
+        d.mark_raw('join')
+        srv.send_line(':svecias!s@fake JOIN #testas')
+        if not driver.wait_until(lambda: 'svecias prisijungė' in S(), timeout=8):
+            return False, 'join eilutė neatvyko: ' + S()[-200:]
+        raw = d.raw_since('join').decode('utf-8', 'replace')
+        # Tamsi tema: kito join — blankia pilka (90), ne ryškiai žalia (32).
+        ok = '\x1b[90m--> svecias' in raw and '\x1b[32m--> svecias' not in raw
+        return ok, 'kito join pilkas' if ok else repr(raw[raw.find('svecias') - 40:][:80])
+
+    record('29 kito join — blanki temos spalva', chk_join_dim)
+
+    def antras_row():
+        for r in range(1, d.screen.rows - 1):
+            cells = ''.join(d.screen.cells(r)[:18])
+            if '#antras' in cells:
+                return cells
+        return None
+
+    def chk_show_joins_smart():
+        goto_testas()
+        cmds('/set show_joins smart\r')
+        # Esama istorija perpiešiama: tylus svecias join dingsta.
+        gone = driver.wait_until(lambda: 'svecias prisijungė' not in S(), timeout=5)
+        # botas kalbėjo — jo part rodomas; tylus naujokas — ne.
+        srv.send_line(':' + BOT + ' PART #testas :iki')
+        srv.send_line(':tylusis!t@fake JOIN #testas')
+        botmsg('#testas', ['po-filtro-zyme'])
+        shown = driver.wait_until(lambda: 'po-filtro-zyme' in S(), timeout=8)
+        t = S()
+        part_ok = 'botas išėjo (iki)' in t
+        # (Nick sąraše tylusis yra — tikrinam tik join eilutę.)
+        silent_hidden = 'tylusis prisijungė' not in t
+        # Fone esančio lango neperskaitytų skaitiklis nepasikeičia.
+        before = antras_row()
+        srv.send_line(':tylusis!t@fake JOIN #antras')
+        time.sleep(0.8)
+        after = antras_row()
+        badge_ok = before is not None and before == after
+        cfg = open(os.path.join(CFG, 'config')).read()
+        # Paslėpta eilutė vis tiek žurnale (<logdir>/<serveris>/#antras-*.log).
+        logged = False
+        for droot, _fs, names in os.walk(LOGDIR):
+            for n in names:
+                if n.startswith('#antras') and n.endswith('.log'):
+                    with open(os.path.join(droot, n)) as f:
+                        logged = logged or 'tylusis prisijungė' in f.read()
+        # Atgal į all — paslėptos eilutės vėl matomos.
+        cmds('/set show_joins all\r')
+        back = driver.wait_until(lambda: 'tylusis prisijungė' in S(), timeout=5)
+        ok = (gone and shown and part_ok and silent_hidden and badge_ok and logged
+              and back and 'show_joins=smart' in cfg)
+        return ok, 'smart: tylūs paslėpti, kalbėjęs rodomas, unread ir žurnalas OK' if ok else \
+            'dingo=%s part=%s tylus_paslėptas=%s badge=%r→%r žurnale=%s grįžo=%s cfg=%s' % (
+                gone, part_ok, silent_hidden, before, after, logged, back,
+                'show_joins=smart' in cfg)
+
+    record('30 show_joins smart — filtras, unread, žurnalas', chk_show_joins_smart)
+
+    # ---------- 19. Lag statuso juostoje ----------
+    def lag_value():
+        m = re.search(r'\| lag (\d+(?:\.\d+)?)s ', d.screen.line(0))
+        return float(m.group(1)) if m else None
+
+    def save_frame(name):
+        with open(os.path.join(TESTENV, name), 'w') as f:
+            f.write(S())
+
+    def chk_lag_shown():
+        goto_testas()
+        # Pirmas PING išsiunčiamas iškart po registracijos (po 28 patikros
+        # persijungimo) — PONG greitas, lag ~0.00s.
+        ok120 = driver.wait_until(lambda: lag_value() is not None, timeout=8)
+        bar120 = d.screen.line(0)
+        save_frame('frame-120x40.txt')
+        d.resize(80, 24)
+        ok80 = driver.wait_until(
+            lambda: '| #testas | lag ' in d.screen.line(0)
+            and len(d.screen.line(0).rstrip()) <= 80, timeout=8)
+        bar80 = d.screen.line(0)
+        save_frame('frame-80x24.txt')
+        d.resize(120, 40)
+        driver.wait_until(lambda: len(d.screen.line(0).rstrip()) > 80, timeout=8)
+        v = lag_value()
+        ok = ok120 and ok80 and v is not None and v < 2 and '| #testas ' in bar120
+        return ok, '120: %r | 80: %r' % (bar120.strip(), bar80.strip()) if ok else \
+            'lag120=%s lag80=%s: %r / %r' % (ok120, ok80, bar120, bar80)
+
+    record('31 lag statuso juostoje (120×40 ir 80×24)', chk_lag_shown)
+
+    def chk_lag_grows():
+        # Lėtas serveris: PONG po 7 s. Naujas ryšys → PING po registracijos.
+        srv.pong_delay = 7.0
+        conns = srv.connections
+        pings = srv.count_received('PING :mircbsd-')
+        srv.drop_client()
+        if not driver.wait_until(lambda: srv.connections > conns and srv.registered,
+                                 timeout=25):
+            return False, 'persijungimas neįvyko'
+        goto_testas()
+        if not driver.wait_until(lambda: srv.count_received('PING :mircbsd-') > pings,
+                                 timeout=10):
+            return False, 'PING su žetonu negautas'
+        d.mark_raw('lag')
+        # Laukiant PONG skaičius auga (rodomas laukimo laikas).
+        if not driver.wait_until(lambda: (lag_value() or 0) >= 1.0, timeout=6):
+            return False, 'augantis lag nerodomas: %r' % d.screen.line(0)
+        v1 = lag_value()
+        time.sleep(1.5)
+        v2 = lag_value()
+        grows = v1 is not None and v2 is not None and v2 > v1
+        # ≥ 5 s — paryškinta raudonu fonu.
+        warn = driver.wait_until(
+            lambda: '\x1b[41m| lag ' in d.raw_since('lag').decode('utf-8', 'replace'),
+            timeout=8)
+        bar_warn = d.screen.line(0)
+        # PONG atėjo — rodomas išmatuotas ~7 s ir nebeauga.
+        measured = driver.wait_until(lambda: 6.9 <= (lag_value() or 0) <= 7.6, timeout=10)
+        time.sleep(2.0)
+        s1 = lag_value()
+        time.sleep(1.0)
+        s2 = lag_value()
+        steady = s1 is not None and s1 == s2
+        srv.pong_delay = 0.0
+        ok = grows and warn and measured and steady
+        return ok, 'auga %.2f→%.2f, raudona: %r, išmatuota %ss' % (
+            v1, v2, bar_warn.strip()[-30:], s2) if ok else \
+            'auga=%s(%s→%s) raudona=%s išmatuota=%s pastovu=%s(%s,%s): %r' % (
+                grows, v1, v2, warn, measured, steady, s1, s2, d.screen.line(0))
+
+    record('32 lag auga laukiant PONG, ≥5 s paryškintas', chk_lag_grows)
 
     # ---------- Rezultatai ----------
     good = sum(1 for ok, _n, _ in results if ok)

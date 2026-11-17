@@ -148,6 +148,17 @@ fn tls_pin_and_theme_are_lowercased() {
 }
 
 #[test]
+fn show_joins_is_validated() {
+    let (c, w) = load_str("show_joins=SMART\n");
+    assert_eq!(c.show_joins, "smart");
+    assert!(w.is_empty(), "{w:?}");
+    let (c, w) = load_str("show_joins=kartais\n");
+    assert_eq!(c.show_joins, "all");
+    assert!(w.iter().any(|l| l.contains("show_joins")), "{w:?}");
+    assert_eq!(crate::config::default_config().show_joins, "all");
+}
+
+#[test]
 fn config_bools_accept_every_set_token() {
     // `/set` priima on/off/yes/no/1/0/true/false — config skaitytojas turi
     // suprasti VISUS tuos pačius žodžius, kitaip `/set mouse on` po

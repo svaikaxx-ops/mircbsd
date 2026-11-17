@@ -10,7 +10,7 @@
 //! (coloring flag + palette), exactly like the Go `themeMu`.
 
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use parking_lot::RwLock;
 
@@ -335,6 +335,72 @@ pub fn accent_color() -> &'static str {
     }
 }
 
+/// Spalva „foniniams“ kanalo įvykiams (kitų join/part/quit/nick, kitų
+/// išmetimai): blankesnė už pokalbį, kad judriuose kanaluose jie
+/// neužgožtų teksto. Tamsi tema — tamsiai pilka; šviesi — šviesiai pilka
+/// (ant balto fono pilka 90 beveik tokia pat ryški kaip juodas tekstas).
+pub fn event_color() -> &'static str {
+    if theme_dark_mode() {
+        ANSI_DARK_GRAY
+    } else {
+        "\x1b[38;5;246m"
+    }
+}
+
+// ---- Join/part/quit filtras (`show_joins`) ----
+
+/// Kurios KITŲ naudotojų join/part/quit/nick eilutės rodomos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinFilter {
+    /// Visos (numatyta).
+    All,
+    /// Tik nick'ų, neseniai kalbėjusių kanale
+    /// ([`super::channel::SMART_FILTER_SECS`]).
+    Smart,
+    /// Jokios.
+    None,
+}
+
+impl JoinFilter {
+    pub fn parse(v: &str) -> Option<JoinFilter> {
+        match v.trim().to_ascii_lowercase().as_str() {
+            "all" => Some(JoinFilter::All),
+            "smart" => Some(JoinFilter::Smart),
+            "none" => Some(JoinFilter::None),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JoinFilter::All => "all",
+            JoinFilter::Smart => "smart",
+            JoinFilter::None => "none",
+        }
+    }
+}
+
+static JOIN_FILTER: AtomicU8 = AtomicU8::new(0);
+
+/// `show_joins` (all|smart|none); nežinoma reikšmė = `all`. Po jo reikia
+/// [`invalidate_render_caches`] — atvaizduota istorija nuo jo priklauso.
+pub fn set_show_joins(v: &str) {
+    let n = match JoinFilter::parse(v).unwrap_or(JoinFilter::All) {
+        JoinFilter::All => 0,
+        JoinFilter::Smart => 1,
+        JoinFilter::None => 2,
+    };
+    JOIN_FILTER.store(n, Ordering::Relaxed);
+}
+
+pub fn show_joins() -> JoinFilter {
+    match JOIN_FILTER.load(Ordering::Relaxed) {
+        1 => JoinFilter::Smart,
+        2 => JoinFilter::None,
+        _ => JoinFilter::All,
+    }
+}
+
 /// `NO_COLOR` (<https://no-color.org>): when set, every colour SGR is
 /// removed from the frame; bold/underline/reverse stay so the layout is
 /// still readable, and coloured BACKGROUNDS (status bar, active window,
@@ -536,6 +602,35 @@ mod tests {
         assert_ne!(accent_color(), ANSI_YELLOW);
         set_theme("dark");
         assert_eq!(accent_color(), ANSI_YELLOW);
+    }
+
+    #[test]
+    fn event_color_is_dim_on_both_themes() {
+        let _g = TEST_LOCK.lock();
+        set_theme("dark");
+        assert_eq!(event_color(), ANSI_DARK_GRAY);
+        set_theme("light");
+        assert_ne!(event_color(), ANSI_DARK_GRAY);
+        // NO_COLOR: spalva išmetama visiškai.
+        assert!(strip_colors(event_color()).is_empty());
+        set_theme("dark");
+    }
+
+    #[test]
+    fn show_joins_values() {
+        let _g = TEST_LOCK.lock();
+        for (v, f) in [
+            ("all", JoinFilter::All),
+            ("SMART", JoinFilter::Smart),
+            ("none", JoinFilter::None),
+        ] {
+            set_show_joins(v);
+            assert_eq!(show_joins(), f);
+            assert_eq!(JoinFilter::parse(f.as_str()), Some(f));
+        }
+        assert_eq!(JoinFilter::parse("taip"), None);
+        set_show_joins("taip");
+        assert_eq!(show_joins(), JoinFilter::All);
     }
 
     #[test]

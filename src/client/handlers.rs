@@ -155,7 +155,17 @@ impl Client {
 
         match msg.cmd.as_str() {
             "PING" => self.send(&format!("PONG :{}", p(0))),
-            "PONG" => self.mu.lock().last_pong = std::time::Instant::now(),
+            "PONG" => {
+                let now = std::time::Instant::now();
+                let changed = {
+                    let mut st = self.mu.lock();
+                    st.last_pong = now;
+                    st.lag_pong(params, now)
+                };
+                if changed {
+                    self.queue_redraw();
+                }
+            }
 
             "001" => self.on_welcome(params),
             "002" | "003" | "004" | "372" | "375" | "376" => {
@@ -725,7 +735,9 @@ impl Client {
                 join_msg = format!("(paskyra: {})", sanitize_text(acct));
             }
         }
-        self.add_msg(ch, new_msg(now, from, &join_msg, MsgType::Join));
+        // Kitų prisijungimai — foniniai (blanki spalva, show_joins filtras).
+        let m = new_msg(now, from, &join_msg, MsgType::Join);
+        self.add_msg(ch, if is_me { m } else { m.quiet() });
     }
 
     fn on_part(&self, msg: &IrcLine, now: Ts) {
@@ -753,7 +765,7 @@ impl Client {
         };
         // Only show when the window was already ours (no side windows via stray PARTs).
         if !is_me && existed {
-            self.add_msg(ch, new_msg(now, from, reason, MsgType::Part));
+            self.add_msg(ch, new_msg(now, from, reason, MsgType::Part).quiet());
         }
     }
 
@@ -774,7 +786,7 @@ impl Client {
             names
         };
         for name in affected {
-            self.add_msg(&name, new_msg(now, from, reason, MsgType::Quit));
+            self.add_msg(&name, new_msg(now, from, reason, MsgType::Quit).quiet());
         }
     }
 
@@ -812,7 +824,8 @@ impl Client {
                     from,
                     &format!("išmetė {kicked} ({reason})"),
                     MsgType::Server,
-                ),
+                )
+                .quiet(),
             );
         }
         self.queue_redraw();
@@ -824,9 +837,10 @@ impl Client {
         if new_nick.is_empty() {
             return;
         }
-        let chans: Vec<String> = {
+        let (chans, is_me): (Vec<String>, bool) = {
             let mut st = self.mu.lock();
-            if self.nick_equal(from, &st.nick) {
+            let is_me = self.nick_equal(from, &st.nick);
+            if is_me {
                 st.nick = new_nick.to_string();
             }
             let mut names = Vec::new();
@@ -848,10 +862,11 @@ impl Client {
                     }
                 }
             }
-            names
+            (names, is_me)
         };
         for name in chans {
-            self.add_msg(&name, new_msg(now, from, new_nick, MsgType::Nick));
+            let m = new_msg(now, from, new_nick, MsgType::Nick);
+            self.add_msg(&name, if is_me { m } else { m.quiet() });
         }
         self.server_msg(&format!("{from} → {new_nick}"));
     }

@@ -16,6 +16,7 @@ class FakeServer:
         self.mynick = mynick
         self.nick_collisions = set()   # nick'ai, kuriems registracijoje → 433
         self.connections = 0           # priimtų jungčių skaičius
+        self.pong_delay = 0.0          # PONG vėlinimas sekundėmis (lag patikra)
         self.cap_done = False
         self.registered = False
         self.received = []
@@ -115,7 +116,15 @@ class FakeServer:
         if cmd == 'PING':
             # Kliento periodinis PING — be PONG'o klientas po timeout'o
             # laiko jungtį mirusia (E2E: žinutės nustoja ateiti ~60s+).
-            self.send_line('PONG :' + (parts[1].lstrip(':') if len(parts) > 1 else 'fakas'))
+            # Kaip tikri serveriai: PONG <serveris> :<žetonas>.
+            reply = 'PONG fakas :' + (parts[1].lstrip(':') if len(parts) > 1 else 'fakas')
+            if self.pong_delay > 0:
+                # Lėto/strigusio serverio imitacija (lag augimo patikra).
+                t = threading.Timer(self.pong_delay, self.send_line, args=(reply,))
+                t.daemon = True
+                t.start()
+            else:
+                self.send_line(reply)
             return
         if cmd == 'MONITOR' and len(parts) > 1:
             op = parts[1]

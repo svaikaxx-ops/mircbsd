@@ -39,6 +39,24 @@ fn ping_pong() {
 }
 
 #[test]
+fn lag_pong_must_carry_our_token() {
+    let (c, _q) = setup();
+    let t0 = std::time::Instant::now();
+    let (tok, fresh) = c.mu.lock().lag_ping_token(t0);
+    assert!(fresh);
+    // Neatsakytas PING: kartojamas tas pats žetonas ir pradžios laikas.
+    let later = t0 + std::time::Duration::from_secs(60);
+    assert_eq!(c.mu.lock().lag_ping_token(later), (tok.clone(), false));
+    assert_eq!(c.mu.lock().lag_sent, Some(t0));
+    // Svetimas PONG (pvz. /quote PING) matavimo nebaigia.
+    c.parse_irc(":srv PONG srv :kitas");
+    assert!(c.mu.lock().lag.is_none());
+    c.parse_irc(&format!(":srv PONG srv :{tok}"));
+    let st = c.mu.lock();
+    assert!(st.lag.is_some() && st.lag_sent.is_none());
+}
+
+#[test]
 fn join_names_quit_flow() {
     let (c, _q) = setup();
     c.parse_irc(":me!u@h JOIN #rust");
@@ -588,6 +606,49 @@ fn erroneous_nick_during_registration_retries_with_fallback() {
     c.parse_irc(":srv 432 mircbsd bad! :Erroneous Nickname");
     assert!(sent(&q).is_empty());
     assert_eq!(c.my_nick(), "mircbsd");
+}
+
+#[test]
+fn others_events_are_quiet_and_hidden_ones_do_not_count_unread() {
+    let _g = crate::ui::theme::TEST_LOCK.lock();
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #a");
+    c.parse_irc(":me!u@h JOIN #b"); // aktyvus — #b, #a fone
+    c.parse_irc(":srv 353 me = #a :me bob op");
+    let quiet = |chan: &str| -> Vec<(MsgType, bool)> {
+        let st = c.mu.lock();
+        let i = st.find_ch(chan).unwrap();
+        st.channels[i]
+            .messages
+            .iter()
+            .map(|m| (m.msg_type, m.quiet))
+            .collect()
+    };
+    let unread = |chan: &str| {
+        let st = c.mu.lock();
+        st.channels[st.find_ch(chan).unwrap()].unread
+    };
+    // Savas join — ne quiet.
+    assert_eq!(quiet("#a"), vec![(MsgType::Join, false)]);
+
+    crate::ui::set_show_joins("none");
+    c.parse_irc(":kitas!u@h JOIN #a");
+    c.parse_irc(":bob!u@h PART #a :ate");
+    c.parse_irc(":op!u@h NICK op2");
+    c.parse_irc(":kitas!u@h QUIT :bye");
+    assert_eq!(unread("#a"), 0, "paslėptos eilutės padidino unread");
+    // Išmetimas — quiet, bet rodomas ir skaičiuojamas.
+    c.parse_irc(":op2!u@h KICK #a bob2 :lauk");
+    assert_eq!(unread("#a"), 1);
+    crate::ui::set_show_joins("all");
+    c.parse_irc(":zz!u@h JOIN #a");
+    assert_eq!(unread("#a"), 2);
+
+    let q = quiet("#a");
+    assert!(q[1..].iter().all(|(_, quiet)| *quiet), "{q:?}");
+    // Savo nick keitimas — ne quiet.
+    c.parse_irc(":me!u@h NICK me2");
+    assert_eq!(quiet("#a").last(), Some(&(MsgType::Nick, false)));
 }
 
 #[test]

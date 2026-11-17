@@ -37,6 +37,8 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const PING_INTERVAL: Duration = Duration::from_secs(60);
 const PING_TIMEOUT: Duration = Duration::from_secs(120);
+/// Kas kiek perpiešiamas augantis (laukiamas) lag statuso juostoje.
+const LAG_REDRAW_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(120);
 
 /// `host:port` with IPv6 literals in brackets (`joinHostPort`).
@@ -831,6 +833,7 @@ impl Client {
             st.conn = transport.sock().try_clone().ok();
             st.connected = true;
             st.last_pong = Instant::now();
+            st.reset_lag();
             st.write = Some(handle.clone());
             st.active_caps.clear();
             st.cap_available.clear();
@@ -899,6 +902,15 @@ impl Client {
         self.queue_redraw();
     }
 
+    /// `pump_writes` ištuštino eilę (`flushed`) — naujas lag PING jau
+    /// išrašytas į lizdą: matuojama nuo dabar, ne nuo įdėjimo į eilę.
+    fn stamp_lag_if_flushed(&self, flushed: bool, unflushed: &mut bool) {
+        if flushed && *unflushed {
+            *unflushed = false;
+            self.mu.lock().restamp_lag(Instant::now());
+        }
+    }
+
     /// Reads server lines, services the write queue and keepalive until the
     /// connection ends (`readLoop` + writer + ping goroutines).
     fn io_loop(&self, gen: i64, stream: &mut Transport, queue: &WriteQueue, handle: &WriteHandle) {
@@ -907,35 +919,55 @@ impl Client {
         let mut pending: Option<String> = None;
         let mut buf = [0u8; 4096];
         let mut last_ping = Instant::now();
+        // Pirmas lag PING — iškart po registracijos (001), ne po minutės.
+        let mut first_lag_ping = true;
+        // Augantis lag statuso juostoje perpiešiamas ne dažniau nei kas tiek.
+        let mut last_lag_redraw = Instant::now();
+        // Naujas lag PING dar eilėje (limiteris gali jį sulaikyti po
+        // registracijos srauto) — matavimas pradedamas, kai jis išrašomas.
+        let mut lag_unflushed = false;
 
         loop {
             match pump_writes(stream, queue, &mut pending, &mut limiter) {
-                Ok(_) => {}
+                Ok(wait) => self.stamp_lag_if_flushed(wait.is_none(), &mut lag_unflushed),
                 Err(_) => return,
             }
             if queue.finish_requested() && pending.is_none() {
                 return; // everything queued has been flushed
             }
 
-            let (stale, last_pong) = {
+            let (stale, last_pong, registered, lag_growing) = {
                 let st = self.mu.lock();
-                (st.connect_gen != gen, st.last_pong)
+                let now = Instant::now();
+                // Laukiama ilgiau nei rodomas matavimas → skaičius auga.
+                let growing = st.lag_sent.is_some() && st.lag_shown(now) != st.lag;
+                (st.connect_gen != gen, st.last_pong, st.registered, growing)
             };
             if stale {
                 return;
             }
 
-            if last_ping.elapsed() >= PING_INTERVAL {
+            let first_due = first_lag_ping && registered;
+            if first_due || last_ping.elapsed() >= PING_INTERVAL {
                 last_ping = Instant::now();
-                if last_pong.elapsed() > PING_TIMEOUT {
+                if !first_due && last_pong.elapsed() > PING_TIMEOUT {
                     self.err_msg("Ping timeout - jungiamasi iš naujo");
                     return;
                 }
+                first_lag_ping = false;
+                // PING su žetonu: PONG su tuo pačiu žetonu = lag matavimas.
+                let (token, fresh) = self.mu.lock().lag_ping_token(Instant::now());
                 // Straight to THIS connection's queue; full queue → skip.
-                let _ = handle.try_send(format!(
-                    "PING :{}",
-                    crate::timeutil::unix(crate::timeutil::now())
-                ));
+                let _ = handle.try_send(format!("PING :{token}"));
+                lag_unflushed = fresh;
+                match pump_writes(stream, queue, &mut pending, &mut limiter) {
+                    Ok(wait) => self.stamp_lag_if_flushed(wait.is_none(), &mut lag_unflushed),
+                    Err(_) => return,
+                }
+            }
+            if lag_growing && last_lag_redraw.elapsed() >= LAG_REDRAW_INTERVAL {
+                last_lag_redraw = Instant::now();
+                self.queue_redraw();
             }
 
             match stream.read(&mut buf) {
@@ -956,8 +988,10 @@ impl Client {
                                     );
                                 }
                                 // Answer promptly (PONG etc.) without waiting for the next poll.
-                                if pump_writes(stream, queue, &mut pending, &mut limiter).is_err() {
-                                    return;
+                                match pump_writes(stream, queue, &mut pending, &mut limiter) {
+                                    Ok(wait) => self
+                                        .stamp_lag_if_flushed(wait.is_none(), &mut lag_unflushed),
+                                    Err(_) => return,
                                 }
                             }
                         }

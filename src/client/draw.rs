@@ -39,6 +39,7 @@ struct DrawSnap {
     use_tls: bool,
     search_mode: bool,
     search_query: String,
+    lag: Option<std::time::Duration>,
 }
 
 impl Client {
@@ -84,6 +85,7 @@ impl Client {
             use_tls: snap.use_tls,
             search_mode: snap.search_mode,
             search_query: &snap.search_query,
+            lag: snap.lag,
         };
         let Some(frame) = draw_frame(&params) else {
             return;
@@ -156,6 +158,7 @@ impl Client {
             use_tls: st.use_tls,
             search_mode: st.search_mode,
             search_query: st.search_query.clone(),
+            lag: st.lag_shown(Instant::now()),
         })
     }
 }
