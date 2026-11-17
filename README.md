@@ -96,7 +96,7 @@ Architektūrą parodo `uname -m`: `x86_64`, `aarch64` (64 bitų ARM),
 `armv7l` (32 bitų ARM) arba `armv6l` (Raspberry Pi 1, Zero, Zero W).
 
 ```sh
-VER=v0.5.1                          # naujausia versija – žr. Releases
+VER=v0.5.2                          # naujausia versija – žr. Releases
 T=x86_64-unknown-linux-musl         # arba aarch64-unknown-linux-musl / armv7-… / arm-unknown-linux-musleabihf
 URL=https://github.com/svaikaxx-ops/mircbsd/releases/download/$VER
 cd /tmp
