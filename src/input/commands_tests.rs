@@ -450,3 +450,53 @@ fn reconnect_remembers_channels_but_connect_elsewhere_does_not() {
     c.handle_cmd("connect", "127.0.0.2 1");
     assert!(c.mu.lock().rejoin.is_empty(), "kito tinklo kanalai");
 }
+
+#[test]
+fn channel_commands_outside_channel_window_send_nothing() {
+    let (c, q) = connected();
+    for win in ["*server*", "bob"] {
+        if win != "*server*" {
+            open_active(&c, win);
+        } else {
+            c.mu.lock().active_idx = 0;
+        }
+        for (cmd, args) in [
+            ("op", "jonas"),
+            ("deop", "jonas"),
+            ("voice", "jonas"),
+            ("devoice", "jonas"),
+            ("topic", "nauja tema"),
+            ("topic", ""),
+            ("kick", "jonas lauk"),
+            ("mode", "+m"),
+            ("cycle", ""),
+            ("part", ""),
+            ("invite", "jonas"),
+            ("names", ""),
+        ] {
+            c.handle_cmd(cmd, args);
+            let out = sent(&q);
+            assert!(out.is_empty(), "/{cmd} {args} lange {win}: {out:?}");
+        }
+        let all: Vec<String> = {
+            let st = c.mu.lock();
+            st.channels
+                .iter()
+                .flat_map(|ch| ch.messages.iter().map(|m| m.text.clone()))
+                .collect()
+        };
+        let n = all
+            .iter()
+            .filter(|t| t.as_str() == "Ši komanda veikia tik kanalo lange")
+            .count();
+        assert!(n >= 12, "{win}: {n} klaidų");
+        c.mu.lock()
+            .channels
+            .iter_mut()
+            .for_each(|ch| ch.messages.clear());
+    }
+    // Kanalo lange — siunčiama.
+    open_active(&c, "#k");
+    c.handle_cmd("op", "jonas");
+    assert_eq!(sent(&q), vec!["MODE #k +o jonas"]);
+}
