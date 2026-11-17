@@ -8,6 +8,9 @@ pagal [SemVer](https://semver.org/).
 
 ### Pakeista – sąsaja
 
+- **`↑` / `↓` – visada komandų istorija** (ir tuščioje eilutėje; anksčiau
+  tuščia eilutė slinkdavo žinutes ir paskutinės komandos nebuvo galima
+  atkurti). Žinutės slenkamos `PgUp`/`PgDn` ir pelės ratuku.
 - **Prisitaikantis išdėstymas** – siaurame terminale (< 60 stulpelių)
   kanalų sąrašas siaurėja, nick sąrašas slepiamas, jei žinutėms liktų < 40
   ląstelių; per mažame (< 40×8) – pranešimas vietoj sugadinto kadro.
@@ -67,6 +70,17 @@ pagal [SemVer](https://semver.org/).
 - **Langų perjungimas**: JOIN/PART nebepaveldi kito lango slinkimo;
   serverio JOIN į atidarytą langą fokuso nevagia.
 - **`wrap_text`** – likutis po tarpo + platus simbolis galėjo viršyti plotį.
+- **432 per registraciją** (serveris atmetė slapyvardį) – registracija
+  užstrigdavo; dabar bandomas `mircbsd`, kitaip aiški klaida.
+- **Kanalo komandos ne kanalo lange** (`/op`, `/deop`, `/voice`, `/devoice`,
+  `/topic`, `/kick`, `/mode +x`, `/cycle`, `/part`, `/invite`, `/names`)
+  siųsdavo „MODE *server* …“ ar „TOPIC bob“ – dabar klaida „Ši komanda
+  veikia tik kanalo lange“.
+- **`/join` prieš 001** – serveris JOIN atmesdavo (451); dabar kanalas
+  prijungiamas po registracijos.
+- **Langų vardų paieška pagal serverio CASEMAPPING** (`rfc1459`: `[]\^` ≡
+  `{}|~`) – `#a[b]` ir `#A{B}` nebeatidaro dviejų langų; `/close`,
+  `/unignore` ir grįžimo į kanalus sąrašas naudoja tą patį palyginimą.
 
 ## [0.4.8] – 2026-11-16 – perrašymas į Rust
 

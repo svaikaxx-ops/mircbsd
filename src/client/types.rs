@@ -129,6 +129,9 @@ pub struct State {
     pub sasl_ok: bool,
     pub sasl_pending: bool,
     pub nick_attempts: u32,
+    /// Serverio CASEMAPPING kopija (Isup → State, kad langų vardų paieška
+    /// veiktų laikant tik `mu`; lock tvarka mu → isup to neleistų atvirkščiai).
+    pub casemapping: String,
     /// 001 gautas šiame ryšyje (po jo 433 — tik klaida, ne automatinis
     /// nick keitimas; /nick laukia serverio NICK patvirtinimo).
     pub registered: bool,
@@ -275,6 +278,7 @@ impl Client {
             sasl_ok: false,
             sasl_pending: false,
             nick_attempts: 0,
+            casemapping: "rfc1459".into(),
             registered: false,
             rejoin: Vec::new(),
             connect_gen: 0,
@@ -381,7 +385,12 @@ impl Client {
 
     /// Apply 005 tokens.
     pub fn apply_isupport<S: AsRef<str>>(&self, tokens: &[S]) {
-        self.isup.write().apply(tokens);
+        let cm = {
+            let mut i = self.isup.write();
+            i.apply(tokens);
+            i.casemapping.clone()
+        };
+        self.mu.lock().casemapping = cm;
     }
 
     /// Current server CASEMAPPING.
@@ -473,7 +482,9 @@ impl State {
             if ch.name != SERVER_WINDOW
                 && !ch.is_private
                 && ch.has_nick(&me)
-                && !rejoin.iter().any(|r| r.eq_ignore_ascii_case(&ch.name))
+                && !rejoin
+                    .iter()
+                    .any(|r| crate::validate::nick_equal(r, &ch.name, &self.casemapping))
             {
                 rejoin.push(ch.name.clone());
             }

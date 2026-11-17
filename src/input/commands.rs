@@ -44,6 +44,9 @@ fn split2(s: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// Klaida kanalo komandai ne kanalo lange.
+const CHANNEL_ONLY: &str = "Ši komanda veikia tik kanalo lange";
+
 fn rune_len(s: &str) -> i32 {
     s.chars().count() as i32
 }
@@ -362,14 +365,17 @@ impl Client {
                 "ĮSPĖJIMAS: pasiektas kanalų limitas — kanalas „{hit}“ neatidarytas"
             ));
         }
-        if !self.is_connected() {
-            // Be ryšio: kanalas bus prijungtas po registracijos (001).
+        // Be ryšio ARBA dar neužsiregistravus (prieš 001 serveris JOIN atmeta
+        // su 451): kanalas įrašomas į laukiančiųjų sąrašą ir prijungiamas po 001.
+        let registered = {
             let mut st = self.mu.lock();
-            if !st.rejoin.iter().any(|r| r.eq_ignore_ascii_case(&ch_name)) {
+            let ready = st.connected && st.registered;
+            if !ready && !st.rejoin.iter().any(|r| st.name_eq(r, &ch_name)) {
                 st.rejoin.push(ch_name.clone());
             }
-        }
-        if self.is_connected() {
+            ready
+        };
+        if registered {
             if let Some(key) = key {
                 if !key.is_empty() {
                     if !is_valid_channel_key(key) {
@@ -386,10 +392,25 @@ impl Client {
         }
     }
 
+    /// Aktyvaus lango vardas, jei tai kanalas; kitaip — klaida ir `None`.
+    /// Kanalo komandos (/op, /topic, /kick, …) *server* ar privačiame lange
+    /// anksčiau siųsdavo „MODE *server* +o nick“ ar „TOPIC bob“.
+    fn active_channel_or_err(&self) -> Option<String> {
+        let name = self.active_name();
+        if self.is_channel(&name) {
+            Some(name)
+        } else {
+            self.err_msg(CHANNEL_ONLY);
+            None
+        }
+    }
+
     fn cmd_part(&self, args: &str) {
-        let ch_name = self.active_name();
+        let Some(ch_name) = self.active_channel_or_err() else {
+            return;
+        };
         let msg = if args.is_empty() { "Viso gero!" } else { args };
-        if self.is_connected() && self.is_channel(&ch_name) {
+        if self.is_connected() {
             self.send(&format!("PART {ch_name} :{msg}"));
         }
     }
@@ -507,7 +528,10 @@ impl Client {
             }
             ch.to_string()
         } else {
-            self.active_name()
+            let Some(ch) = self.active_channel_or_err() else {
+                return;
+            };
+            ch
         };
         if self.is_connected() {
             self.send(&format!("INVITE {nick} {ch_name}"));
@@ -516,11 +540,9 @@ impl Client {
     }
 
     fn cmd_cycle(&self, args: &str) {
-        let ch_name = self.active_name();
-        if !self.is_channel(&ch_name) {
-            self.err_msg("/cycle galima tik kanale");
+        let Some(ch_name) = self.active_channel_or_err() else {
             return;
-        }
+        };
         if self.is_connected() {
             let msg = if args.is_empty() { "cycle" } else { args };
             self.send(&format!("PART {ch_name} :{msg}"));
@@ -533,7 +555,9 @@ impl Client {
             self.err_msg(&format!("Naudojimas: {usage}"));
             return;
         }
-        let ch_name = self.active_name();
+        let Some(ch_name) = self.active_channel_or_err() else {
+            return;
+        };
         let nick = first_field(args);
         if !is_valid_nick(nick) {
             self.err_msg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)");
@@ -556,8 +580,10 @@ impl Client {
     }
 
     fn cmd_topic(&self, args: &str) {
-        let active = self.active_name();
-        if self.is_connected() && !active.is_empty() {
+        let Some(active) = self.active_channel_or_err() else {
+            return;
+        };
+        if self.is_connected() {
             if args.is_empty() {
                 self.send(&format!("TOPIC {active}"));
             } else if rune_len(args) > self.topic_len_limit() {
@@ -577,11 +603,9 @@ impl Client {
             self.err_msg("Naudojimas: /kick <nick> [priežastis]");
             return;
         }
-        let ch_name = self.active_name();
-        if !self.is_channel(&ch_name) {
-            self.err_msg("/kick galima tik kanale");
+        let Some(ch_name) = self.active_channel_or_err() else {
             return;
-        }
+        };
         if !is_valid_nick(nick) {
             self.err_msg("Netinkamas nick'as (raidės, skaičiai ir specialūs simboliai; max 30)");
             return;
@@ -612,11 +636,9 @@ impl Client {
         }
         let joined = fields.join(" ");
         if fields[0].starts_with('+') || fields[0].starts_with('-') {
-            let ch_name = self.active_name();
-            if !self.is_channel(&ch_name) {
-                self.err_msg("/mode galima tik kanale");
+            let Some(ch_name) = self.active_channel_or_err() else {
                 return;
-            }
+            };
             if !is_valid_mode_spec(&fields[1..]) {
                 self.err_msg(
                     "Netinkami mode parametrai (per daug parametrų arba specialūs simboliai)",
@@ -704,6 +726,9 @@ impl Client {
     }
 
     fn cmd_names(&self) {
+        if self.active_channel_or_err().is_none() {
+            return;
+        }
         let (do_it, ch_name) = {
             let mut st = self.mu.lock();
             let ch_name = st.active_chan().map(|c| c.name.clone()).unwrap_or_default();
@@ -743,7 +768,7 @@ impl Client {
             let kept: Vec<String> = st
                 .ignore_list
                 .iter()
-                .filter(|ig| !fold_eq(ig, nick))
+                .filter(|ig| !self.nick_equal(ig, nick))
                 .cloned()
                 .collect();
             st.ignore_list = kept;
@@ -1065,7 +1090,7 @@ impl Client {
             if !args.is_empty() {
                 let needle = sanitize_text(args);
                 for (i, ch) in st.channels.iter().enumerate() {
-                    if fold_eq(&ch.name, &needle) {
+                    if st.name_eq(&ch.name, &needle) {
                         idx = i;
                         break;
                     }
@@ -1076,7 +1101,9 @@ impl Client {
             }
             let ch_name = st.channels[idx].name.clone();
             st.remove_ch(idx);
-            st.rejoin.retain(|r| !r.eq_ignore_ascii_case(&ch_name));
+            let cm = st.casemapping.clone();
+            st.rejoin
+                .retain(|r| !crate::validate::nick_equal(r, &ch_name, &cm));
             (idx, ch_name)
         };
         let _ = idx;
@@ -1300,7 +1327,7 @@ fn help_lines(avail: i32) -> Vec<String> {
             &[
                 ("PgUp / PgDn, pelės ratukas", "slinkti istoriją"),
                 ("Shift+PgDn", "grįžti į apačią"),
-                ("↑ / ↓", "komandų istorija (tuščia eilutė: slinkti)"),
+                ("↑ / ↓", "komandų istorija"),
                 ("Ctrl+N / Ctrl+P", "kitas / ankstesnis langas"),
                 ("Alt+1…9, F1…F12", "langas pagal numerį"),
                 ("Tab", "užbaigti nick, komandą, kanalą"),

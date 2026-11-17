@@ -574,3 +574,43 @@ fn statusmsg_privmsg_goes_to_channel_and_user_mode_is_shown() {
     c.parse_irc(":me MODE me :+iw");
     assert!(texts(&c, SERVER_WINDOW).iter().any(|t| t == "Mode me: +iw"));
 }
+
+#[test]
+fn erroneous_nick_during_registration_retries_with_fallback() {
+    let (c, q) = setup();
+    c.parse_irc(":srv 432 * me :Erroneous Nickname");
+    assert_eq!(sent(&q), vec!["NICK mircbsd"]);
+    assert_eq!(c.my_nick(), "mircbsd");
+    // Atmestas ir atsarginis — aiški klaida, be begalinio ciklo.
+    c.parse_irc(":srv 432 * mircbsd :Erroneous Nickname");
+    assert!(sent(&q).is_empty());
+    assert!(texts(&c, SERVER_WINDOW)
+        .iter()
+        .any(|t| t.contains("registracija sustojo")));
+    // Po registracijos 432 — tik klaida, nick nekeičiamas.
+    c.parse_irc(":srv 001 mircbsd :Welcome");
+    sent(&q);
+    c.parse_irc(":srv 432 mircbsd bad! :Erroneous Nickname");
+    assert!(sent(&q).is_empty());
+    assert_eq!(c.my_nick(), "mircbsd");
+}
+
+#[test]
+fn window_lookup_uses_server_casemapping() {
+    let (c, _q) = setup();
+    c.parse_irc(":me!u@h JOIN #a[b]");
+    // rfc1459: [] ≡ {} — serveris atsiunčia kita forma, langas tas pats.
+    c.parse_irc(":x!u@h PRIVMSG #A{B} :labas");
+    assert!(c.find_ch("#a{b}").is_some());
+    assert_eq!(c.mu.lock().channels.len(), 2, "atsirado antras langas");
+    assert!(texts(&c, "#a[b]").contains(&"labas".to_string()));
+    // Privatus langas: nick „Bob^“ ≡ „bob~“.
+    c.parse_irc(":Bob^!u@h PRIVMSG me :sveikas");
+    c.parse_irc(":bob~!u@h PRIVMSG me :vėl");
+    assert_eq!(texts(&c, "Bob^").len(), 2);
+
+    // ascii casemapping: [] ir {} — skirtingi.
+    c.parse_irc(":srv 005 me CASEMAPPING=ascii :are supported");
+    assert!(c.find_ch("#a{b}").is_none());
+    assert!(c.find_ch("#A[B]").is_some());
+}

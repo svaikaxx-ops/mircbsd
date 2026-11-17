@@ -395,7 +395,7 @@ impl Client {
             }
 
             "431" => self.err_msg("Nenurodytas slapyvardis"),
-            "432" => self.err_msg(&format!("Netinkamas slapyvardis: {}", p(1))),
+            "432" => self.on_erroneous_nick(p(1)),
             "433" => self.on_nick_in_use(p(1)),
 
             "ERROR" => {
@@ -561,7 +561,7 @@ impl Client {
             let dup = auto_join.iter().chain(joined.iter()).any(|a| {
                 a.split_whitespace()
                     .next()
-                    .is_some_and(|a| a.eq_ignore_ascii_case(&ch))
+                    .is_some_and(|a| self.nick_equal(a, &ch))
             });
             if !dup && self.is_channel(&ch) {
                 self.send(&format!("JOIN {ch}"));
@@ -573,6 +573,37 @@ impl Client {
         }
         if !monitor.is_empty() {
             self.send(&format!("MONITOR + {}", monitor.join(",")));
+        }
+    }
+
+    /// 432 ERR_ERRONEUSNICKNAME. Per registraciją serveris laukia kito NICK —
+    /// anksčiau rodyta tik klaida ir registracija užstrigdavo amžinai.
+    /// Bandomas saugus „mircbsd“ (toliau, jei užimtas, veikia 433 seka).
+    fn on_erroneous_nick(&self, wanted: &str) {
+        const FALLBACK: &str = "mircbsd";
+        let shown = sanitize_text(wanted);
+        let retry = {
+            let mut st = self.mu.lock();
+            if st.registered {
+                None
+            } else if !st.nick.eq_ignore_ascii_case(FALLBACK) {
+                st.nick = FALLBACK.to_string();
+                Some(true)
+            } else {
+                Some(false)
+            }
+        };
+        match retry {
+            None => self.err_msg(&format!("Netinkamas slapyvardis: {shown}")),
+            Some(true) => {
+                self.err_msg(&format!(
+                    "Serveris atmetė slapyvardį „{shown}“ — bandomas {FALLBACK}"
+                ));
+                self.send(&format!("NICK {FALLBACK}"));
+            }
+            Some(false) => self.err_msg(&format!(
+                "Serveris atmetė slapyvardį „{shown}“ — registracija sustojo; rašyk /nick <kitas>"
+            )),
         }
     }
 

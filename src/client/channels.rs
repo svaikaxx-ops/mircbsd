@@ -39,13 +39,21 @@ pub fn with_cmd_feedback<R>(f: impl FnOnce() -> R) -> R {
 }
 
 impl State {
-    /// Index of the channel named `name` (compared with the sanitized name,
-    /// case-insensitively) — `findCh`.
+    /// Index of the channel named `name` (compared with the sanitized name
+    /// under the server CASEMAPPING) — `findCh`.
     pub fn find_ch(&self, name: &str) -> Option<usize> {
-        let safe = sanitize_text(name).to_lowercase();
+        let safe = sanitize_text(name);
         self.channels
             .iter()
-            .position(|ch| ch.name.to_lowercase() == safe)
+            .position(|ch| self.name_eq(&ch.name, &safe))
+    }
+
+    /// Langų / kanalų vardų lygybė pagal serverio CASEMAPPING (rfc1459:
+    /// `[]\^` ≡ `{}|~`). Vienintelis vardų palyginimo helperis — anksčiau
+    /// `to_lowercase` laikė „#a[b]“ ir „#a{b}“ skirtingais langais, nors
+    /// serveriui tai tas pats kanalas.
+    pub fn name_eq(&self, a: &str, b: &str) -> bool {
+        crate::validate::nick_equal(a, b, &self.casemapping)
     }
 
     /// Active channel, if the index is valid (`activeChanLocked`).

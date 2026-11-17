@@ -288,6 +288,7 @@ pub(crate) mod testutil {
             let mut st = c.mu.lock();
             st.write = Some(h);
             st.connected = true;
+            st.registered = true;
         }
         (c, q)
     }
