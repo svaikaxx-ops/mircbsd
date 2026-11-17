@@ -4,6 +4,15 @@ Visi reikšmingi projektų pakeitimai dokumentuojami čia.
 Formatas pagal [Keep a Changelog](https://keepachangelog.com/); versioning —
 pagal [SemVer](https://semver.org/).
 
+## [Neišleista]
+
+### Pakeista
+
+- **Priklausomybės** — `crossterm` 0.28 → 0.29, `webpki-roots` 0.26 → 1.0;
+  GitHub Actions: `checkout` v7, `upload-artifact` v7, `download-artifact` v8.
+  `sha2` 0.11 ir `parking_lot` 0.13 atidėti — reikalauja Rust 1.88 / 1.95
+  (minimali palaikoma versija 1.85).
+
 ## [0.5.0] – 2026-11-17 – paruošimas viešam leidimui
 
 ### Pakeista – sąsaja
