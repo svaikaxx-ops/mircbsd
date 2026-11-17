@@ -241,6 +241,7 @@ fn away_notify_announces_once() {
 #[test]
 fn monitor_numerics_track_state() {
     let (c, _q) = setup();
+    c.mu.lock().monitor_list = vec!["bob".into(), "al".into()];
     c.parse_irc(":srv 730 me :Bob!u@h,al!u@h");
     assert!(c.mu.lock().monitor_online.contains(&c.mon_key("bob")));
     c.parse_irc(":srv 731 me :bob!u@h");
@@ -361,4 +362,29 @@ fn config_credentials_still_used_for_the_configured_server() {
     c.mu.lock().server = "IRC.Example.ORG".into();
     c.parse_irc(":srv 001 me :Welcome");
     assert!(sent(&q).contains(&"PRIVMSG NickServ :IDENTIFY nssecret".to_string()));
+}
+
+#[test]
+fn hostile_server_cannot_grow_monitor_and_cap_sets_without_bound() {
+    let (c, _q) = setup();
+    c.mu.lock().monitor_list = vec!["bob".into()];
+    // 730 for nicks we never asked to watch: not stored (memory DoS).
+    for i in 0..50 {
+        c.parse_irc(&format!(":srv 730 me :x{i}a!u@h,x{i}b!u@h"));
+    }
+    c.parse_irc(":srv 730 me :BOB!u@h");
+    assert_eq!(c.mu.lock().monitor_online.len(), 1);
+
+    // An endless CAP LS continuation must not buffer unbounded names.
+    for i in 0..3000 {
+        c.parse_irc(&format!(":srv CAP * LS * :cap{i}a cap{i}b cap{i}c"));
+    }
+    assert!(c.mu.lock().cap_available.len() <= 1024);
+
+    // ACK of capabilities we never requested does not enable them.
+    c.parse_irc(":srv CAP me ACK :evil-cap another server-time");
+    let st = c.mu.lock();
+    assert!(!st.active_caps.contains("evil-cap"));
+    assert!(!st.active_caps.contains("another"));
+    assert!(st.active_caps.contains("server-time"));
 }

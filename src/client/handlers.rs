@@ -10,7 +10,7 @@ use chrono::{DateTime, Local, TimeZone, Utc};
 
 use crate::proto::caps::{
     authenticate_chunks, parse_cap_names, sasl_decide, sasl_plain_payload, wanted_caps, SaslInputs,
-    SASL_EXTERNAL_WARN,
+    IRCV3_WANTED_CAPS, SASL_EXTERNAL_WARN,
 };
 use crate::proto::isupport::parse_chan_modes;
 use crate::proto::parse::{parse_line, IrcLine};
@@ -26,6 +26,8 @@ use super::{
 };
 
 const AWAY_THROTTLE_MINUTES: i64 = 10;
+/// Most capability names kept from one `CAP LS`/`NEW` round.
+const MAX_CAP_NAMES: usize = 1024;
 
 /// Does `text` mention `nick` as a whole word (case-insensitive, first occurrence)?
 pub fn contains_nick(text: &str, nick: &str) -> bool {
@@ -422,7 +424,15 @@ impl Client {
                         continue;
                     }
                     let key = self.mon_key(&nick);
-                    self.mu.lock().monitor_online.insert(key);
+                    {
+                        // Only nicks WE watch: a hostile server could
+                        // otherwise grow the set without bound.
+                        let mut st = self.mu.lock();
+                        if !st.monitor_list.iter().any(|n| self.nick_equal(n, &nick)) {
+                            continue;
+                        }
+                        st.monitor_online.insert(key);
+                    }
                     self.server_msg(&format!("● {nick} prisijungė (žiūrimas)"));
                 }
             }
@@ -975,10 +985,21 @@ impl Client {
         }
     }
 
+    /// Collect offered capability names, at most [`MAX_CAP_NAMES`] (an endless
+    /// `CAP LS *` continuation must not buffer unbounded data).
+    fn add_cap_names(st: &mut State, caps: &str) {
+        for name in parse_cap_names(caps) {
+            if st.cap_available.len() >= MAX_CAP_NAMES {
+                break;
+            }
+            st.cap_available.insert(name);
+        }
+    }
+
     /// `CAP NEW`: server offers capabilities after registration.
     pub fn handle_cap_new(&self, caps: &str) {
         let mut st = self.mu.lock();
-        st.cap_available.extend(parse_cap_names(caps));
+        Self::add_cap_names(&mut st, caps);
         self.finish_cap_round(st, true);
     }
 
@@ -991,7 +1012,7 @@ impl Client {
         match sub.as_str() {
             "LS" => {
                 let mut st = self.mu.lock();
-                st.cap_available.extend(parse_cap_names(caps));
+                Self::add_cap_names(&mut st, caps);
                 if cont {
                     return;
                 }
@@ -1008,6 +1029,11 @@ impl Client {
                             continue;
                         }
                         let name = cap.to_lowercase();
+                        // Only capabilities we can have requested: an ACK
+                        // for anything else is ignored (bounded set).
+                        if name != "sasl" && !IRCV3_WANTED_CAPS.contains(&name.as_str()) {
+                            continue;
+                        }
                         if name == "sasl" {
                             sasl_acked = true;
                         }
