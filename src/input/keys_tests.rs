@@ -431,3 +431,16 @@ fn delete_home_end_csi_variants() {
     c.handle_key(b"\x1bOF");
     assert_eq!(c.mu.lock().input_pos, 2);
 }
+
+#[test]
+fn typing_ends_search_navigation_so_n_can_start_a_line() {
+    let c = client();
+    c.mu.lock().last_search_query = "zzz".into();
+    c.handle_key(b"\x1b[5~"); // PgUp — navigacija išlieka
+    assert_eq!(c.mu.lock().last_search_query, "zzz");
+    c.handle_key(b"a");
+    c.handle_key(b"\x7f"); // tuščia įvestis vėl
+    c.handle_key(b"n");
+    c.handle_key(b"ice");
+    assert_eq!(input_text(&c), "nice");
+}

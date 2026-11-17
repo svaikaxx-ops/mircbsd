@@ -310,6 +310,14 @@ impl Client {
             }
             return;
         }
+        // Rašymas (ne valdymo seka — PgUp/pelė/rodyklės leidžia apžiūrėti
+        // kontekstą) baigia paieškos navigaciją: kitaip po bet kokios paieškos
+        // eilutės niekada nebūtų galima pradėti raide „n“ ar „p“.
+        if !last_query.is_empty() && b.first() != Some(&0x1b) {
+            let mut st = self.mu.lock();
+            st.last_search_query.clear();
+            st.search_result_idx = -1;
+        }
 
         // Anything but Tab (and mouse reports) accepts a pending completion.
         let is_mouse = b.starts_with(b"\x1b[<");
