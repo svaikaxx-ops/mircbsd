@@ -1,0 +1,7 @@
+# cross (https://github.com/cross-rs/cross) konfigūracija release binarams.
+#
+# Android: cross 0.2.5 atvaizdas turi NDK r21 (be libunwind — dabartinis Rust
+# nesusilinkuoja: „cannot find -lunwind“). `main` atvaizdas — NDK r25b, qemu ir
+# Android 9 sistema (`cross run` paleidžia binarį prieš publikavimą).
+[target.aarch64-linux-android]
+image = "ghcr.io/cross-rs/aarch64-linux-android:main"

@@ -174,6 +174,9 @@ fn lag_segment_yields_before_the_window_name() {
 
 #[test]
 fn frame_status_bar_shows_lag_and_warns_when_slow() {
+    // Spalvų asertacijos: NO_COLOR testas lygiagrečiai perjungia globalų
+    // NO_COLOR — be šio užrakto lag būna „\x1b[27m“ vietoj raudono (FreeBSD CI).
+    let _g = crate::ui::theme::TEST_LOCK.lock();
     let channels = vec![ChanState {
         name: "#rust".into(),
         ..Default::default()
